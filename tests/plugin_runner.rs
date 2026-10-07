@@ -49,6 +49,8 @@ impl Suite {
         for helper in [
             "gate-progress.sh",
             "gate-progress-writer.py",
+            // The runner enters host admission through it (SH-869).
+            "host-admit.py",
             "test-env.sh",
             "python-runtime.sh",
             "python-bin/python3",
