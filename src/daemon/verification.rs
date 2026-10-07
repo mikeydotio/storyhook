@@ -15,6 +15,8 @@ mod batch_preview;
 mod cleanup;
 mod control;
 mod cost;
+mod diagnosis;
+pub use diagnosis::{RustDiagnosisRequest, RustDiagnosisResult};
 pub(crate) mod evidence;
 #[cfg(test)]
 mod journal_retirement_tests;
@@ -37,7 +39,7 @@ mod repair_return;
 mod reservation;
 pub(crate) use recovery_transport::ControlOwner;
 pub use repair_return::resume_plan;
-use repair_return::{red_diagnosis, return_for_repair};
+use repair_return::{hold_for_attribution, return_for_repair};
 pub(crate) use reservation::{Reservation, SlotView};
 pub use reservation::{ReservationReason, VerifierReservation};
 pub mod status;
@@ -78,7 +80,7 @@ use crate::service::engine::{
 };
 use crate::service::gate_progress::GATE_PROGRESS_PREFIX;
 use crate::service::project_fault::ProjectFault;
-use crate::service::verification::{GenerationWrite, IMPLEMENTER_TEST_SCOPE};
+use crate::service::verification::GenerationWrite;
 use crate::service::{
     Ctx, StoryService, VERIFICATION_GREEN_PREFIX, VERIFICATION_WITHDRAWN_PREFIX,
     VerificationCandidate, VerificationProblem, VerificationQueue,
@@ -588,9 +590,8 @@ pub enum LandingOutcome {
 /// Why a leased submission did not leave one open pull request (SH-647).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubmissionFailure {
-    /// The helper refused by name with something the agent has to fix — a
-    /// dirty worktree or a rejected push. The
-    /// story is returned to the agent carrying `display`.
+    /// The helper refused by name, for example a dirty worktree or rejected push.
+    /// The submission stays Verifying with `display` retained as unproved evidence.
     Refused {
         /// The helper's refusal token, such as `dirty-worktree`.
         reason: String,
@@ -764,6 +765,13 @@ pub trait VerificationActuator: Send + Sync {
         _cancellation: &VerificationCancellation,
     ) -> VerificationOutcome {
         self.verify(candidate, pull_request)
+    }
+    /// Read the current open PR head before granting a causal repair return.
+    /// Unsupported or unavailable metadata withholds the return.
+    fn current_pr_head(&self, _candidate: &VerificationCandidate) -> Result<String, AppError> {
+        Err(AppError::Validation(
+            "verifier adapter cannot confirm the current PR head".into(),
+        ))
     }
     /// Whether a returned story's agent still runs, without touching its pane
     /// (SH-770). A conflict-reconcile hold asks once per probe interval.
@@ -1902,6 +1910,10 @@ impl VerificationActuator for ShellVerificationActuator {
         )
     }
 
+    fn current_pr_head(&self, candidate: &VerificationCandidate) -> Result<String, AppError> {
+        self.diagnosis_head(candidate)
+    }
+
     fn verify_cancellable(
         &self,
         candidate: &VerificationCandidate,
@@ -2326,18 +2338,10 @@ pub fn tick_with_activity<S: Store, A: VerificationActuator>(
     })
 }
 
-/// Runs one verification cycle for `project` while allowing a conflicted
-/// story to retain that project's verifier until its next submission.
-///
-/// Everything here is the project's own (SH-648): its ordered queue, its
-/// incident halt, its cleanup pass, its slot in `activity`. Another
-/// project's halt or hold is invisible from this tick.
-///
-/// `wait_for_resubmission` owns only the wait mechanism. The verifier validates
-/// that the returned candidate is a newer generation of the reserved story,
-/// preventing a queue reorder or faulty observer from transferring ownership.
-/// Public for store-backed integration tests; production supplies the daemon's
-/// change-bus waiter.
+/// Run one project's verification cycle with its own queue, incident and slot.
+/// The waiter argument remains source-compatible with existing daemon callers.
+/// Unproved failures now retain evidence and release the slot without waiting
+/// for an implementer. Causal returns use the sealed native proof boundary.
 pub fn tick_with_reconciliation<S, A, W>(
     store: &S,
     env: &Environment,
@@ -2410,7 +2414,7 @@ fn tick_cycle<S, A, W>(
     project: ProjectId,
     bus: &ChangeBus,
     mut admitted_request: Option<&mut Option<String>>,
-    mut wait_for_resubmission: W,
+    _wait_for_resubmission: W,
 ) -> Result<TickResult, AppError>
 where
     S: Store,
@@ -2630,14 +2634,14 @@ where
                 Err(VerificationProblem::MissingPullRequest)
                     if candidate.cleanup_lease.is_none() =>
                 {
-                    match return_for_repair(
+                    match hold_for_attribution(
                         &queue,
                         &ctx,
-                        actuator,
                         &candidate,
+                        "unleased submission",
+                        crate::service::attribution::FailureCause::Unknown,
                         UNLEASED_SUBMISSION,
                         &active,
-                        ReservationReason::Remediation,
                     )? {
                         GenerationWrite::Applied(_) => return Ok(TickResult::Returned),
                         GenerationWrite::Superseded => match refresh_authority(
@@ -2654,14 +2658,14 @@ where
                     }
                 }
                 Err(problem) => {
-                    match return_for_repair(
+                    match hold_for_attribution(
                         &queue,
                         &ctx,
-                        actuator,
                         &candidate,
+                        "submission identity",
+                        crate::service::attribution::FailureCause::Unknown,
                         &problem.message(),
                         &active,
-                        ReservationReason::Remediation,
                     )? {
                         GenerationWrite::Applied(_) => return Ok(TickResult::Returned),
                         GenerationWrite::Superseded => match refresh_authority(
@@ -2837,9 +2841,10 @@ where
                         env,
                         &active,
                         &candidate,
+                        crate::store::GateExecutionPurpose::Gate,
                         crate::store::GateInputs::default(),
                         vec![cost::submission(&candidate)],
-                        || {
+                        |_| {
                             observation::verify(
                                 store,
                                 bus,
@@ -3111,73 +3116,30 @@ where
                     return Ok(TickResult::Completed);
                 }
                 VerificationOutcome::Conflict { detail } => {
-                    let remediation_started = return_for_repair(
-                        &queue,
-                        &ctx,
-                        actuator,
-                        &candidate,
-                        &format!(
-                            "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into its current base branch. Reconcile the branch in its worktree without rewriting published history. {IMPLEMENTER_TEST_SCOPE} Commit the work. Move {} back to verifying. {}.\n\n{}",
-                            candidate.story_id,
-                            push_promise(candidate.cleanup_lease.is_some(), false),
-                            crate::text_lint::quote_evidence(&detail)
-                        ),
-                        &active,
-                        ReservationReason::Reconcile,
-                    )?;
-                    let remediation_started = match remediation_started {
-                        GenerationWrite::Applied(started) => started,
-                        GenerationWrite::Superseded => match refresh_authority(
-                            store,
+                    if matches!(
+                        hold_for_attribution(
                             &queue,
-                            &mut active,
-                            &lifecycle_entry,
-                            env,
-                            &mut candidate,
-                        )? {
-                            AuthorityRefresh::Current | AuthorityRefresh::Replaced => continue,
-                            AuthorityRefresh::Released => return Ok(TickResult::Returned),
-                        },
-                    };
-                    if !remediation_started {
+                            &ctx,
+                            &candidate,
+                            "integration conflict",
+                            crate::service::attribution::FailureCause::Integration,
+                            &detail,
+                            &active
+                        )?,
+                        GenerationWrite::Applied(())
+                    ) {
                         return Ok(TickResult::Returned);
                     }
-                    let resubmitted = match wait_for_resubmission(&candidate)? {
-                        ReconcileWait::Resubmitted(resubmitted) => *resubmitted,
-                        ReconcileWait::Ended => return Ok(TickResult::Returned),
-                        ReconcileWait::Released(release) => {
-                            record_hold_released(&ctx, &candidate, &release)?;
-                            return Ok(TickResult::Returned);
-                        }
-                    };
-                    if resubmitted.project != candidate.project
-                        || resubmitted.story_id != candidate.story_id
-                        || resubmitted.verifying_generation.is_none()
-                        || resubmitted.verifying_generation == candidate.verifying_generation
-                    {
-                        return Err(AppError::Storage(format!(
-                            "reconciliation reservation for {} received the wrong verification candidate",
-                            candidate.story_id
-                        )));
-                    }
-                    transfer_verifier(store, &mut active, &lifecycle_entry, env, &resubmitted)?;
-                    candidate = resubmitted;
-                    continue;
                 }
                 VerificationOutcome::InvalidSubmission { detail } => {
-                    let result = return_for_repair(
+                    let result = hold_for_attribution(
                         &queue,
                         &ctx,
-                        actuator,
                         &candidate,
-                        &format!(
-                            "CENTRAL VERIFICATION INVALID SUBMISSION — repair the submission from the story's worktree. Move {} back to verifying. {}.\n\n{}",
-                            candidate.story_id,
-                            push_promise(candidate.cleanup_lease.is_some(), true),
-                            crate::text_lint::quote_evidence(&detail)
-                        ),
+                        "invalid submission",
+                        crate::service::attribution::FailureCause::Unknown,
+                        &detail,
                         &active,
-                        ReservationReason::Remediation,
                     )?;
                     if matches!(result, GenerationWrite::Applied(_)) {
                         return Ok(TickResult::Returned);
@@ -3189,32 +3151,52 @@ where
                     detail,
                     gate,
                 } => {
-                    if recovery_service.return_failed_repair(
-                        &candidate,
-                        &active.active.attempt_id,
-                        &tree,
-                        &format!("Gate {gate}; full log {log}.\n\n{detail}"),
-                    )? {
-                        return Ok(TickResult::Returned);
-                    }
-                    let result = return_for_repair(
-                        &queue,
-                        &ctx,
-                        actuator,
-                        &candidate,
-                        &red_diagnosis(
-                            &candidate,
-                            &tree,
-                            &gate,
-                            &log,
-                            &detail,
-                            found_by.as_deref(),
-                        ),
-                        &active,
-                        ReservationReason::Remediation,
-                    )?;
-                    if matches!(result, GenerationWrite::Applied(_)) {
-                        return Ok(TickResult::Returned);
+                    match active.diagnose_gate_failure(&ctx, &candidate)? {
+                        RustDiagnosisResult::Proven(proof) => {
+                            let result = return_for_repair(
+                                &queue,
+                                &ctx,
+                                actuator,
+                                &candidate,
+                                &proof,
+                                &active,
+                                ReservationReason::Remediation,
+                            )?;
+                            if matches!(result, GenerationWrite::Applied(_)) {
+                                return Ok(TickResult::Returned);
+                            }
+                        }
+                        RustDiagnosisResult::Held {
+                            evidence,
+                            detail: diagnostic,
+                        } => {
+                            queue.upsert_generation_comment(&ctx, &candidate,
+                                "CENTRAL VERIFICATION ATTRIBUTION HELD",
+                                &format!("CENTRAL VERIFICATION ATTRIBUTION HELD — evidence {evidence}. Gate {gate}; tree {tree}; log {log}. No repair is assigned. Inspect `story verifier evidence {} --json`.\n\n{}\n\n{}\n\n{}",
+                                    candidate.story_id, crate::text_lint::quote_evidence(&detail), crate::text_lint::quote_evidence(&diagnostic), found_by.as_deref().unwrap_or_default()), None)?;
+                            return Ok(TickResult::Returned);
+                        }
+                        RustDiagnosisResult::Superseded => {
+                            // Bisection and legacy adapters can have a failed verdict without
+                            // one original physical gate bound to this admission.
+                            if matches!(
+                                hold_for_attribution(
+                                    &queue,
+                                    &ctx,
+                                    &candidate,
+                                    "unproved failed gate",
+                                    crate::service::attribution::FailureCause::Unknown,
+                                    &format!(
+                                        "Gate {gate}; tree {tree}; log {log}.\n\n{detail}\n\n{}",
+                                        found_by.as_deref().unwrap_or_default()
+                                    ),
+                                    &active
+                                )?,
+                                GenerationWrite::Applied(())
+                            ) {
+                                return Ok(TickResult::Returned);
+                            }
+                        }
                     }
                 }
                 VerificationOutcome::ProjectFault { fault } => {
@@ -3265,39 +3247,6 @@ const UNLEASED_SUBMISSION: &str = "Verification could not submit this story. It 
 `verifying` from outside its dispatched worktree. No cleanup lease names a branch to push. \
 No pull request is linked. From inside the story's worktree, commit the work. Run \
 `story move <id> verifying` again. The verifier pushes the branch and opens the pull request.";
-
-/// The trailing clause of a post-verify repair return (SH-653), naming what
-/// actually happens to a "commit, then move back to verifying" fix.
-///
-/// A leased generation can carry that fix to the remote — the verifier
-/// already knows its branch — so the original promise holds. An unleased one
-/// cannot: nothing pushes it, whether this generation was submitted from
-/// outside its worktree or reached `verifying` already carrying a pull
-/// request an operator or an earlier generation linked directly (SH-647's
-/// own supported shape, still exempt from [`UNLEASED_SUBMISSION`]'s
-/// up-front refusal — that lease-free submission is not what changed here).
-/// What SH-653 found live is narrower: a story that already has a
-/// worktree-dispatched lifecycle losing its lease on a resubmission and being
-/// told "the verifier pushes" regardless — a promise that generation's own
-/// tick cannot keep, and a livelock once the published head does not merge.
-/// Naming that honestly here does not change whether verification runs, only
-/// what an unleased candidate is told about the return it just received.
-fn push_promise(has_cleanup_lease: bool, and_links_pull_request: bool) -> &'static str {
-    match (has_cleanup_lease, and_links_pull_request) {
-        (true, false) => "the verifier pushes",
-        (true, true) => "the verifier pushes and links the pull request",
-        (false, false) => {
-            "this generation has no cleanup lease, so nothing will push it. \
-Commit from inside the story's dispatched worktree. Move it to verifying again there so \
-the verifier can push"
-        }
-        (false, true) => {
-            "this generation has no cleanup lease, so nothing will push or link it. \
-Commit from inside the story's dispatched worktree. Move it to verifying again there. \
-The verifier can then push and link the pull request"
-        }
-    }
-}
 
 /// Whether this tick owes the candidate a submission (SH-647): it is leased
 /// — so a branch is known — and its linked pull request is either absent or
@@ -3387,14 +3336,14 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
                          run `story move {} verifying` again.",
                         pull_request.url, linked.url, candidate.story_id
                     );
-                    return Ok(return_for_repair(
+                    return Ok(hold_for_attribution(
                         queue,
                         ctx,
-                        actuator,
                         candidate,
+                        "pull request identity",
+                        crate::service::attribution::FailureCause::Unknown,
                         &diagnosis,
                         owner,
-                        ReservationReason::Remediation,
                     )?
                     .map(|_| Submission::Ended(TickResult::Returned)));
                 }
@@ -3416,14 +3365,14 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
                 Err(error) => Err(error),
             }
         }
-        Err(SubmissionFailure::Refused { display, .. }) => Ok(return_for_repair(
+        Err(SubmissionFailure::Refused { display, .. }) => Ok(hold_for_attribution(
             queue,
             ctx,
-            actuator,
             candidate,
+            "submission refused",
+            crate::service::attribution::FailureCause::Unknown,
             &display,
             owner,
-            ReservationReason::Remediation,
         )?
         .map(|_| Submission::Ended(TickResult::Returned))),
         Err(SubmissionFailure::Infrastructure { detail }) => Ok(record_infrastructure_failure(
@@ -3782,42 +3731,6 @@ fn interruption_comment(now: &str, position: &str) -> String {
     )
 }
 
-/// Records why a conflict-reconcile hold released the project's queue
-/// (SH-770): an activity event, and a story comment that names the cause.
-///
-/// The comment names the returned generation, so a second release of the
-/// same story for the same cause is its own record rather than a duplicate
-/// that [`comment_once`] would drop.
-fn record_hold_released(
-    ctx: &Ctx<'_, impl Store>,
-    candidate: &VerificationCandidate,
-    release: &HoldRelease,
-) -> Result<(), AppError> {
-    let cause = release.describe();
-    super::activity::emit(
-        "WARN",
-        "verifier",
-        "event",
-        &format!("project={} {}", candidate.project_slug, candidate.story_id),
-        &format!("reconcile hold released: {cause}"),
-    );
-    comment_once(ctx, candidate, &hold_released_comment(candidate, release))
-}
-
-fn hold_released_comment(candidate: &VerificationCandidate, release: &HoldRelease) -> String {
-    let generation = candidate.verifying_generation.map_or_else(
-        || "unknown".to_string(),
-        |generation| generation.to_string(),
-    );
-    format!(
-        "{VERIFICATION_HOLD_RELEASED_PREFIX} the verifier no longer holds the {project} queue for {id} (returned generation {generation}). Other stories can now be verified. {next} If {id} moves back to verifying, it joins the queue in priority order.\n\nCause:\n{}",
-        crate::text_lint::quote_evidence(&release.describe()),
-        project = candidate.project_slug,
-        id = candidate.story_id,
-        next = release.next_step(),
-    )
-}
-
 fn comment_once(
     ctx: &Ctx<'_, impl Store>,
     candidate: &VerificationCandidate,
@@ -4140,7 +4053,7 @@ mod comment_tests {
             for link in [false, true] {
                 let text = format!(
                     "Move SH-1 back to verifying. {}.",
-                    push_promise(leased, link)
+                    crate::service::verification::push_promise(leased, link)
                 );
                 assert_eq!(text.contains("no cleanup lease"), !leased);
                 assert_eq!(text.contains("the verifier pushes"), leased);

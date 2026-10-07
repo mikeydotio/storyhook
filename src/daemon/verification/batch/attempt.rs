@@ -152,6 +152,7 @@ impl<S: Store> Attempt<'_, S> {
             self.env,
             self.owner,
             self.head,
+            crate::store::GateExecutionPurpose::Gate,
             crate::store::GateInputs::default(),
             self.plan
                 .members
@@ -159,7 +160,7 @@ impl<S: Store> Attempt<'_, S> {
                 .take(prefix)
                 .map(|member| cost::submission(&member.candidate))
                 .collect(),
-            || self.batching.gate(self.head, link, self.cancellation),
+            |_| self.batching.gate(self.head, link, self.cancellation),
             |outcome| Ok(Some(outcome.clone())),
         )
     }

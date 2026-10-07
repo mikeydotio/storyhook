@@ -8,7 +8,7 @@ use storyhook::store::{EngineAgent, EngineLaneState, EngineScope};
 use storyhook_test_support::{DispatcherStep, FakeDispatcher};
 
 #[test]
-fn quarantined_lane_revokes_assessment_claim_and_delivery() {
+fn sh870_quarantined_lane_cannot_assign_unproved_repair() {
     for claimed in [false, true] {
         let f = fixture();
         let candidate = submitted(&f, "quarantined assessment");
@@ -19,7 +19,12 @@ fn quarantined_lane_revokes_assessment_claim_and_delivery() {
             .unwrap()
             .unwrap();
         if claimed {
-            recovery.claim_assessment(&view.record.id).unwrap().unwrap();
+            assert!(
+                recovery
+                    .claim_assessment(&view.record.id)
+                    .unwrap()
+                    .is_none()
+            );
         }
         let endpoint = FakeDispatcher::new([]);
         let run = EngineService::new(&ctx, &endpoint)
@@ -60,46 +65,32 @@ fn quarantined_lane_revokes_assessment_claim_and_delivery() {
                     .state
                     .assessment
                     .hold,
-                Some(AssessmentHold::ResourceOrDependency)
+                Some(AssessmentHold::CauseUnproved)
             );
         }
     }
 }
 
 #[test]
-fn restart_does_not_quarantine_pending_recovery_or_owned_repair_dependency() {
-    for phase in ["pending", "in-flight", "delivered", "dependency", "work"] {
+fn sh870_restart_preserves_accepted_recovery_work_and_dependencies() {
+    for phase in ["dependency", "work"] {
         let f = fixture();
         let candidate = submitted(&f, "owned recovery lane");
         let ctx = f.ctx();
         let recovery = ProjectRecoveryService::new(&ctx);
-        let mut view = recovery
+        let view = recovery
             .observe(&candidate, &fault(), "scope-attempt")
             .unwrap()
             .unwrap();
-        if phase != "pending" {
-            view = recovery.claim_assessment(&view.record.id).unwrap().unwrap();
-            if phase != "in-flight" {
-                view = recovery
-                    .settle_assessment(
-                        &view.record.id,
-                        &view.state.assessment.dispatch_identity,
-                        view.state.assessment.epoch,
-                        AssessmentDelivery::Delivered,
-                    )
-                    .unwrap();
-            }
-        }
-        if matches!(phase, "dependency" | "work") {
-            let scope = if phase == "dependency" {
+        legacy::retain(
+            &f,
+            view.clone(),
+            if phase == "dependency" {
                 RepairScope::SeparateStory
             } else {
                 RepairScope::SameStory
-            };
-            recovery
-                .decide(&view.record.id, &decision::input(&view, scope))
-                .unwrap();
-        }
+            },
+        );
         let endpoint = FakeDispatcher::new([DispatcherStep::WindowAlive {
             window: "=fixture:=SH-1".into(),
             alive: false,
@@ -138,7 +129,7 @@ fn restart_does_not_quarantine_pending_recovery_or_owned_repair_dependency() {
 }
 
 #[test]
-fn operator_replaced_hold_and_terminal_recovery_are_not_engine_exemptions() {
+fn sh870_unproved_fault_is_not_an_engine_repair_exemption() {
     for change in ["awaiting", "state", "label", "terminal", "stop", "external"] {
         let f = fixture();
         let candidate = submitted(&f, "revoked recovery lane");
@@ -172,32 +163,15 @@ fn operator_replaced_hold_and_terminal_recovery_are_not_engine_exemptions() {
             // An external prerequisite waits on a person for an unbounded
             // time; its owned hold must not keep a Full Auto lane (SH-849).
             "external" => {
-                let claimed = recovery.claim_assessment(&view.record.id).unwrap().unwrap();
-                let delivered = recovery
-                    .settle_assessment(
-                        &view.record.id,
-                        &claimed.state.assessment.dispatch_identity,
-                        1,
-                        AssessmentDelivery::Delivered,
-                    )
-                    .unwrap();
-                recovery
-                    .decide(
-                        &view.record.id,
-                        &decision::input(&delivered, RepairScope::External),
-                    )
-                    .unwrap();
+                legacy::retain(&f, view.clone(), RepairScope::External);
             }
             _ => {
-                let claimed = recovery.claim_assessment(&view.record.id).unwrap().unwrap();
-                recovery
-                    .settle_assessment(
-                        &view.record.id,
-                        &claimed.state.assessment.dispatch_identity,
-                        1,
-                        AssessmentDelivery::Uncertain("provider ownership unknown".into()),
-                    )
-                    .unwrap();
+                assert!(
+                    recovery
+                        .claim_assessment(&view.record.id)
+                        .unwrap()
+                        .is_none()
+                );
             }
         }
         let endpoint = FakeDispatcher::new([DispatcherStep::WindowAlive {
@@ -228,7 +202,13 @@ fn operator_replaced_hold_and_terminal_recovery_are_not_engine_exemptions() {
         // A reserved label ends the lane's claim outright (SH-837): the lane
         // is released to the operator rather than quarantined, and either
         // way recovery ownership exempted nothing.
-        let (quarantined, reserved) = if change == "label" { (0, 1) } else { (1, 0) };
+        let (quarantined, reserved) = if change == "label" {
+            (0, 1)
+        } else if matches!(change, "terminal" | "stop") {
+            (0, 0)
+        } else {
+            (1, 0)
+        };
         assert_eq!(report.quarantined.len(), quarantined, "{change}");
         assert_eq!(report.reserved.len(), reserved, "{change}");
     }

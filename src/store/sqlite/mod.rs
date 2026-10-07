@@ -39,6 +39,7 @@
 //! `:memory:` has no write-ahead log, no reopen, and no crash, which are the
 //! three things every guarantee in this module is about.
 
+mod attribution;
 mod block_delivery;
 mod closure_cleanup;
 mod continuation;
@@ -926,6 +927,12 @@ macro_rules! impl_read_ops {
             ) -> Result<Vec<crate::store::GateAttempt>, StoreError> {
                 gate_evidence::list(&self.conn, project)
             }
+            fn attributions(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<crate::service::attribution::AttributionRecord>, StoreError> {
+                attribution::list(&self.conn, project)
+            }
             fn continuations(
                 &self,
                 project: ProjectId,
@@ -999,6 +1006,9 @@ macro_rules! impl_read_ops {
 
             fn verification_enabled(&self, project: ProjectId) -> Result<bool, StoreError> {
                 read::verification_enabled(&self.conn, project)
+            }
+            fn verification_control_revision(&self, project: ProjectId) -> Result<i64, StoreError> {
+                read::verification_control_revision(&self.conn, project)
             }
 
             fn verification_incidents(&self) -> Result<Vec<VerificationIncident>, StoreError> {
@@ -1271,6 +1281,19 @@ impl WriteOps for SqliteWriteTx<'_> {
         attempt: &crate::store::GateAttempt,
     ) -> Result<(), StoreError> {
         gate_evidence::insert(&self.conn, attempt)
+    }
+    fn insert_attribution(
+        &mut self,
+        record: &crate::service::attribution::AttributionRecord,
+    ) -> Result<(), StoreError> {
+        attribution::insert(&self.conn, record)
+    }
+    fn update_attribution(
+        &mut self,
+        record: &crate::service::attribution::AttributionRecord,
+        expected: i64,
+    ) -> Result<bool, StoreError> {
+        attribution::update(&self.conn, record, expected)
     }
     fn update_gate_attempt(
         &mut self,

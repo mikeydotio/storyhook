@@ -29,6 +29,13 @@ pub(crate) struct PrivateObjects {
 }
 
 impl PrivateObjects {
+    /// Explicitly settle private objects when cleanup is part of a diagnostic result.
+    pub(crate) fn close(self) -> Result<(), AppError> {
+        self.objects
+            .close()
+            .map_err(|e| AppError::Storage(format!("{} private object cleanup: {e}", self.label)))
+    }
+
     /// Computes a merge without borrowing attributes or configuration from
     /// this checkout. New objects retain this value's private lifetime.
     pub(crate) fn merge(
@@ -60,11 +67,35 @@ impl PrivateObjects {
         label: &'static str,
         prefix: &str,
     ) -> Result<Self, AppError> {
-        let common = git(
-            checkout,
-            label,
-            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-        )?;
+        Self::open_controlled(checkout, label, prefix, None, &|| false)
+    }
+
+    /// Opens storage under the caller's deadline and cancellation, including setup.
+    pub(crate) fn open_controlled(
+        checkout: &Path,
+        label: &'static str,
+        prefix: &str,
+        deadline: Option<Instant>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, AppError> {
+        if cancelled() || deadline.is_some_and(|value| value <= Instant::now()) {
+            return Err(AppError::Storage(format!(
+                "{label}: preparation authority expired"
+            )));
+        }
+        let args = ["rev-parse", "--path-format=absolute", "--git-common-dir"];
+        let timeout = deadline.map_or(GIT_DEADLINE, |value| {
+            GIT_DEADLINE.min(value.saturating_duration_since(Instant::now()))
+        });
+        let result = run_captured_query(
+            git_command(checkout, None, &args),
+            timeout,
+            cancelled,
+            GIT_ANSWER_LIMIT,
+            &[],
+        )
+        .map_err(|error| AppError::Storage(format!("{label} Git setup: {}", error.detail())))?;
+        let common = answer(result, label, &args)?;
         let common = String::from_utf8(common).map_err(|error| {
             AppError::Storage(format!("Git common directory is not UTF-8: {error}"))
         })?;

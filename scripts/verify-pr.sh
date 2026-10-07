@@ -17,6 +17,13 @@ if [ "${1:-}" = --landing ]; then
     shift
     exec bash "$script_dir/landing-intent.sh" "$@"
 fi
+if [ "${1:-}" = --diagnosis-head ]; then
+    # Metadata only: no gate, worktree mutation, receipt or landing operation.
+    [ "$#" -eq 2 ] || { printf '%s\n' 'diagnosis head requires one PR URL' >&2; exit 2; }
+    exec_result=0
+    github_exec pr view "$2" --json state,isDraft,isCrossRepository,headRefOid || exec_result=$?
+    exit "$exec_result"
+fi
 # shellcheck source=activity-log.sh
 . "$script_dir/activity-log.sh"
 

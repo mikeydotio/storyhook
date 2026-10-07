@@ -5,7 +5,7 @@ use storyhook::store::{EngineAgent, EngineLaneState, EngineScope};
 use storyhook_test_support::FakeDispatcher;
 
 #[test]
-fn absent_agent_without_managed_lease_remains_uncertain_after_rearm() {
+fn sh870_policy_release_never_dispatches_an_unproved_fault() {
     let f = fixture();
     let initial = rearm::reserved(&f, &["no-auto"], false);
     rearm::release(&f);
@@ -16,7 +16,7 @@ fn absent_agent_without_managed_lease_remains_uncertain_after_rearm() {
     let activity = storyhook::daemon::verification::VerificationActivity::new();
     let stop = std::sync::atomic::AtomicBool::new(false);
     assert!(
-        storyhook::daemon::project_recovery::process_one(
+        !storyhook::daemon::project_recovery::process_one(
             f.store(),
             f.env(),
             &actuator,
@@ -30,10 +30,10 @@ fn absent_agent_without_managed_lease_remains_uncertain_after_rearm() {
         .unwrap();
     assert_eq!(
         held.state.assessment.hold,
-        Some(AssessmentHold::OwnershipUncertain)
+        Some(AssessmentHold::ReservedLabel)
     );
     assert_eq!(held.observations, initial.observations);
-    assert!(held.state.assessment.detail.contains("managed lease"));
+    assert!(held.state.work.is_empty());
     assert!(
         !storyhook::daemon::project_recovery::process_one(
             f.store(),
@@ -127,19 +127,21 @@ fn reset_landing_and_quarantine_prevent_policy_rearm() {
 }
 
 #[test]
-fn quarantine_after_policy_release_revokes_claim_and_delivery() {
+fn sh870_quarantine_and_policy_release_cannot_grant_assessment_authority() {
     for claimed in [false, true] {
         let f = fixture();
         let initial = rearm::reserved(&f, &["no-auto"], false);
         rearm::release(&f);
         let ctx = f.ctx();
         let service = ProjectRecoveryService::new(&ctx);
-        assert!(service.rearm_policy_hold(&initial.record.id, None).unwrap());
+        assert!(!service.rearm_policy_hold(&initial.record.id, None).unwrap());
         if claimed {
-            service
-                .claim_assessment(&initial.record.id)
-                .unwrap()
-                .unwrap();
+            assert!(
+                service
+                    .claim_assessment(&initial.record.id)
+                    .unwrap()
+                    .is_none()
+            );
         }
         quarantine(&f);
         if claimed {
@@ -160,7 +162,7 @@ fn quarantine_after_policy_release_revokes_claim_and_delivery() {
 }
 
 #[test]
-fn concurrent_reconciliation_and_claim_only_acquire_once() {
+fn sh870_concurrent_reconciliation_cannot_assign_unproved_repair() {
     let f = fixture();
     let initial = rearm::reserved(&f, &["no-auto"], false);
     rearm::release(&f);
@@ -185,7 +187,7 @@ fn concurrent_reconciliation_and_claim_only_acquire_once() {
             .map(|job| job.join().unwrap())
             .collect::<Vec<_>>()
     });
-    assert_eq!(results.iter().filter(|result| **result).count(), 1);
+    assert_eq!(results.iter().filter(|result| **result).count(), 0);
     let claims = std::thread::scope(|scope| {
         let jobs = services
             .iter()
@@ -202,8 +204,8 @@ fn concurrent_reconciliation_and_claim_only_acquire_once() {
             .map(|job| job.join().unwrap())
             .collect::<Vec<_>>()
     });
-    assert_eq!(claims.iter().filter(|result| **result).count(), 1);
+    assert_eq!(claims.iter().filter(|result| **result).count(), 0);
     let claimed = services[0].show(&initial.record.id).unwrap();
-    assert_eq!(claimed.state.assessment.epoch, 1);
+    assert_eq!(claimed.state.assessment.epoch, 0);
     assert_eq!(claimed.observations, initial.observations);
 }

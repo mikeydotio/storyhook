@@ -3,6 +3,10 @@ use crate::service::NewStoryInput;
 use crate::store::SqliteStore;
 use storyhook_test_support::{ServiceFixture, load_grace};
 
+#[cfg(test)]
+#[path = "diagnosis_tests.rs"]
+mod diagnosis;
+
 struct Board {
     _fixture: ServiceFixture,
     store: SqliteStore,
@@ -86,6 +90,32 @@ fn admission_is_durable_before_preparation_and_breach_does_not_cancel() {
 }
 
 #[test]
+fn prefix_rename_preserves_the_previous_admission_and_retry_queue_boundary() {
+    let mut board = Board::new();
+    drop(board.admit());
+    sample(&board.store, &board.activity, board.candidate.project).unwrap();
+    let first = board.rows().remove(0);
+    crate::service::ProjectService::new(&board.store, board._fixture.cwd())
+        .set_prefix(
+            board.candidate.project,
+            "NW",
+            &board.env.maintenance_backups_dir(),
+        )
+        .unwrap();
+    board.candidate = VerificationQueue::new(&board.store)
+        .next()
+        .unwrap()
+        .unwrap();
+    let _guard = board.admit();
+    let rows = board.rows();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].previous_attempt.as_deref(), Some(first.id.as_str()));
+    assert_eq!(rows[1].intervals[0].started_at, first.finished_at);
+    assert_eq!(rows[0], first);
+    assert_eq!(rows[1].submission.story_id, "NW-1");
+}
+
+#[test]
 fn status_and_progress_report_cost_without_refreshing_silence_or_repeating_breach_notice() {
     let board = Board::new();
     let guard = board.admit();
@@ -164,7 +194,7 @@ assert open(journal, 'rb').read() == original, 'sampler wrote a progress heartbe
 with open(journal, 'a') as output:
     output.write(json.dumps({'kind':'case','outcome':'fail','path':'unit','name':'parser::literal "é"','target':'parser'}) + '\n')
 "#;
-        execute(&board.store, &board.env, &guard, &board.candidate, GateInputs::default(), vec![submission(&board.candidate)], || {
+        execute(&board.store, &board.env, &guard, &board.candidate, GateExecutionPurpose::Gate, GateInputs::default(), vec![submission(&board.candidate)], |_| {
             board.age(&guard.active.attempt_id, 900);
             let patience = load_grace::graced_now(Duration::from_secs(30)).as_secs_f64().to_string();
             let output = Command::new("python3").arg("-c").arg(script)
@@ -266,9 +296,10 @@ fn production_shell_supervision_preserves_cost_binding_context_and_red_verdict()
                 &board.env,
                 &guard,
                 &board.candidate,
+                GateExecutionPurpose::Gate,
                 GateInputs::default(),
                 vec![submission(&board.candidate)],
-                || actuator.verify(&board.candidate, &link),
+                |_| actuator.verify(&board.candidate, &link),
                 |outcome| Ok(Some(outcome.clone())),
             )?;
             assert!(
@@ -329,12 +360,13 @@ fn retry_links_prior_admission_without_erasing_cost_or_reusing_execution_identit
                         &board.env,
                         &guard,
                         &board.candidate,
+                        GateExecutionPurpose::Gate,
                         GateInputs {
                             tree: Some(tree.repeat(40)),
                             ..Default::default()
                         },
                         vec![submission(&board.candidate)],
-                        || VerificationOutcome::Cancelled,
+                        |_| VerificationOutcome::Cancelled,
                         |outcome| Ok(Some(outcome.clone())),
                     )?;
                 }
@@ -562,9 +594,10 @@ fn completed_certification_and_process_budget_failure_are_independent() {
                 &board.env,
                 &guard,
                 &board.candidate,
+                GateExecutionPurpose::Gate,
                 GateInputs::default(),
                 vec![submission(&board.candidate)],
-                || certified.clone(),
+                |_| certified.clone(),
                 |outcome| Ok(Some(outcome.clone())),
             )?;
             assert_eq!(outcome, certified);
@@ -608,5 +641,46 @@ fn a_retry_queue_interval_does_not_include_prior_admitted_service() {
     assert_eq!(
         queue.started_at, rows[0].finished_at,
         "retry wait starts after prior service, not at the original submission"
+    );
+}
+
+#[test]
+fn causal_control_epoch_is_captured_at_admission_and_never_renewed_by_sampling() {
+    let board = Board::new();
+    let project = board.candidate.project;
+    board
+        .store
+        .write(|tx| {
+            tx.put_verification_enabled(project, false)?;
+            tx.put_verification_enabled(project, true)
+        })
+        .unwrap();
+    let guard = board.admit();
+    assert_eq!(
+        serde_json::to_value(&board.rows()[0]).unwrap()["control_revision"],
+        2
+    );
+    board
+        .store
+        .write(|tx| tx.put_verification_enabled(project, true))
+        .unwrap();
+    sample(&board.store, &board.activity, project).unwrap();
+    let record = board.rows().remove(0);
+    let mut changed = serde_json::to_value(&record).unwrap();
+    assert_eq!(changed["control_revision"], 2);
+    changed["control_revision"] = serde_json::json!(3);
+    changed["revision"] = serde_json::json!(record.revision + 1);
+    let forged: GateAttempt = serde_json::from_value(changed).unwrap();
+    assert!(
+        board
+            .store
+            .write(|tx| tx.update_gate_attempt(&forged, record.revision))
+            .is_err()
+    );
+    drop(guard);
+    sample(&board.store, &board.activity, project).unwrap();
+    assert_eq!(
+        serde_json::to_value(&board.rows()[0]).unwrap()["control_revision"],
+        2
     );
 }

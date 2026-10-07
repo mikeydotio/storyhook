@@ -1489,7 +1489,7 @@ pub(super) fn put_verification_enabled(
     project: ProjectId,
     enabled: bool,
 ) -> Result<(), StoreError> {
-    sql(conn.execute("INSERT INTO verification_control (project_id, enabled) VALUES (?1, ?2) ON CONFLICT(project_id) DO UPDATE SET enabled = excluded.enabled", rusqlite::params![project.get(), enabled]), "writing verifier admission permission")?;
+    sql(conn.execute("INSERT INTO verification_control (project_id, enabled, revision) VALUES (?1, ?2, 1) ON CONFLICT(project_id) DO UPDATE SET enabled = excluded.enabled, revision = verification_control.revision + 1", rusqlite::params![project.get(), enabled]), "writing verifier admission permission and revision")?;
     Ok(())
 }
 

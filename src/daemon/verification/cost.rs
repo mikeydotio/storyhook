@@ -3,16 +3,63 @@
 //! Lock order: ownership registry, cost traces, Store. The sampler never takes
 //! the ownership registry. Budget observations never write the progress journal.
 use super::*;
+use crate::service::attribution::ProbeOutcome;
 use crate::service::gate_cost;
 use crate::store::{
-    GateAttempt, GateExecution, GateInputs, GateInterval, GateSubmission, StoreError,
+    GateAttempt, GateExecution, GateExecutionPurpose, GateInputs, GateInterval, GateSubmission,
+    StoreError,
 };
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::sync::mpsc;
 
 #[cfg(test)]
 mod tests;
+
+/// Separate observations keep diagnostic success outside the certification vocabulary.
+pub(super) enum ExecutionOutcome {
+    /// Result observed through the existing gate actuator.
+    Gate(Option<VerificationOutcome>),
+    /// Selected diagnostic outcome, which grants no certification authority.
+    Diagnosis(ProbeOutcome),
+}
+
+impl From<Option<VerificationOutcome>> for ExecutionOutcome {
+    fn from(value: Option<VerificationOutcome>) -> Self {
+        Self::Gate(value)
+    }
+}
+
+impl From<ProbeOutcome> for ExecutionOutcome {
+    fn from(value: ProbeOutcome) -> Self {
+        Self::Diagnosis(value)
+    }
+}
+
+impl ExecutionOutcome {
+    fn for_purpose(self, purpose: &GateExecutionPurpose) -> Result<Self, String> {
+        if purpose.is_gate() == matches!(self, Self::Gate(_)) {
+            Ok(self)
+        } else {
+            Err(format!(
+                "physical result does not match execution purpose {purpose:?}"
+            ))
+        }
+    }
+
+    fn verdict(&self, cancelled: bool) -> &str {
+        match self {
+            Self::Gate(outcome) => {
+                crate::domain::gate_verdict::GateVerdict::of(&Ok(outcome.clone()), cancelled)
+                    .as_str()
+            }
+            Self::Diagnosis(_) if cancelled => "interrupted",
+            Self::Diagnosis(ProbeOutcome::Passed) => "passed",
+            Self::Diagnosis(ProbeOutcome::Failed { .. }) => "failed",
+            Self::Diagnosis(ProbeOutcome::Unavailable { .. }) => "unavailable",
+        }
+    }
+}
 
 /// Maximum checkpoint interval; the observer also checks every finalization.
 const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(1);
@@ -41,6 +88,7 @@ pub(super) fn admission(
     at: &str,
 ) -> Result<GateAttempt, StoreError> {
     let mut record = GateAttempt::new(id.into(), submission(candidate), at);
+    record.control_revision = Some(tx.verification_control_revision(candidate.project)?);
     record.mode =
         if let Some(intent) = tx.landing_intents()?.iter().find(|intent| {
             intent.project == candidate.project && intent.story_id == candidate.story_id
@@ -59,9 +107,12 @@ pub(super) fn admission(
         .gate_attempts(candidate.project)?
         .into_iter()
         .rev()
-        .find(|old| old.submission.story_id == candidate.story_id);
+        .find(|old| {
+            old.submission
+                .matches_story(candidate.project, &candidate.story_id)
+        });
     let queue_start = match &previous {
-        Some(old) if old.submission == record.submission => old.finished_at.clone(),
+        Some(old) if old.submission.same_generation(&record.submission) => old.finished_at.clone(),
         _ => candidate.verifying_since.clone(),
     };
     record.intervals.push(GateInterval {
@@ -410,21 +461,23 @@ pub(super) fn preparation(
 /// Persists an execution before it starts and its result before disposition.
 /// The wrapper never decides certification and never cancels because of elapsed time.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn execute<T>(
+pub(super) fn execute<T, O: Into<ExecutionOutcome>>(
     store: &impl Store,
     env: &Environment,
     owner: &VerificationGuard,
     candidate: &VerificationCandidate,
+    purpose: GateExecutionPurpose,
     inputs: GateInputs,
     submissions: Vec<GateSubmission>,
-    run: impl FnOnce() -> T,
-    result: impl FnOnce(&T) -> Result<Option<VerificationOutcome>, String>,
+    run: impl FnOnce(&GateExecution) -> T,
+    result: impl FnOnce(&T) -> Result<O, String>,
 ) -> Result<T, AppError> {
     match execute_inner(
         store,
         env,
         owner,
         candidate,
+        purpose,
         inputs,
         submissions,
         run,
@@ -446,20 +499,25 @@ pub(super) fn execute<T>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_inner<T>(
+fn execute_inner<T, O: Into<ExecutionOutcome>>(
     store: &impl Store,
     env: &Environment,
     owner: &VerificationGuard,
     candidate: &VerificationCandidate,
+    purpose: GateExecutionPurpose,
     inputs: GateInputs,
     submissions: Vec<GateSubmission>,
-    run: impl FnOnce() -> T,
-    result: impl FnOnce(&T) -> Result<Option<VerificationOutcome>, String>,
+    run: impl FnOnce(&GateExecution) -> T,
+    result: impl FnOnce(&T) -> Result<O, String>,
 ) -> Result<T, AppError> {
     let id = uuid::Uuid::new_v4().to_string();
-    let journal = journal_path(env, candidate);
+    let journal = if purpose.is_gate() {
+        journal_path(env, candidate)
+    } else {
+        journal_path(env, candidate).with_file_name(format!("diagnosis-{id}.ndjson"))
+    };
     let origin = Instant::now();
-    {
+    let launch = {
         let mut traces = owner
             .registry
             .costs
@@ -486,9 +544,12 @@ fn execute_inner<T>(
         change_phase(trace, None);
         let mut execution =
             GateExecution::new(id.clone(), &env.now(), journal.display().to_string());
+        execution.purpose = purpose.clone();
         execution.inputs = inputs;
         execution.submissions = submissions;
-        if let Some(prelude) = archive(&journal, &format!("{id}-prelude"))? {
+        if purpose.is_gate()
+            && let Some(prelude) = archive(&journal, &format!("{id}-prelude"))?
+        {
             execution.logs.push(prelude.display().to_string());
         }
         trace.record.executions.push(execution);
@@ -496,26 +557,53 @@ fn execute_inner<T>(
         if let Some(parent) = journal.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(
-            &journal,
-            format!(
-                "{}\n",
-                serde_json::json!({
-                    "kind":"run", "attempt_id":owner.active.attempt_id, "execution_id":id,
-                    "generation":candidate.verifying_generation.map(|g| g.get()), "at":env.now(),
-                })
-            ),
-        )?;
-    }
-    let answer = run();
-    let outcome = result(&answer);
-    let observed = match &outcome {
-        Ok(outcome) => {
-            crate::domain::gate_verdict::GateVerdict::of(&Ok(outcome.clone()), owner.is_cancelled())
+        let marker = format!(
+            "{}\n",
+            serde_json::json!({
+                "kind":"run", "attempt_id":owner.active.attempt_id, "execution_id":id,
+                "generation":candidate.verifying_generation.map(|g| g.get()), "at":env.now(),
+            })
+        );
+        if purpose.is_gate() {
+            std::fs::write(&journal, marker)?;
+        } else {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&journal)
+                .map_err(|error| {
+                    AppError::Storage(format!(
+                        "creating diagnostic journal {}: {error}",
+                        journal.display()
+                    ))
+                })?;
+            file.write_all(marker.as_bytes())?;
+            file.sync_all()?;
+            if let Some(parent) = journal.parent() {
+                std::fs::File::open(parent)?.sync_all()?;
+            }
         }
-        Err(_) => crate::domain::gate_verdict::GateVerdict::Error,
+        trace
+            .record
+            .executions
+            .last()
+            .expect("execution inserted above")
+            .clone()
+    };
+    let answer = run(&launch);
+    let outcome = result(&answer)
+        .map(Into::into)
+        .and_then(|outcome| outcome.for_purpose(&purpose));
+    let diagnostic_error = if purpose.is_gate() {
+        None
+    } else {
+        outcome.as_ref().err().cloned()
+    };
+    let observed = match &outcome {
+        Ok(outcome) => outcome.verdict(owner.is_cancelled()),
+        Err(_) => "error",
     }
-    .as_str()
     .to_string();
     let mut traces = owner
         .registry
@@ -540,13 +628,20 @@ fn execute_inner<T>(
     execution.milliseconds = Some(milliseconds(origin.elapsed())?);
     execution.finished_at = Some(env.now());
     execution.verdict = Some(observed.clone());
-    trace.record.verdict = Some(observed);
+    if purpose.is_gate() {
+        trace.record.verdict = Some(observed);
+    }
     if let Err(detail) = &outcome {
         execution
             .diagnostics
-            .push(format!("observing gate result: {detail}"));
+            .push(format!("observing physical execution result: {detail}"));
     }
-    if let Ok(Some(outcome)) = outcome {
+    if let Ok(ExecutionOutcome::Diagnosis(ProbeOutcome::Unavailable { detail })) = &outcome {
+        execution
+            .diagnostics
+            .push(format!("diagnosis unavailable: {detail}"));
+    }
+    if let Ok(ExecutionOutcome::Gate(Some(outcome))) = outcome {
         match outcome {
             VerificationOutcome::Certified {
                 head, tree, gate, ..
@@ -574,6 +669,11 @@ fn execute_inner<T>(
     }
     change_phase(trace, Some("verdict"));
     flush(store, trace).map_err(|error| fail(trace, error))?;
+    if let Some(detail) = diagnostic_error {
+        return Err(AppError::Storage(format!(
+            "diagnostic result observation failed: {detail}"
+        )));
+    }
     Ok(answer)
 }
 
@@ -654,7 +754,15 @@ pub(super) fn restart(store: &impl Store, project: ProjectId, at: &str) -> Resul
         }
         record.elapsed.restart(at);
         record.finished_at = Some(at.into());
-        record.verdict = Some("interrupted".into());
+        let diagnosis_after_gate = record.executions.iter().any(|e| !e.purpose.is_gate())
+            && record
+                .executions
+                .iter()
+                .filter(|e| e.purpose.is_gate())
+                .all(|e| e.finished_at.is_some());
+        if !diagnosis_after_gate || record.verdict.is_none() {
+            record.verdict = Some("interrupted".into());
+        }
         record.diagnostics.push(
             "daemon restarted; elapsed gap estimated, physical execution completion unknown".into(),
         );

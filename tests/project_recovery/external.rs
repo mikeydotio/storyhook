@@ -2,18 +2,6 @@
 use super::*;
 use storyhook::service::project_recovery::{RecoveryView, RepairScope};
 
-/// SH-1 faulted and its assessor chose External scope.
-pub(super) fn decided(f: &ServiceFixture) -> RecoveryView {
-    let ready = decision::ready(f);
-    let ctx = f.ctx();
-    ProjectRecoveryService::new(&ctx)
-        .decide(
-            &ready.record.id,
-            &decision::input(&ready, RepairScope::External),
-        )
-        .unwrap()
-}
-
 /// The latest awaiting write on a story, as `(event, text)`.
 fn latest_awaiting(f: &ServiceFixture, story: StoryNo) -> (storyhook::store::GlobalSeq, String) {
     f.store()
@@ -31,9 +19,9 @@ fn latest_awaiting(f: &ServiceFixture, story: StoryNo) -> (storyhook::store::Glo
 }
 
 #[test]
-fn an_external_decision_owns_its_prerequisite_hold_by_exact_event() {
+fn sh870_retained_an_external_decision_owns_its_prerequisite_hold_by_exact_event() {
     let f = fixture();
-    let view = decided(&f);
+    let view = legacy::accepted(&f, RepairScope::External);
     let receipt = view.state.decision.as_ref().unwrap();
     assert_eq!(receipt.dependency_holds.len(), 1, "{receipt:?}");
     let hold = &receipt.dependency_holds[0];
@@ -71,9 +59,9 @@ fn an_external_decision_owns_its_prerequisite_hold_by_exact_event() {
 }
 
 #[test]
-fn a_fault_that_joins_an_unsatisfied_external_recovery_gets_an_owned_hold() {
+fn sh870_retained_raw_fault_preserves_external_holds_without_enrolling_a_new_subject() {
     let f = fixture();
-    let view = decided(&f);
+    let view = legacy::accepted(&f, RepairScope::External);
     let joined = submitted(&f, "same fault after the decision");
     let ctx = f.ctx();
     let service = ProjectRecoveryService::new(&ctx);
@@ -85,13 +73,21 @@ fn a_fault_that_joins_an_unsatisfied_external_recovery_gets_an_owned_hold() {
         after.record.id, view.record.id,
         "an unsatisfied record still owns the fault"
     );
-    let holds = &after.state.decision.as_ref().unwrap().dependency_holds;
-    assert_eq!(holds.len(), 2, "{holds:?}");
-    let (event, awaiting) = latest_awaiting(&f, StoryNo::new(2));
-    assert!(
-        holds
-            .iter()
-            .any(|h| h.story == StoryNo::new(2) && h.event == event && h.awaiting == awaiting)
+    let receipt = after.state.decision.as_ref().unwrap();
+    assert_eq!(
+        receipt.dependency_holds,
+        view.state.decision.as_ref().unwrap().dependency_holds
+    );
+    assert_eq!(receipt.skipped_subjects, vec![StoryNo::new(2)]);
+    assert!(!after.state.subjects.last().unwrap().returned);
+    assert_eq!(awaiting(&f, 2), None);
+    assert_eq!(
+        f.store()
+            .read(|tx| tx.story(f.project(), StoryNo::new(2)))
+            .unwrap()
+            .unwrap()
+            .state,
+        "verifying"
     );
     assert_eq!(service.show(&view.record.id).unwrap(), after);
 }
@@ -201,9 +197,9 @@ fn deliver_resumes(f: &ServiceFixture, id: &str) {
 }
 
 #[test]
-fn an_unsatisfied_external_recovery_asks_the_operator_and_releases_nothing() {
+fn sh870_retained_an_unsatisfied_external_recovery_asks_the_operator_and_releases_nothing() {
     let f = fixture();
-    let view = decided(&f);
+    let view = legacy::accepted(&f, RepairScope::External);
     let id = view.record.id.clone();
     let row = current(&f, &id).expect("an unsatisfied prerequisite is open work");
     assert_eq!(row.phase, "external-prerequisite");
@@ -250,7 +246,7 @@ fn an_unsatisfied_external_recovery_asks_the_operator_and_releases_nothing() {
 /// Acceptance 1, through the production verifier tick, the recovery worker
 /// and the CLI door.
 #[test]
-fn satisfying_the_prerequisite_retires_the_recovery_through_fresh_verification() {
+fn sh870_retained_satisfying_the_prerequisite_retires_the_recovery_through_fresh_verification() {
     let f = fixture();
     let original = submitted(&f, "external prerequisite flow");
     let activity = VerificationActivity::new();
@@ -285,11 +281,13 @@ fn satisfying_the_prerequisite_retires_the_recovery_through_fresh_verification()
     let delivery = worker::helper(&f, r#"{"ok":true}"#);
     let stop = AtomicBool::new(false);
     let work = || process_one(f.store(), f.env(), &delivery, &activity, &stop).unwrap();
-    assert!(work(), "the assessment charter is delivered");
-    let assessed = service.show(&id).unwrap();
-    let mut decision = decision::input(&assessed, RepairScope::External);
-    decision.evidence[0] = format!("attempt:{}", assessed.observations[0].attempt_id);
-    service.decide(&id, &decision).unwrap();
+    assert!(!work(), "raw faults cannot deliver an assessment charter");
+    let observed = service.show(&id).unwrap();
+    assert_eq!(
+        observed.state.assessment.hold,
+        Some(AssessmentHold::CauseUnproved)
+    );
+    legacy::retain(&f, observed, RepairScope::External);
     assert_eq!(
         current(&f, &id).map(|row| row.phase).as_deref(),
         Some("external-prerequisite")
@@ -396,16 +394,11 @@ fn two_affected(f: &ServiceFixture) -> RecoveryView {
         .unwrap()
         .unwrap();
     let joined = service.show(&first.record.id).unwrap();
-    service
-        .decide(
-            &first.record.id,
-            &decision::input(&joined, RepairScope::External),
-        )
-        .unwrap()
+    legacy::retain(f, joined, RepairScope::External)
 }
 
 #[test]
-fn a_satisfied_recovery_names_only_owed_stories_and_leaves_once_none_owes() {
+fn sh870_retained_a_satisfied_recovery_names_only_owed_stories_and_leaves_once_none_owes() {
     for discharge in ["resubmit", "drop"] {
         let f = fixture();
         let view = two_affected(&f);
@@ -455,9 +448,9 @@ fn a_satisfied_recovery_names_only_owed_stories_and_leaves_once_none_owes() {
 
 /// Acceptance 2.
 #[test]
-fn a_fault_after_satisfaction_opens_a_new_recovery_without_the_old_hold() {
+fn sh870_retained_a_fault_after_satisfaction_opens_a_new_recovery_without_the_old_hold() {
     let f = fixture();
-    let view = decided(&f);
+    let view = legacy::accepted(&f, RepairScope::External);
     let old = view.record.id.clone();
     let ctx = f.ctx();
     let service = ProjectRecoveryService::new(&ctx);
@@ -470,7 +463,11 @@ fn a_fault_after_satisfaction_opens_a_new_recovery_without_the_old_hold() {
     assert_ne!(opened.record.id, old);
     assert!(opened.record.active);
     assert!(opened.state.decision.is_none());
-    assert_eq!(opened.state.assessment.status, AssessmentStatus::Pending);
+    assert_eq!(opened.state.assessment.status, AssessmentStatus::Held);
+    assert_eq!(
+        opened.state.assessment.hold,
+        Some(AssessmentHold::CauseUnproved)
+    );
     assert_eq!(opened.state.supersedes.as_deref(), Some(old.as_str()));
     assert!(
         storyhook::service::project_recovery::assessment_charter(&opened)
@@ -495,7 +492,7 @@ fn a_fault_after_satisfaction_opens_a_new_recovery_without_the_old_hold() {
 }
 
 #[test]
-fn satisfy_accepts_one_exact_statement_and_refuses_the_rest() {
+fn sh870_retained_satisfy_accepts_one_exact_statement_and_refuses_the_rest() {
     let refused = |f: &ServiceFixture, id: &str, input: &PrerequisiteInput, words: &str| {
         let ctx = f.ctx();
         let service = ProjectRecoveryService::new(&ctx);
@@ -510,10 +507,7 @@ fn satisfy_accepts_one_exact_statement_and_refuses_the_rest() {
     for scope in [RepairScope::SameStory, RepairScope::SeparateStory] {
         let f = fixture();
         let ready = decision::ready(&f);
-        let ctx = f.ctx();
-        let view = ProjectRecoveryService::new(&ctx)
-            .decide(&ready.record.id, &decision::input(&ready, scope))
-            .unwrap();
+        let view = legacy::retain(&f, ready, scope);
         refused(
             &f,
             &view.record.id,
@@ -531,7 +525,7 @@ fn satisfy_accepts_one_exact_statement_and_refuses_the_rest() {
     );
 
     let f = fixture();
-    let view = decided(&f);
+    let view = legacy::accepted(&f, RepairScope::External);
     let id = view.record.id.clone();
     refused(&f, "no-such-recovery", &statement(&view), "does not exist");
     let invalid: Vec<PrerequisiteInput> = vec![
@@ -610,11 +604,11 @@ fn satisfy_accepts_one_exact_statement_and_refuses_the_rest() {
 }
 
 #[test]
-fn a_dispatched_agent_session_cannot_satisfy_a_prerequisite() {
+fn sh870_retained_a_dispatched_agent_session_cannot_satisfy_a_prerequisite() {
     use storyhook::api::wire::ProjectSelector;
     use storyhook::invoke::{InvokeRequest, Invoker, StoreInvoker};
     let f = fixture();
-    let view = decided(&f);
+    let view = legacy::accepted(&f, RepairScope::External);
     let id = view.record.id.clone();
     let file = f.cwd().join("satisfied.json");
     std::fs::write(&file, serde_json::to_vec(&statement(&view)).unwrap()).unwrap();
@@ -654,7 +648,7 @@ fn a_dispatched_agent_session_cannot_satisfy_a_prerequisite() {
 }
 
 #[test]
-fn satisfaction_releases_only_the_holds_the_recovery_still_owns() {
+fn sh870_retained_satisfaction_releases_only_the_holds_the_recovery_still_owns() {
     // A reservation added to SH-2 revokes the recovery's authority to clear
     // its hold; SH-1 is released.
     let f = fixture();
@@ -677,7 +671,7 @@ fn satisfaction_releases_only_the_holds_the_recovery_still_owns() {
 
     // An operator's own hold with the same story is never cleared.
     let f = fixture();
-    let view = decided(&f);
+    let view = legacy::accepted(&f, RepairScope::External);
     let id = view.record.id.clone();
     let ctx = f.ctx();
     StoryService::new(&ctx)
@@ -702,7 +696,7 @@ fn satisfaction_releases_only_the_holds_the_recovery_still_owns() {
 }
 
 #[test]
-fn satisfy_records_the_statement_after_the_assessment_story_closed() {
+fn sh870_retained_satisfy_records_the_statement_after_the_assessment_story_closed() {
     let f = fixture();
     let view = two_affected(&f);
     let id = view.record.id.clone();
@@ -722,7 +716,7 @@ fn satisfy_records_the_statement_after_the_assessment_story_closed() {
 }
 
 #[test]
-fn satisfaction_survives_restart_and_releases_each_hold_once() {
+fn sh870_retained_satisfaction_survives_restart_and_releases_each_hold_once() {
     let f = fixture();
     let view = two_affected(&f);
     let id = view.record.id.clone();
@@ -788,10 +782,10 @@ fn assert_corrupt(
 }
 
 #[test]
-fn inconsistent_prerequisite_statements_read_as_damaged() {
+fn sh870_retained_inconsistent_prerequisite_statements_read_as_damaged() {
     let satisfied = || {
         let f = fixture();
-        let view = decided(&f);
+        let view = legacy::accepted(&f, RepairScope::External);
         let ctx = f.ctx();
         let view = ProjectRecoveryService::new(&ctx)
             .satisfy(&view.record.id, &statement(&view))
@@ -829,7 +823,7 @@ fn inconsistent_prerequisite_statements_read_as_damaged() {
     });
     // A retired record without a release authority is damage, too.
     let f = fixture();
-    let view = decided(&f);
+    let view = legacy::accepted(&f, RepairScope::External);
     assert_corrupt(&f, &view.record.id, |r| r.active = false);
     // A release must follow the statement.
     let (f, view) = satisfied();
@@ -846,9 +840,9 @@ fn inconsistent_prerequisite_statements_read_as_damaged() {
 }
 
 #[test]
-fn a_supersedes_link_must_name_a_retired_recovery_with_the_same_fault() {
+fn sh870_retained_a_supersedes_link_must_name_a_retired_recovery_with_the_same_fault() {
     let f = fixture();
-    let view = decided(&f);
+    let view = legacy::accepted(&f, RepairScope::External);
     let old = view.record.id.clone();
     let ctx = f.ctx();
     let service = ProjectRecoveryService::new(&ctx);
@@ -865,7 +859,7 @@ fn a_supersedes_link_must_name_a_retired_recovery_with_the_same_fault() {
         r.state["supersedes"] = serde_json::json!("no-such-recovery");
     });
     let f = fixture();
-    let view = decided(&f);
+    let view = legacy::accepted(&f, RepairScope::External);
     let id = view.record.id.clone();
     assert_corrupt(&f, &id, |r| {
         r.state["supersedes"] = serde_json::json!(r.id.clone());

@@ -16,6 +16,8 @@ mod external;
 mod isolation;
 #[path = "project_recovery/landing.rs"]
 mod landing;
+#[path = "project_recovery/legacy.rs"]
+mod legacy;
 #[path = "project_recovery/queue.rs"]
 mod queue;
 #[path = "project_recovery/rearm.rs"]
@@ -71,165 +73,6 @@ fn submitted(f: &ServiceFixture, title: &str) -> VerificationCandidate {
 }
 
 #[test]
-fn confirmed_assessment_expires_without_a_competing_dispatch() {
-    let mut f = fixture();
-    let candidate = submitted(&f, "response deadline");
-    let delivered = {
-        let ctx = f.ctx();
-        let service = ProjectRecoveryService::new(&ctx);
-        let view = service
-            .observe(&candidate, &fault(), "attempt")
-            .unwrap()
-            .unwrap();
-        let claimed = service.claim_assessment(&view.record.id).unwrap().unwrap();
-        service
-            .settle_assessment(
-                &view.record.id,
-                &claimed.state.assessment.dispatch_identity,
-                claimed.state.assessment.epoch,
-                AssessmentDelivery::Delivered,
-            )
-            .unwrap()
-    };
-    for (time, expected) in [
-        ("2026-01-01T00:29:59Z", None),
-        (
-            "2026-01-01T00:30:00Z",
-            Some(AssessmentHold::ResponseExpired),
-        ),
-    ] {
-        f.set_clock(storyhook::service::Clock::Fixed(time.into()));
-        let ctx = f.ctx();
-        let service = ProjectRecoveryService::new(&ctx);
-        assert!(
-            service
-                .claim_assessment(&delivered.record.id)
-                .unwrap()
-                .is_none()
-        );
-        let view = service.show(&delivered.record.id).unwrap();
-        assert_eq!(view.state.assessment.hold, expected);
-        assert_eq!(view.state.assessment.epoch, 1);
-        assert_eq!(view.state.assessment.failures, 0);
-        let row = f
-            .store()
-            .read(|tx| tx.story(f.project(), StoryNo::new(1)))
-            .unwrap()
-            .unwrap();
-        assert_eq!(row.awaiting.is_some(), expected.is_some());
-        if expected.is_some() {
-            assert_eq!(view.state.holds.len(), 1);
-            let owned = &view.state.holds[0];
-            assert_eq!(owned.awaiting, row.awaiting.unwrap());
-            let recorded = f
-                .store()
-                .read(|tx| tx.events_for(f.project(), StoryNo::new(1)))
-                .unwrap();
-            assert!(recorded.iter().any(|event| event.global_seq == owned.event && matches!(event.known(), Some(storyhook::domain::StoryEvent::StoryAwaitingSet { awaiting, .. }) if awaiting == &owned.awaiting)));
-            assert!(
-                f.store()
-                    .read(|tx| tx.block_deliveries(f.project()))
-                    .unwrap()
-                    .iter()
-                    .any(|delivery| delivery.story == owned.story
-                        && delivery.action == storyhook::store::BlockAction::Interrupt)
-            );
-        }
-    }
-}
-
-#[test]
-fn restart_retains_in_flight_identity_and_manual_stop_does_not_erase_delivery_evidence() {
-    let f = fixture();
-    let candidate = submitted(&f, "restart boundary");
-    let claimed = {
-        let ctx = f.ctx();
-        let service = ProjectRecoveryService::new(&ctx);
-        let view = service
-            .observe(&candidate, &fault(), "attempt")
-            .unwrap()
-            .unwrap();
-        service.claim_assessment(&view.record.id).unwrap().unwrap()
-    };
-    let reopened = storyhook::store::SqliteStore::open(f.store().path()).unwrap();
-    let ctx = storyhook::service::Ctx::new(
-        &reopened,
-        f.project(),
-        candidate.checkout.clone(),
-        f.env().clone(),
-    );
-    let service = ProjectRecoveryService::new(&ctx);
-    assert_eq!(service.show(&claimed.record.id).unwrap(), claimed);
-    assert!(
-        service
-            .claim_assessment(&claimed.record.id)
-            .unwrap()
-            .is_none()
-    );
-    reopened
-        .write(|tx| tx.put_verification_enabled(f.project(), false))
-        .unwrap();
-    let held = service
-        .settle_assessment(
-            &claimed.record.id,
-            &claimed.state.assessment.dispatch_identity,
-            claimed.state.assessment.epoch,
-            AssessmentDelivery::Delivered,
-        )
-        .unwrap();
-    assert_eq!(
-        held.state.assessment.hold,
-        Some(AssessmentHold::OperatorStop)
-    );
-    assert_eq!(
-        held.state.assessment.last_result,
-        Some(AssessmentDelivery::Delivered)
-    );
-    assert!(held.state.assessment.delivered_at.is_some());
-    assert!(
-        service
-            .claim_assessment(&claimed.record.id)
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[test]
-fn uncertain_ownership_holds_without_spending_proven_failure_budget() {
-    let f = fixture();
-    let candidate = submitted(&f, "ambiguous managed owner");
-    let ctx = f.ctx();
-    let service = ProjectRecoveryService::new(&ctx);
-    let view = service
-        .observe(&candidate, &fault(), "attempt")
-        .unwrap()
-        .unwrap();
-    let claimed = service.claim_assessment(&view.record.id).unwrap().unwrap();
-    let held = service
-        .settle_assessment(
-            &view.record.id,
-            &claimed.state.assessment.dispatch_identity,
-            claimed.state.assessment.epoch,
-            AssessmentDelivery::Uncertain("provider identity cannot be verified".into()),
-        )
-        .unwrap();
-    assert_eq!(
-        held.state.assessment.hold,
-        Some(AssessmentHold::OwnershipUncertain)
-    );
-    assert_eq!(held.state.assessment.failures, 0);
-    assert!(
-        f.store()
-            .read(|tx| tx.story(f.project(), StoryNo::new(1)))
-            .unwrap()
-            .unwrap()
-            .awaiting
-            .is_some()
-    );
-    assert!(service.claim_assessment(&view.record.id).unwrap().is_none());
-}
-
-#[test]
 fn malformed_persisted_observations_cannot_grant_assessment_authority() {
     let f = fixture();
     let candidate = submitted(&f, "corrupt evidence refuses recovery");
@@ -272,99 +115,6 @@ fn fixture() -> ServiceFixture {
 }
 
 #[test]
-fn terminal_assessment_preserves_independent_awaiting_and_replays_without_more_events() {
-    let f = fixture();
-    let first = submitted(&f, "assessment owner");
-    let second = submitted(&f, "independent hold");
-    let ctx = f.ctx();
-    let service = ProjectRecoveryService::new(&ctx);
-    let view = service.observe(&first, &fault(), "first").unwrap().unwrap();
-    service
-        .observe(&second, &fault(), "second")
-        .unwrap()
-        .unwrap();
-    let claimed = service.claim_assessment(&view.record.id).unwrap().unwrap();
-    StoryService::new(&ctx)
-        .set_awaiting(&second.story_id, "operator prerequisite")
-        .unwrap();
-    let before = f
-        .store()
-        .read(|tx| tx.story(f.project(), StoryNo::new(2)))
-        .unwrap();
-    let held = service
-        .settle_assessment(
-            &view.record.id,
-            &claimed.state.assessment.dispatch_identity,
-            claimed.state.assessment.epoch,
-            AssessmentDelivery::Uncertain("pane owner is ambiguous".into()),
-        )
-        .unwrap();
-    assert_eq!(held.state.holds.len(), 1);
-    assert_eq!(held.state.holds[0].story, StoryNo::new(1));
-    assert_eq!(
-        f.store()
-            .read(|tx| tx.story(f.project(), StoryNo::new(2)))
-            .unwrap(),
-        before
-    );
-    assert_eq!(
-        service
-            .settle_assessment(
-                &view.record.id,
-                &claimed.state.assessment.dispatch_identity,
-                claimed.state.assessment.epoch,
-                AssessmentDelivery::Uncertain("pane owner is ambiguous".into())
-            )
-            .unwrap(),
-        held
-    );
-    assert!(service.claim_assessment(&view.record.id).unwrap().is_none());
-}
-
-#[test]
-fn late_subject_inherits_terminal_hold_without_restoring_a_cleared_operator_hold() {
-    let f = fixture();
-    let first = submitted(&f, "original held owner");
-    let ctx = f.ctx();
-    let service = ProjectRecoveryService::new(&ctx);
-    let view = service.observe(&first, &fault(), "first").unwrap().unwrap();
-    let claimed = service.claim_assessment(&view.record.id).unwrap().unwrap();
-    service
-        .settle_assessment(
-            &view.record.id,
-            &claimed.state.assessment.dispatch_identity,
-            claimed.state.assessment.epoch,
-            AssessmentDelivery::Uncertain("ambiguous owner".into()),
-        )
-        .unwrap();
-    StoryService::new(&ctx)
-        .clear_awaiting(&first.story_id)
-        .unwrap();
-    let second = submitted(&f, "late affected story");
-    let joined = service
-        .observe(&second, &fault(), "second")
-        .unwrap()
-        .unwrap();
-    assert_eq!(joined.state.holds.len(), 2);
-    assert!(
-        f.store()
-            .read(|tx| tx.story(f.project(), StoryNo::new(1)))
-            .unwrap()
-            .unwrap()
-            .awaiting
-            .is_none()
-    );
-    assert!(
-        f.store()
-            .read(|tx| tx.story(f.project(), StoryNo::new(2)))
-            .unwrap()
-            .unwrap()
-            .awaiting
-            .is_some()
-    );
-}
-
-#[test]
 fn unresolved_landing_cannot_be_returned_for_fault_assessment() {
     let f = fixture();
     let mut candidate = submitted(&f, "uncertain merge authority");
@@ -391,7 +141,7 @@ fn unresolved_landing_cannot_be_returned_for_fault_assessment() {
 }
 
 #[test]
-fn observation_returns_only_the_current_submission_and_replays_without_new_work() {
+fn sh870_observation_holds_current_submission_and_replays_without_new_work() {
     let f = fixture();
     let candidate = submitted(&f, "unjudged tree");
     let ctx = f.ctx();
@@ -400,7 +150,7 @@ fn observation_returns_only_the_current_submission_and_replays_without_new_work(
         .observe(&candidate, &fault(), "attempt-1")
         .unwrap()
         .unwrap();
-    assert_eq!(first.state.assessment.status, AssessmentStatus::Pending);
+    assert_eq!(first.state.assessment.status, AssessmentStatus::Held);
     assert_eq!(first.observations.len(), 1);
     assert_eq!(
         first.observations[0].evidence["fault"]["tree"],
@@ -411,14 +161,10 @@ fn observation_returns_only_the_current_submission_and_replays_without_new_work(
         .read(|tx| tx.story(f.project(), StoryNo::new(1)))
         .unwrap()
         .unwrap();
-    assert_eq!(row.state, "in-progress");
+    assert_eq!(row.state, "verifying");
     assert_eq!(row.snapshot.comments.len(), 1);
-    assert!(row.snapshot.comments[0].text.contains("scope"));
-    assert!(
-        row.snapshot.comments[0]
-            .text
-            .contains(&first.state.assessment.dispatch_identity)
-    );
+    assert!(row.snapshot.comments[0].text.contains("HELD"));
+    assert!(row.snapshot.comments[0].text.contains(&first.record.id));
     assert!(
         f.store()
             .read(|tx| tx.verification_incident(f.project()))
@@ -441,55 +187,24 @@ fn observation_returns_only_the_current_submission_and_replays_without_new_work(
 }
 
 #[test]
-fn repeated_faults_coalesce_without_replacing_an_in_flight_assessor() {
+fn sh870_repeated_unproved_faults_coalesce_without_starting_an_assessor() {
     let f = fixture();
-    let first_candidate = submitted(&f, "first affected");
-    let second_candidate = submitted(&f, "second affected");
+    let first = submitted(&f, "first affected");
+    let second = submitted(&f, "second affected");
     let ctx = f.ctx();
     let service = ProjectRecoveryService::new(&ctx);
-    let first = service
-        .observe(&first_candidate, &fault(), "first-attempt")
-        .unwrap()
-        .unwrap();
-    let claimed = service.claim_assessment(&first.record.id).unwrap().unwrap();
-    assert!(
-        service
-            .claim_assessment(&first.record.id)
-            .unwrap()
-            .is_none()
-    );
+    let view = service.observe(&first, &fault(), "first").unwrap().unwrap();
     let joined = service
-        .observe(&second_candidate, &fault(), "second-attempt")
+        .observe(&second, &fault(), "second")
         .unwrap()
         .unwrap();
-    assert_eq!(joined.record.id, first.record.id);
+    assert_eq!(view.record.id, joined.record.id);
     assert_eq!(joined.state.subjects.len(), 2);
     assert_eq!(joined.observations.len(), 2);
-    assert_eq!(joined.state.assessment, claimed.state.assessment);
-    let delivered = service
-        .settle_assessment(
-            &first.record.id,
-            &claimed.state.assessment.dispatch_identity,
-            claimed.state.assessment.epoch,
-            AssessmentDelivery::Delivered,
-        )
-        .unwrap();
-    assert_eq!(
-        delivered.state.assessment.status,
-        AssessmentStatus::Delivered
-    );
-    assert_eq!(delivered.state.subjects.len(), 2);
-    assert_eq!(
-        service
-            .settle_assessment(
-                &first.record.id,
-                &claimed.state.assessment.dispatch_identity,
-                claimed.state.assessment.epoch,
-                AssessmentDelivery::Delivered
-            )
-            .unwrap(),
-        delivered
-    );
+    assert_eq!(joined.state.assessment, view.state.assessment);
+    assert!(joined.state.subjects.iter().all(|s| !s.returned));
+    assert!(service.claim_assessment(&view.record.id).unwrap().is_none());
+    assert!(joined.state.work.is_empty());
 }
 
 #[test]
@@ -602,45 +317,62 @@ fn transient_reserved_labels_revoke_the_old_assessment_authority() {
 }
 
 #[test]
-fn proven_delivery_failures_are_bounded_and_stale_completions_are_rejected() {
-    let f = fixture();
-    let candidate = submitted(&f, "bounded delivery");
-    let ctx = f.ctx();
-    let service = ProjectRecoveryService::new(&ctx);
-    let view = service
-        .observe(&candidate, &fault(), "attempt")
-        .unwrap()
-        .unwrap();
-    for attempt in 1..=3 {
-        let claimed = service.claim_assessment(&view.record.id).unwrap().unwrap();
-        assert_eq!(claimed.state.assessment.epoch, attempt);
-        let result = service
-            .settle_assessment(
-                &view.record.id,
-                &claimed.state.assessment.dispatch_identity,
-                attempt,
-                AssessmentDelivery::ProvenFailure("managed dispatch proved absent".into()),
-            )
+fn sh870_fault_observation_and_policy_release_cannot_assign_unproved_repair() {
+    for policy in ["none", "no-auto", "stop"] {
+        let f = fixture();
+        let candidate = submitted(&f, "unproved project fault");
+        let ctx = f.ctx();
+        let stories = StoryService::new(&ctx);
+        if policy == "no-auto" {
+            stories
+                .set_labels(&candidate.story_id, &["no-auto".into()], &[])
+                .unwrap();
+        }
+        if policy == "stop" {
+            f.store()
+                .write(|tx| tx.put_verification_enabled(f.project(), false))
+                .unwrap();
+        }
+        let service = ProjectRecoveryService::new(&ctx);
+        let view = service
+            .observe(&candidate, &fault(), "unproved-fault")
+            .unwrap()
             .unwrap();
-        assert_eq!(result.state.assessment.failures, attempt as u8);
-        assert_eq!(
-            result.state.assessment.status,
-            if attempt == 3 {
-                AssessmentStatus::Held
-            } else {
-                AssessmentStatus::Pending
-            }
-        );
+        let row = f
+            .store()
+            .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, "verifying", "{policy}");
+        assert!(!view.state.subjects[0].returned);
+        assert!(view.state.work.is_empty());
+        assert_eq!(view.state.assessment.status, AssessmentStatus::Held);
+        if policy == "no-auto" {
+            stories
+                .set_labels(&candidate.story_id, &[], &["no-auto".into()])
+                .unwrap();
+        }
+        if policy == "stop" {
+            f.store()
+                .write(|tx| tx.put_verification_enabled(f.project(), true))
+                .unwrap();
+        }
+        assert!(!service.policy_rearm_ready(&view.record.id, None).unwrap());
+        assert!(!service.rearm_policy_hold(&view.record.id, None).unwrap());
+        assert!(service.claim_assessment(&view.record.id).unwrap().is_none());
         assert!(
             service
-                .settle_assessment(
-                    &view.record.id,
-                    &claimed.state.assessment.dispatch_identity,
-                    attempt,
-                    AssessmentDelivery::Delivered
-                )
+                .return_failed_repair(&candidate, "unproved-fault", &"a".repeat(40), "raw failure")
                 .is_err()
         );
+        assert_eq!(
+            f.store()
+                .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+                .unwrap()
+                .unwrap()
+                .state,
+            "verifying"
+        );
+        assert!(VerificationQueue::new(f.store()).next().unwrap().is_none());
     }
-    assert!(service.claim_assessment(&view.record.id).unwrap().is_none());
 }

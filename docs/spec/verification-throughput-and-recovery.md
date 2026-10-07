@@ -275,6 +275,248 @@ from a budget breach. It cannot silently become a successful disposition.
 The bundle includes the cost helper, and changes invalidate affected leg
 receipts through the existing contract fingerprint.
 
+## SH-870 causal return contract
+
+Status: approved implementation contract; completion requires the runtime
+and regression evidence below. Attribution does not change certification.
+
+Administrative submission failures retain an unknown-cause hold: missing
+leases, unavailable or ambiguous submission identity, invalid checkout input,
+helper refusal, and a conflicting pull request link. The verifier records the
+original diagnostic and evidence identity in the same transaction, and does
+not deliver an implementer repair assignment. That transaction checks the
+admitted attempt, verifier control epoch, generation, policy and landing holds.
+Queue selection excludes the held generation after restart. A new submission
+keeps the history but does not inherit the old hold. Status exposes these holds
+separately from active gate progress and infrastructure incidents.
+
+Retain one versioned attribution record for each failed admission outcome,
+with separate failure components. Reference the original submission generation,
+head, pinned base, merge tree, and SH-867 physical execution records. Keep probe
+plans and completed results immutable. Later assessments append evidence;
+they do not replace the original failure or an earlier uncertain diagnosis.
+Record updates use a transaction and compare-and-swap revision.
+
+The daemon diagnostic coordinator binds a proposed native case to the latest
+completed failed gate of its current admission. It retains every named failure
+and each failed leg with no named case. Unsupported original output stays held
+without a diagnostic launch. Opening original output must not follow a symlink
+or wait for a FIFO writer; require a regular file and a bounded read.
+
+Before native preparation and each of the four probes, persist the attribution
+reservation and a separate physical cost execution. Archive the exact plan and
+intervention patch. Complete physical cost accounting before saving a probe
+result. Charge elapsed time through explicit native settlement, including
+store and resource waits. Earlier retired records still consume the submission
+allowance; unfinished work or unproved cleanup prevents a new launch. An
+existing record, including revision zero after a crash, is never an automatic
+retry permission.
+
+During diagnosis, observe the same attempt, generation, submission, control
+epoch, reset and policy authority used by the proof boundary. The ordinary
+queue excludes the coordinator's own hold, so queue membership cannot serve
+as this observer's authority predicate. A scoped observer cancels native work
+and joins before the coordinator returns. Settle native ownership on every
+exit after preparation. Only then may matching committed cost and attribution
+evidence produce a causal return capability. The capability still needs
+transactional validation at the state change; diagnosis alone changes no
+story state or certification result.
+
+Associate retained evidence by project key, canonical story number and
+verification generation. A project prefix rename changes the current display
+ID, not a hold, allowance or cost history. Keep the original IDs in immutable
+payloads. Live status and next-action commands use the current prefix. Legacy
+cost rows without a generation also require the same queue-entry timestamp
+when grouping their history.
+
+| Cause | Submission effect |
+|---|---|
+| Candidate-caused | Return only the proved components and their reproductions |
+| Shared-project | Retain Verifying with a project diagnosis hold |
+| Host/external | Retain Verifying with the prerequisite evidence |
+| Integration | Retain Verifying; do not assign base movement to the implementer |
+| Unknown | Retain Verifying, including diagnosis exhaustion |
+
+For automatic causal comparison, execute two contrasting pairs in alternating
+order: candidate, control, control, candidate. Require the exact selected
+detector to execute in each probe. Require matching toolchain, fixture inputs,
+supported resource policy, and positive per-run resource evidence. A zero-test
+pass, changed assertion, different failure signature, incomplete cleanup,
+missing output, or inconsistent extra probe prevents a causal finding. Two
+pairs are the minimum protocol; they do not prove an arbitrary flaky test
+deterministic. Unsupported detectors remain uncertain.
+
+The Rust observation adapter selects a literal package and target and an exact
+libtest case. Build, listing and execution are separate operations. Listing
+must contain only that test. Execution requires one matching case line, one
+one-test header, a consistent summary and a matching native exit status.
+Missing, ignored, truncated, multi-case, malformed and signalled results are
+unavailable. These parser results are observations, not causal return proof.
+Failure signatures retain the complete captured panic body and source location.
+Only the numeric runtime thread identifier in the selected case's one panic
+header is normalized. Different assertion values remain different signatures;
+unstable paths or output can conservatively prevent attribution. The executor
+must independently prove libtest harness identity, detector preservation,
+supported environment and cleanup before using these observations.
+
+The control is the pinned base with the unchanged detector, a validated
+detector transplant, or a controlled ablation. Retain the patch and resulting
+tree when the control changes. Preserve the assertion and its meaning;
+removing a failing test is not ablation evidence. Fixture-defect attribution
+must isolate the fixture change while preserving the assertion and production
+behavior. Raw journals and assessor proposals cannot construct return authority.
+
+Native Git preparation recomputes the failed merge from full base and head
+object IDs and requires the retained tree to match. Controls use private
+objects, an index and bare Git administration. Source checkout configuration,
+index hooks, filters and uncommitted work cannot supply diagnostic inputs.
+An unchanged control uses the base; a transplant copies exact candidate paths
+onto that base; an ablation restores exact base paths in the candidate. Every
+protected detector path must retain its mode and blob. Keep the complete binary
+candidate-to-control patch and its digest. These facts prove the tree operation,
+not the completeness or meaning of a caller-proposed detector closure.
+The native adapter must establish that closure before granting repair authority.
+
+Materialize native inputs from regular Git blobs, without smudge filters.
+Unsupported paths, symbolic links and submodules leave an unknown hold.
+Recheck the complete materialized path set, contents and modes before and after
+execution. Keep build products outside it. Changed inputs invalidate the
+observation. Explicit cleanup must succeed before claiming settled resources.
+
+Rust diagnosis resolves a local workspace package and literal target from
+Cargo metadata version 1 and checks the manifest for a native test harness.
+The completed JSON build stream must name exactly one matching executable,
+including full package ID, manifest, source path, target kind and test profile.
+Failed, truncated, ambiguous or warning-bearing builds are unavailable.
+Retain an open regular executable under the owned output directory and recheck
+its device, inode, mode, length and digest before and after execution.
+These target and artifact observations do not establish detector closure or
+causal authority; the supervised executor must establish their provenance.
+
+The first closed Rust input adapter accepts a standalone dependency-free library
+and one exact integration test with one unconditional built-in `assert_eq!`.
+Parse the entire library, including unused functions and inactive branches.
+Accept only deterministic primitive expressions and a finite function DAG.
+Reject extensible types, custom macros, environment access, build scripts,
+dependencies, attributes and other unsupported inputs. Keep the test, manifest
+and lockfile byte-identical. Candidate-only tests require the native transplant
+before this check. An accepted comparison changes either library behavior alone
+or literal `include_str!` fixtures alone, with production and assertion fixed.
+Validate every fixture path and byte, and the complete native file inventory.
+This syntax and input evidence does not establish execution, resource support,
+the original failure, or return authority. Broader programs remain unknown.
+
+`NativeRustComparison` owns the prepared pair and runs C-B-B-C through the fixed
+embedded driver. It rejects changed inputs, duplicate physical identities,
+changed admission bindings and expired authority before launch. The Rust owner
+independently checks complete Cargo metadata/artifact messages, actual executable
+fingerprints, exact listing and execution arguments, native libtest output,
+toolchain fingerprints and versions, and the completed broker lease. The compiler
+wrapper retains the host's existing lock namespace despite isolated HOME and
+Cargo directories. Standalone tools and rustup-resolved native tools are supported.
+The absolute named-clock deadline cannot extend the owner's 300-second ceiling.
+Missing or unsupported resource evidence cannot establish a causal contrast.
+
+Original failure extraction requires one complete, unambiguous Cargo frame for
+the exact integration target. The same native panic parser derives both original
+and diagnostic signatures. An absent, repeated, truncated or foreign frame remains
+unknown. A native comparison must explicitly settle its owned resources before
+it can produce a `SettledRustComparison`. Only that opaque owner can mint a
+non-serializable `CausalReturnEvidence`, by matching its private observations
+with the complete durable record, original failed gate and physical preparation
+and diagnostic cost executions. Capture raw-output digests at the native boundary;
+changed or missing output prevents application.
+
+`record_causal_return` checks the full retained history, latest admission,
+submission, control revision, human reservation, blockers, awaiting and landing
+state in the same transaction as the return. It records a native assessment and
+raw evidence digests without changing any gate result. A mixed record keeps its
+unproved components and hold; the repair text names only the proved component.
+The ordinary failed-gate route now uses the daemon coordinator and this boundary.
+Refresh the open, ready, same-repository PR head through the bounded GitHub
+metadata command before applying the capability. A changed or unavailable head
+keeps the evidence held. An accepted recovery lineage uses the same capability
+inside its existing transaction, preserving its decision, attempts and delivery
+identity. Raw project fault observations, legacy undecided scope charters,
+integration conflicts and bisection suspects grant no new repair work. Existing
+accepted decisions and their delivery, admission, landing and dependency-resume
+receipts remain valid under their original authority checks.
+
+A red batch still localizes suspects and can land certified prefixes. Retain a
+non-head suspect's evidence under that member's generation and the batch head's
+physical admission; the shared attempt ID must never substitute one member's
+evidence for another's. Preserve automated-resolution metadata as integration
+cause evidence. No conflict route waits for an unproved implementer repair.
+
+Whole-comparison cleanup has its own immutable settlement receipt, distinct
+from completed preparation and individual probes. Missing or failed settlement
+blocks a later comparison even after retirement or daemon restart. The active
+owner can reserve its next probe within that same record; it cannot use that
+exception to start a replacement comparison. Only explicit settled ownership
+plus matching durable evidence can mint the return capability.
+
+Reserve each physical probe durably before launch. Allow at most eight starts
+and 300000 milliseconds of active diagnosis per submission, across admissions
+and daemon restarts. Interrupted work is not refunded. This limit is independent
+of the 900-second gate observation and does not issue a receipt. Execute through
+the verifier's existing ownership, cancellation, scheduling and cleanup path.
+Reserve preparation before creating the control tree or contrast plan. Retain
+its output and monotonic duration as an immutable completion. Preparation and
+probe launches share one submission-wide allowance check. An unfinished
+operation or unproved cleanup prevents another launch, including from a later
+attempt. Settle preparation before reserving a probe in a separate transaction;
+the completion cannot supply both a new reservation and its claimed result.
+Legacy records without preparation remain readable observations.
+
+Each SH-867 physical execution carries an immutable purpose: ordinary gate,
+diagnosis preparation, or a bound attribution/probe pair. Missing legacy purpose
+means ordinary gate. Diagnostic starts persist before the callback receives its
+execution identity and separately owned journal. Diagnostic completion and
+interrupted-diagnosis restart preserve the original gate result and journal.
+Diagnostic outcomes cannot report certification. Evidence and progress expose
+diagnostic time separately from physical gate time; admission elapsed time still
+includes all owned work. An incomplete diagnostic has unknown total cost, with
+its completed lower bound retained. Purpose and cost remain observations only.
+SH-868 and SH-869 retain resource authority and runner integration; missing
+supported resource evidence cannot be replaced by matching worker counts.
+
+The strict diagnostic admission adapter requires the measured `causal-rust`
+repair workload. It has no disabled passthrough. Bind the real broker lease to
+the attempt, physical execution and generation; retain resource events without
+bearer capabilities. A passing or failing child has separate resource evidence.
+Support requires one unchanged authority, boot and policy, healthy observed
+pressure, known usage within the grant, and retained grant, attach, usage,
+cleanup and release events. Cancellation, withdrawal or exhausted active time
+invalidates support. The supervisor must settle its session before release.
+This resource observation alone does not construct causal return authority.
+The bundled Rust worker retains Cargo metadata, JSON build output, an exact
+native listing and one selected execution in separate files. It uses pinned
+Cargo/compiler files, an empty Cargo home, owned outputs and the shared compiler
+wrapper, and refuses ambient ancestor Cargo configuration. Recheck executable
+and tool fingerprints after execution. Worker completion is separate from test
+success; the Rust parent still validates the native artifact and result grammar.
+Cross-language deadline requests name `CLOCK_MONOTONIC` explicitly. Both sides
+read that POSIX clock; Python's default macOS clock has a different origin.
+The owner also retains its independent monotonic elapsed and cancellation checks.
+
+The final state transaction validates the proof and current generation, head,
+attempt, operator controls, labels, blockers and landing authority. It commits
+the evidence references with the return. Apply that boundary to ordinary gates,
+repair stories, submission refusals and batch suspects. An assessment alone
+cannot move unjudged project-recovery work to In Progress. Cleanup uncertainty
+keeps its independent resource quarantine even when a check result is known.
+
+Persist holds before ownership release. Queue selection excludes held
+generations without rewriting other holds. Mixed failures keep separate
+records; only proved candidate components become implementer instructions.
+SH-871 owns shared healing and automatic readmission. The evidence command and
+status expose cause, evidence identity, diagnosis state and next action.
+
+Controlled regressions cover behavior and fixture defects, base defects,
+host faults, overload, conflicts, new detectors, mixed failures, budget
+exhaustion, restart and stale authority. Historical diagnoses are provenance,
+not causal proof; keep provisional findings provisional.
+
 ## SH-868 host admission contract
 
 The host authority is a cooperative resource scheduler, separate from the

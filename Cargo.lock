@@ -1770,6 +1770,7 @@ dependencies = [
  "sha2",
  "ste-lint",
  "storyhook-test-support",
+ "syn",
  "tempfile",
  "thiserror",
  "toml",

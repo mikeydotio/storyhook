@@ -51,18 +51,17 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
             let Some(row) = tx.story(project, story)? else { return Ok(None); };
             if row.awaiting.is_some() || authority::policy_hold(tx, project, &row.snapshot)?.is_some()
                 || authority::label_revision(tx, project, story)? != refusal.label_revision
+                || refusal.control_revision != Some(tx.verification_control_revision(project)?)
                 || candidate.landing_pending
                 || tx.landing_intents()?.iter().any(|intent| intent.project == project && intent.story == story)
                 || !crate::service::verification::candidate_is_current(tx, &row, candidate)? { return Ok(None); }
             let prefix = crate::service::project_prefix(tx, project)?;
             let awaiting = format!("Project recovery {recovery}: {}", reason.detail());
             let states = tx.state_map(project)?;
-            let target = states.get(crate::service::verification::RETURNED_STATE).ok_or_else(|| StoreError::Validation("repair refusal has no in-progress state".into()))?;
-            crate::service::story::append_state_transition(tx, project, story, &row, &prefix, &states, target, &now, vec![
-                StoryEvent::StoryCommentAdded { at: now.clone(), text: format!("PROJECT REPAIR ADMISSION HELD — {}. No gate ran for attempt {attempt}. Read `story verifier repair show {recovery} --json` for pinned input and the completed repair budget. Preserve all test and certification requirements.", reason.detail()) },
+            crate::service::append_and_fold(tx, project, story, &prefix, &states, ExpectedSeq::Exact(row.head_seq), &[
+                StoryEvent::StoryCommentAdded { at: now.clone(), text: format!("PROJECT REPAIR ADMISSION HELD — {}. No gate ran for attempt {attempt}. The story remains verifying; no new repair is assigned. Read `story verifier repair show {recovery} --json` for pinned input and the completed repair budget. Preserve all test and certification requirements.", reason.detail()) },
+                StoryEvent::StoryAwaitingSet { at: now.clone(), awaiting: awaiting.clone() },
             ], self.ctx.provenance())?;
-            let returned = tx.story(project, story)?.ok_or_else(|| StoreError::Corrupt("refused repair disappeared".into()))?;
-            crate::service::append_and_fold(tx, project, story, &prefix, &states, ExpectedSeq::Exact(returned.head_seq), &[StoryEvent::StoryAwaitingSet { at: now.clone(), awaiting: awaiting.clone() }], self.ctx.provenance())?;
             let event = tx.events_for(project, story)?.into_iter().rev().find(|e| matches!(e.known(), Some(StoryEvent::StoryAwaitingSet { at, awaiting: text }) if at == &now && text == &awaiting)).ok_or_else(|| StoreError::Corrupt("repair refusal hold event was not retained".into()))?.global_seq;
             view.state.refusals[index].disposition = Some(RepairRefusalDisposition { awaiting, event, at: now.clone() });
             persistence::save(tx, &mut view, &now)?;

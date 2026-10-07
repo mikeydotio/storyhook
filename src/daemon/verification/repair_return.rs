@@ -1,14 +1,35 @@
-//! Returning a story to its agent for repair: the transition and diagnosis,
-//! then delivery into the story's own pane (SH-650), and the RED diagnosis a
-//! failed gate returns with.
-//!
-//! Delivery goes through a [`ReturnTransport`]: the verifier's own actuator
-//! for the story its attempt owns, or a batch member's own workspace lock for
-//! a culprit that bisection found (SH-833), because the story helper refuses
-//! a lock that belongs to another story.
+//! Apply native causal evidence, then deliver only the proved repair scope.
+//! Unknown or administrative failures retain a generation-bound diagnosis hold.
 
 use super::*;
-use crate::service::verification::{FAILED_GATE_RERUN_SCOPE, IMPLEMENTER_TEST_SCOPE};
+
+/// Hold an unproved failure without sending a repair assignment to the implementer.
+pub(super) fn hold_for_attribution<S: Store>(
+    queue: &VerificationQueue<'_, S>,
+    ctx: &Ctx<'_, S>,
+    candidate: &VerificationCandidate,
+    check: &str,
+    cause: crate::service::attribution::FailureCause,
+    detail: &str,
+    owner: &VerificationGuard,
+) -> Result<GenerationWrite<()>, AppError> {
+    if owner.is_cancelled() {
+        return Ok(GenerationWrite::Superseded);
+    }
+    let pending = owner.reserve(ReservationReason::Attribution, ctx.now());
+    let result = queue.record_generation_held(
+        ctx,
+        candidate,
+        &owner.active.attempt_id,
+        check,
+        cause,
+        detail,
+    )?;
+    if matches!(result, GenerationWrite::Applied(())) {
+        pending.retire();
+    }
+    Ok(result)
+}
 
 /// How a returned story's diagnosis reaches its agent.
 pub(super) trait ReturnTransport {
@@ -49,51 +70,14 @@ impl<A: VerificationActuator> ReturnTransport for SlotTransport<'_, A> {
     }
 }
 
-/// The RED diagnosis for a merge tree that failed its gate. `found_by`
-/// names the verification batch whose bisection found the story (SH-833);
-/// without it the text is the single-story diagnosis.
-pub(super) fn red_diagnosis(
-    candidate: &VerificationCandidate,
-    tree: &str,
-    gate: &str,
-    log: &str,
-    detail: &str,
-    found_by: Option<&str>,
-) -> String {
-    let found_by = found_by.map_or_else(String::new, |found_by| format!(" {found_by}"));
-    format!(
-        "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `{gate}`. Full log: `{log}`.{found_by} Fix the branch in its worktree. {IMPLEMENTER_TEST_SCOPE} {FAILED_GATE_RERUN_SCOPE} Commit the work. Move {} back to verifying. {}.\n\n{}",
-        candidate.story_id,
-        push_promise(candidate.cleanup_lease.is_some(), false),
-        crate::text_lint::quote_evidence(detail)
-    )
-}
-
-/// Hands a returned story back to its agent: the transition and the
-/// diagnosis comment, then delivery into the dispatched pane.
-///
-/// `Applied(true)` means remediation is under way in the story's own window —
-/// the paste landed, or the agent was absent and a resume re-dispatch of the
-/// same story into the same window and worktree succeeded (SH-650, decision
-/// D-E of `docs/spec/verification-workflow.md`). `Applied(false)` means the
-/// story is parked with `awaiting`: only when the re-dispatch itself was
-/// refused, the refusal was not evidence of absence, or the agent is absent
-/// from a story that carries a reserved label, which nothing relaunches
-/// (SH-837). The Conflict arm holds
-/// the queue on `true` and releases it on `false`, so the hold applies whether
-/// or not the FIRST paste landed, and never waits for a resubmission nobody
-/// will make.
-///
-/// `reservation` names why `owner` keeps its slot once the return takes its
-/// generation out of the queue (SH-768): through delivery, and on a conflict
-/// through the wait that follows. It is declared before that write and kept
-/// only if the write applied.
+/// Apply a settled native causal capability before delivering its exact repair scope.
+/// The slot reservation retains ownership through metadata refresh and delivery.
 pub(super) fn return_for_repair<S: Store, A: VerificationActuator>(
     queue: &VerificationQueue<'_, S>,
     ctx: &Ctx<'_, S>,
     actuator: &A,
     candidate: &VerificationCandidate,
-    diagnosis: &str,
+    proof: &crate::service::attribution::CausalReturnEvidence,
     owner: &VerificationGuard,
     reservation: ReservationReason,
 ) -> Result<GenerationWrite<bool>, AppError> {
@@ -102,19 +86,39 @@ pub(super) fn return_for_repair<S: Store, A: VerificationActuator>(
         return Ok(GenerationWrite::Applied(false));
     }
     let pending = owner.reserve(reservation, ctx.now());
-    if matches!(
-        queue.record_generation_returned(ctx, candidate, diagnosis)?,
-        GenerationWrite::Superseded
-    ) {
+    let head = actuator.current_pr_head(candidate);
+    if !matches!(&head, Ok(head) if head == proof.submitted_head()) {
+        let detail = match head {
+            Ok(head) => format!(
+                "current PR head {head} differs from proved head {}",
+                proof.submitted_head()
+            ),
+            Err(error) => error.to_string(),
+        };
+        queue.upsert_generation_comment(ctx, candidate, "CENTRAL VERIFICATION HEAD HELD", &format!("CENTRAL VERIFICATION HEAD HELD — current head cannot authorize this causal return. No repair is assigned.\n\n{}", crate::text_lint::quote_evidence(&detail)), None)?;
+        pending.retire();
+        return Ok(GenerationWrite::Applied(false));
+    }
+    if cancellation.is_cancelled() {
         return Ok(GenerationWrite::Superseded);
     }
+    if crate::service::project_recovery::ProjectRecoveryService::new(ctx)
+        .return_proven_repair(candidate, proof)?
+    {
+        pending.retire();
+        return Ok(GenerationWrite::Applied(true));
+    }
+    if !queue.record_causal_return(ctx, candidate, proof)? {
+        return Ok(GenerationWrite::Superseded);
+    }
+    let diagnosis = proof.diagnosis();
     pending.retire();
     deliver_return(
         queue,
         ctx,
         &SlotTransport(actuator),
         candidate,
-        diagnosis,
+        &diagnosis,
         cancellation,
     )
 }

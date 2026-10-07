@@ -93,7 +93,8 @@ pub mod test_support;
 pub mod types;
 pub mod verification_batch;
 pub use gate_evidence::{
-    GateAttempt, GateExecution, GateFailedCase, GateInputs, GateInterval, GateLeg, GateSubmission,
+    GateAttempt, GateExecution, GateExecutionPurpose, GateFailedCase, GateInputs, GateInterval,
+    GateLeg, GateSubmission,
 };
 
 use std::collections::BTreeMap;
@@ -318,6 +319,11 @@ pub trait ReadOps {
     ) -> Result<Vec<VerificationBatch>, StoreError>;
     /// Durable cost observations in admission order, including completed attempts.
     fn gate_attempts(&self, project: ProjectId) -> Result<Vec<GateAttempt>, StoreError>;
+    /// Retained causal diagnoses in creation order, including superseded submissions.
+    fn attributions(
+        &self,
+        project: ProjectId,
+    ) -> Result<Vec<crate::service::attribution::AttributionRecord>, StoreError>;
     /// Durable context handoffs in creation order.
     fn continuations(&self, project: ProjectId) -> Result<Vec<Continuation>, StoreError>;
     /// Ordered block transition deliveries for a project.
@@ -377,6 +383,8 @@ pub trait ReadOps {
     /// Whether this project permits new verifier admissions; defaults to true.
     fn verification_enabled(&self, project: ProjectId) -> Result<bool, StoreError>;
 
+    /// Durable control-write epoch; distinguishes stop/start from uninterrupted authority.
+    fn verification_control_revision(&self, project: ProjectId) -> Result<i64, StoreError>;
     /// Whether automatic work and workflow policy apply to this project.
     fn automations_enabled(&self, project: ProjectId) -> Result<bool, StoreError> {
         Ok(self.settings(project)?.automations_enabled.unwrap_or(true))
@@ -673,6 +681,17 @@ pub trait WriteOps: ReadOps {
     fn insert_verification_batch(&mut self, batch: &VerificationBatch) -> Result<(), StoreError>;
     /// Persists a new attempt before any verification work starts.
     fn insert_gate_attempt(&mut self, attempt: &GateAttempt) -> Result<(), StoreError>;
+    /// Persist a diagnosis hold before physical diagnostic work starts.
+    fn insert_attribution(
+        &mut self,
+        record: &crate::service::attribution::AttributionRecord,
+    ) -> Result<(), StoreError>;
+    /// Update one diagnosis revision without replacing completed evidence.
+    fn update_attribution(
+        &mut self,
+        record: &crate::service::attribution::AttributionRecord,
+        expected: i64,
+    ) -> Result<bool, StoreError>;
     /// Updates exactly the expected evidence revision, preserving immutable inputs.
     fn update_gate_attempt(
         &mut self,

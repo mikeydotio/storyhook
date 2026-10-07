@@ -159,6 +159,13 @@
       "reason": "The cancel check answers true at once, so nothing spawns and the bound never starts."
     }
   },
+  "src/service/attribution/native/pipeline.rs": {
+    "production run_captured_cancellable(remaining(native.deadline)?": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The native comparison owns one absolute diagnosis deadline capped at 300 seconds. remaining subtracts elapsed preparation and earlier probes; the subprocess also observes cancellation. Cleanup grace never extends evidence validity."
+    }
+  },
   "src/service/cleanup.rs": {
     "production run_captured(Duration::from_secs(60)": {
       "count": 1,
@@ -247,9 +254,9 @@
       "reason": "GIT_DEADLINE (30 s) bounds one private-object git query: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
     },
     "production run_captured_query(timeout": {
-      "count": 1,
+      "count": 2,
       "kind": "delegated",
-      "reason": "The caller's timeout parameter."
+      "reason": "Setup and later queries each use the smaller of GIT_DEADLINE and the caller's remaining absolute deadline. Diagnosis includes setup and never renews this allowance."
     }
   },
   "src/service/resources/git.rs": {

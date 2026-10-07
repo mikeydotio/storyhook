@@ -61,11 +61,12 @@ pub fn progress(view: &EvidenceView, generation: Option<GlobalSeq>) -> Option<St
         .find(|a| cost.attempts.contains(&a.id))?;
     let number = |n: Option<u64>| n.map_or_else(|| "unknown".into(), |n| n.to_string());
     Some(format!(
-        "\n{}Cumulative submission cost: wall {} ms (UTC estimate), admission {} ms, physical gate {} ms; {} process-budget-breach(es). Shared execution cost is not divided. Observed through {}.\n",
+        "\n{}Cumulative submission cost: wall {} ms (UTC estimate), admission {} ms, physical gate {} ms, diagnosis {} ms; {} process-budget-breach(es). Shared execution cost is not divided. Observed through {}.\n",
         CurrentCost::new(admission).render(),
         number(cost.wall_milliseconds),
         number(cost.admission_milliseconds),
         number(cost.execution_milliseconds),
+        number(cost.diagnosis_milliseconds),
         cost.breaches.len(),
         cost.observed_through.as_deref().unwrap_or("unknown"),
     ))

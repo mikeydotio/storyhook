@@ -109,14 +109,6 @@ impl VerificationActuator for GateEndpoint<'_> {
 }
 
 /// Phase of the one recovery the shared snapshot shows; `None` once resolved.
-fn shown(
-    activity: &VerificationActivity,
-    ctx: &storyhook::service::Ctx<'_, impl Store>,
-) -> Option<String> {
-    let rows = activity.status(ctx).unwrap().project_recoveries;
-    assert!(rows.len() <= 1, "{rows:?}");
-    rows.into_iter().next().map(|row| row.phase)
-}
 
 #[test]
 fn queue_disposes_refusal_or_lands_only_the_admitted_repair_input() {
@@ -128,12 +120,7 @@ fn queue_disposes_refusal_or_lands_only_the_admitted_repair_input() {
         let f = fixture();
         let view = decision::ready(&f);
         let ctx = f.ctx();
-        ProjectRecoveryService::new(&ctx)
-            .decide(
-                &view.record.id,
-                &decision::input(&view, RepairScope::SameStory),
-            )
-            .unwrap();
+        legacy::retain(&f, view.clone(), RepairScope::SameStory);
         StoryService::new(&ctx)
             .set_state("SH-1", "verifying", None, None, None)
             .unwrap();
@@ -181,6 +168,13 @@ fn queue_disposes_refusal_or_lands_only_the_admitted_repair_input() {
         if unchanged {
             assert!(current.state.refusals[0].disposition.is_some());
             assert!(current.state.attempts.is_empty());
+            let row = f
+                .store()
+                .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.state, "verifying");
+            assert!(row.awaiting.is_some());
             assert!(
                 f.store()
                     .read(|tx| tx.verification_incident(f.project()))
@@ -206,19 +200,17 @@ fn queue_disposes_refusal_or_lands_only_the_admitted_repair_input() {
 }
 
 #[test]
-fn queue_returns_failed_repair_without_synchronous_agent_delivery() {
+fn sh870_queue_holds_unproved_failed_repair_without_agent_delivery() {
     let f = fixture();
     let view = decision::ready(&f);
     let ctx = f.ctx();
     let recovery = ProjectRecoveryService::new(&ctx);
-    recovery
-        .decide(
-            &view.record.id,
-            &decision::input(&view, RepairScope::SameStory),
-        )
-        .unwrap();
+    legacy::retain(&f, view.clone(), RepairScope::SameStory);
     let activity = VerificationActivity::new();
     for n in 1..=3 {
+        StoryService::new(&ctx)
+            .set_state("SH-1", "in-progress", None, None, None)
+            .unwrap();
         StoryService::new(&ctx)
             .set_state("SH-1", "verifying", None, None, None)
             .unwrap();
@@ -264,13 +256,14 @@ fn queue_returns_failed_repair_without_synchronous_agent_delivery() {
             .read(|tx| tx.story(f.project(), StoryNo::new(1)))
             .unwrap()
             .unwrap();
-        assert_eq!(row.state, "in-progress");
-        assert_eq!(row.awaiting.is_some(), n == 3);
+        assert_eq!(row.state, "verifying");
+        assert!(row.awaiting.is_none());
+        assert_eq!(current.state.work.len(), 1);
     }
 }
 
 #[test]
-fn a_project_fault_releases_the_queue_and_retains_unjudged_submission() {
+fn sh870_project_fault_releases_queue_and_retains_unjudged_submission() {
     let f = fixture();
     submitted(&f, "faulting submission");
     submitted(&f, "unrelated queued work");
@@ -318,7 +311,7 @@ fn a_project_fault_releases_the_queue_and_retains_unjudged_submission() {
     let view = ProjectRecoveryService::new(&ctx)
         .show(&records[0].id)
         .unwrap();
-    assert_eq!(view.state.assessment.status, AssessmentStatus::Pending);
+    assert_eq!(view.state.assessment.status, AssessmentStatus::Held);
     assert_eq!(view.state.subjects[0].candidate.story_id, "SH-1");
     endpoint.project_fault = false;
     assert_eq!(
@@ -347,7 +340,7 @@ fn a_project_fault_releases_the_queue_and_retains_unjudged_submission() {
             .unwrap()
             .unwrap()
             .state,
-        "in-progress"
+        "verifying"
     );
 }
 
@@ -502,211 +495,11 @@ fn legacy_halts_need_typed_corroboration_and_keep_the_original_incident() {
 }
 
 #[test]
-fn project_fault_to_managed_repair_landing_and_fresh_verification() {
-    use std::sync::atomic::AtomicBool;
-    use storyhook::daemon::project_recovery::process_one;
-    for scope in [RepairScope::SameStory, RepairScope::SeparateStory] {
-        let f = fixture();
-        let original = submitted(&f, "complete fault recovery flow");
-        let activity = VerificationActivity::new();
-        let inflight = InFlight::new(f.env().clone());
-        let mut gate = GateEndpoint {
-            store: f.store(),
-            env: f.env(),
-            activity: &activity,
-            input: RepairInput {
-                base: "a".repeat(40),
-                head: "b".repeat(40),
-                head_tree: "d".repeat(40),
-                tree: "c".repeat(40),
-            },
-            mismatch: false,
-            fail_tests: false,
-            project_fault: true,
-            executions: AtomicUsize::new(0),
-        };
-        assert_eq!(
-            tick_with_activity(f.store(), f.env(), &gate, &activity, &inflight, f.project())
-                .unwrap(),
-            TickResult::Returned
-        );
-        assert!(activity.active_for(f.project()).is_none());
-        let ctx = f.ctx();
-        let service = ProjectRecoveryService::new(&ctx);
-        let id = f
-            .store()
-            .read(|tx| tx.project_recoveries(f.project()))
-            .unwrap()[0]
-            .id
-            .clone();
-        assert_eq!(
-            shown(&activity, &ctx).as_deref(),
-            Some("assessment-pending")
-        );
-        let delivery = worker::helper(&f, r#"{"ok":true}"#);
-        let stop = AtomicBool::new(false);
-        assert!(process_one(f.store(), f.env(), &delivery, &activity, &stop).unwrap());
-        let assessed = service.show(&id).unwrap();
-        assert_eq!(
-            assessed.state.assessment.status,
-            AssessmentStatus::Delivered
-        );
-        assert_eq!(
-            shown(&activity, &ctx).as_deref(),
-            Some("assessment-waiting")
-        );
-        let mut input = decision::input(&assessed, scope);
-        input.evidence[0] = format!("attempt:{}", assessed.observations[0].attempt_id);
-        let decided = service.decide(&id, &input).unwrap();
-        assert_eq!(shown(&activity, &ctx).as_deref(), Some("repair-pending"));
-        assert!(process_one(f.store(), f.env(), &delivery, &activity, &stop).unwrap());
-        assert_eq!(shown(&activity, &ctx).as_deref(), Some("repair-active"));
-        let repair = decided
-            .state
-            .decision
-            .unwrap()
-            .repair_story
-            .unwrap()
-            .to_id("SH");
-        if scope == RepairScope::SeparateStory {
-            assert!(
-                f.store()
-                    .read(|tx| tx.story(f.project(), StoryNo::new(1)))
-                    .unwrap()
-                    .unwrap()
-                    .awaiting
-                    .is_some()
-            );
-            PrLinkService::new(&ctx)
-                .link(&repair, "https://github.com/acme/widgets/pull/2", true)
-                .unwrap();
-        }
-        StoryService::new(&ctx)
-            .set_state(&repair, "verifying", None, None, None)
-            .unwrap();
-        assert_eq!(shown(&activity, &ctx).as_deref(), Some("repair-verifying"));
-        gate.input.head_tree = "e".repeat(40);
-        gate.input.head = "f".repeat(40);
-        gate.input.tree = "1".repeat(40);
-        gate.project_fault = false;
-        assert_eq!(
-            tick_with_activity(f.store(), f.env(), &gate, &activity, &inflight, f.project())
-                .unwrap(),
-            TickResult::Completed
-        );
-        let landed = service.show(&id).unwrap();
-        assert!(landed.state.landing.is_some());
-        assert!(!landed.record.active);
-        assert_eq!(
-            landed
-                .state
-                .attempts
-                .iter()
-                .filter(|a| a.completion.is_some())
-                .count(),
-            1
-        );
-        if scope == RepairScope::SeparateStory {
-            assert_eq!(shown(&activity, &ctx).as_deref(), Some("resume-held"));
-            // First wake releases only its owned dependency; next wake delivers resume.
-            assert!(process_one(f.store(), f.env(), &delivery, &activity, &stop).unwrap());
-            assert_eq!(shown(&activity, &ctx).as_deref(), Some("resume-pending"));
-            assert!(process_one(f.store(), f.env(), &delivery, &activity, &stop).unwrap());
-            assert_eq!(shown(&activity, &ctx).as_deref(), Some("landed"));
-            let row = f
-                .store()
-                .read(|tx| tx.story(f.project(), StoryNo::new(1)))
-                .unwrap()
-                .unwrap();
-            assert!(row.awaiting.is_none());
-            assert_eq!(row.state, "in-progress");
-            StoryService::new(&ctx)
-                .set_state("SH-1", "verifying", None, None, None)
-                .unwrap();
-            assert_eq!(
-                shown(&activity, &ctx),
-                None,
-                "a fresh generation discharges SH-1"
-            );
-            let refreshed = VerificationQueue::new(f.store()).next().unwrap().unwrap();
-            assert_ne!(
-                refreshed.verifying_generation,
-                original.verifying_generation
-            );
-            gate.input.tree = "2".repeat(40);
-            assert_eq!(
-                tick_with_activity(f.store(), f.env(), &gate, &activity, &inflight, f.project())
-                    .unwrap(),
-                TickResult::Completed
-            );
-        }
-        assert_eq!(
-            f.store()
-                .read(|tx| tx.story(f.project(), StoryNo::new(1)))
-                .unwrap()
-                .unwrap()
-                .state,
-            "done"
-        );
-        assert!(
-            f.store()
-                .read(|tx| tx.verification_incident(f.project()))
-                .unwrap()
-                .is_none()
-        );
-        assert!(!process_one(f.store(), f.env(), &delivery, &activity, &stop).unwrap());
-        assert_eq!(shown(&activity, &ctx), None, "{scope:?}: nothing is owed");
-        // The durable record outlives the status row: `repair show` and the
-        // coordination reads still see all of it.
-        let response = storyhook::invoke::dispatch(
-            &ctx,
-            Invocation::Verifier {
-                action: VerifierAction::RepairShow {
-                    recovery_id: id.clone(),
-                },
-            },
-        )
-        .unwrap();
-        let payload: serde_json::Value =
-            serde_json::from_str(&storyhook::output::render_response(&response, true, false))
-                .unwrap();
-        assert_eq!(payload["result"], "ok");
-        let shown_record = &payload["recovery"];
-        assert_eq!(shown_record["record"]["id"], id.as_str());
-        assert_eq!(shown_record["record"]["active"], false);
-        assert!(shown_record["state"]["landing"].is_object());
-        assert_eq!(
-            shown_record["state"]["subjects"][0]["candidate"]["story_id"],
-            "SH-1"
-        );
-        let resumes = shown_record["state"]["work"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|work| work["kind"] == "resume")
-            .count();
-        assert_eq!(resumes, usize::from(scope == RepairScope::SeparateStory));
-        assert!(
-            f.store()
-                .read(|tx| tx.project_recoveries(f.project()))
-                .unwrap()
-                .iter()
-                .any(|record| record.id == id && !record.active)
-        );
-    }
-}
-
-#[test]
 fn stopped_verification_holds_managed_repairs_until_certification_is_enabled() {
     let f = fixture();
     let view = decision::ready(&f);
     let ctx = f.ctx();
-    ProjectRecoveryService::new(&ctx)
-        .decide(
-            &view.record.id,
-            &decision::input(&view, RepairScope::SameStory),
-        )
-        .unwrap();
+    legacy::retain(&f, view.clone(), RepairScope::SameStory);
     StoryService::new(&ctx)
         .set_state("SH-1", "verifying", None, None, None)
         .unwrap();

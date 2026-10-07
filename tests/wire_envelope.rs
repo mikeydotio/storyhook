@@ -374,13 +374,21 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         (
             "gate_evidence_empty",
             Response::GateEvidence(Box::new(
-                storyhook::service::gate_cost::view::EvidenceView::new("SH-1", Vec::new()),
+                storyhook::service::gate_cost::view::EvidenceView::new(
+                    fixture.project(),
+                    "SH-1",
+                    Vec::new(),
+                ),
             )),
         ),
         (
             "gate_evidence",
             Response::GateEvidence(Box::new(
-                storyhook::service::gate_cost::view::EvidenceView::new("SH-1", vec![admission]),
+                storyhook::service::gate_cost::view::EvidenceView::new(
+                    fixture.project(),
+                    "SH-1",
+                    vec![admission],
+                ),
             )),
         ),
         (

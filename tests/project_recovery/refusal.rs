@@ -5,12 +5,7 @@ fn refused(f: &ServiceFixture) -> (RecoveryView, VerificationCandidate) {
     let view = decision::ready(f);
     let ctx = f.ctx();
     let service = ProjectRecoveryService::new(&ctx);
-    let view = service
-        .decide(
-            &view.record.id,
-            &decision::input(&view, RepairScope::SameStory),
-        )
-        .unwrap();
+    let view = legacy::retain(f, view.clone(), RepairScope::SameStory);
     StoryService::new(&ctx)
         .set_state("SH-1", "verifying", None, None, None)
         .unwrap();
@@ -31,11 +26,16 @@ fn refused(f: &ServiceFixture) -> (RecoveryView, VerificationCandidate) {
 }
 
 #[test]
-fn settled_refusal_returns_and_holds_only_its_exact_submission_once() {
+fn sh870_retained_settled_refusal_keeps_verifying_and_holds_only_its_exact_submission_once() {
     let f = fixture();
     let (view, candidate) = refused(&f);
     let ctx = f.ctx();
     let service = ProjectRecoveryService::new(&ctx);
+    let before = service.show(&view.record.id).unwrap();
+    let events = f
+        .store()
+        .read(|tx| tx.events_for(f.project(), StoryNo::new(1)))
+        .unwrap();
     let applied = service
         .apply_refusal(
             &candidate,
@@ -51,8 +51,34 @@ fn settled_refusal_returns_and_holds_only_its_exact_submission_once() {
         .read(|tx| tx.story(f.project(), StoryNo::new(1)))
         .unwrap()
         .unwrap();
-    assert_eq!(row.state, "in-progress");
+    assert_eq!(row.state, "verifying");
     assert_eq!(row.awaiting.as_ref(), Some(&disposition.awaiting));
+    assert_eq!(
+        applied.state.work, before.state.work,
+        "a refusal assigns no new repair work"
+    );
+    assert_eq!(
+        applied.state.decision, before.state.decision,
+        "accepted lineage survives"
+    );
+    let after = f
+        .store()
+        .read(|tx| tx.events_for(f.project(), StoryNo::new(1)))
+        .unwrap();
+    assert!(!after[events.len()..].iter().any(|e| matches!(
+        e.known(),
+        Some(storyhook::domain::StoryEvent::StoryStateChanged { .. })
+    )));
+    assert!(VerificationQueue::new(f.store()).next().unwrap().is_none());
+    let reopened = storyhook::store::SqliteStore::open(f.store().path()).unwrap();
+    assert_eq!(
+        reopened
+            .read(|tx| tx.project_recoveries(f.project()))
+            .unwrap(),
+        f.store()
+            .read(|tx| tx.project_recoveries(f.project()))
+            .unwrap()
+    );
     assert!(
         f.store()
             .read(|tx| tx.block_deliveries(f.project()))
@@ -94,7 +120,7 @@ fn settled_refusal_returns_and_holds_only_its_exact_submission_once() {
 }
 
 #[test]
-fn stale_or_independently_held_refusal_cannot_overwrite_story_state() {
+fn sh870_retained_stale_or_independently_held_refusal_cannot_overwrite_story_state() {
     for change in [
         "awaiting",
         "generation",
@@ -102,12 +128,28 @@ fn stale_or_independently_held_refusal_cannot_overwrite_story_state() {
         "no-auto",
         "no-auto-transient",
         "stopped",
+        "stop-start",
+        "legacy-control",
     ] {
         let f = fixture();
         let (view, candidate) = refused(&f);
         let ctx = f.ctx();
         let service = ProjectRecoveryService::new(&ctx);
         match change {
+            "legacy-control" => {
+                let mut record = service.show(&view.record.id).unwrap().record;
+                record.state["refusals"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("control_revision");
+                let expected = record.revision;
+                record.revision += 1;
+                assert!(
+                    f.store()
+                        .write(|tx| tx.update_project_recovery(&record, expected))
+                        .unwrap()
+                );
+            }
             "awaiting" => {
                 StoryService::new(&ctx)
                     .set_awaiting("SH-1", "operator prerequisite")
@@ -121,9 +163,15 @@ fn stale_or_independently_held_refusal_cannot_overwrite_story_state() {
                     .set_labels("SH-1", &[], &["no-auto".into()])
                     .unwrap();
             }
-            "stopped" => {
+            "stopped" | "stop-start" => {
                 f.store()
-                    .write(|tx| tx.put_verification_enabled(f.project(), false))
+                    .write(|tx| {
+                        tx.put_verification_enabled(f.project(), false)?;
+                        if change == "stop-start" {
+                            tx.put_verification_enabled(f.project(), true)?;
+                        }
+                        Ok(())
+                    })
                     .unwrap();
             }
             "generation" => {
@@ -168,7 +216,7 @@ fn stale_or_independently_held_refusal_cannot_overwrite_story_state() {
 }
 
 #[test]
-fn refusal_rejects_wrong_record_attempt_reason_and_original_authority() {
+fn sh870_retained_refusal_rejects_wrong_record_attempt_reason_and_original_authority() {
     let f = fixture();
     let (view, candidate) = refused(&f);
     let ctx = f.ctx();

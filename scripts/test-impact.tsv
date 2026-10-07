@@ -3,6 +3,22 @@
 # :(glob)**/* is the honest conservative declaration for a dynamic tree read.
 activity_log	:(glob)**/*
 activity_script	:(glob)**/*
+attribution_cargo	:(glob)src/service/attribution/**
+attribution_cargo	scripts/rustc-slot.py
+attribution_inputs	:(glob)src/service/attribution/**
+attribution_preparation	:(glob)src/service/attribution/**
+attribution_preparation	:(glob)src/store/**
+attribution_rust	:(glob)src/service/attribution/**
+attribution_rust	scripts/github-access.sh
+attribution_rust	scripts/python-runtime.sh
+attribution_rust	scripts/test-env.sh
+attribution_rust	scripts/tests/load_grace.py
+attribution_rust	scripts/tests/test_attribution_head.py
+attribution_rust	scripts/verify-pr.sh
+attribution_trees	:(glob)src/service/attribution/**
+attribution_trees	src/env/git_env.rs
+attribution_trees	src/service/isolated_merge.rs
+attribution_trees	src/service/private_objects.rs
 backup_restore	:(glob)**/*
 battery_completion	:(glob)scripts/**
 binary_lease	scripts/binary-lease.sh
@@ -123,9 +139,13 @@ fixture_isolation	:(glob)**/*
 gate_completion	:(glob)**/*
 gate_cost_producers	:(glob)scripts/**
 gate_cost_producers	e2e/gate-progress-reporter.ts
+gate_diagnosis_cost	:(glob)src/service/gate_cost/**
+gate_diagnosis_cost	:(glob)src/store/**
+gate_diagnosis_cost	src/service/gate_cost.rs
 gate_evidence	:(glob)src/service/gate_cost/**
 gate_evidence	:(glob)src/store/**
 gate_evidence	src/service/gate_cost.rs
+gate_evidence_cli	:(glob)src/service/attribution/**
 gate_evidence_cli	:(glob)src/service/gate_cost/**
 gate_evidence_cli	src/cli.rs
 gate_evidence_cli	src/invoke.rs
@@ -154,6 +174,7 @@ hooks	:(glob)**/*
 host_admission	:(glob)scripts/host_admission/**
 host_admission	plugins/story/tests/lib.sh
 host_admission	plugins/story/tests/run-tests.sh
+host_admission	scripts/attribution-rust.py
 host_admission	scripts/host-admission.py
 host_admission	scripts/host-admit.py
 host_admission	scripts/merge-watch.sh
@@ -164,6 +185,7 @@ host_admission	scripts/run-tests.sh
 host_admission	scripts/rustc-slot.py
 host_admission	scripts/tests/host_admit_fixture.py
 host_admission	scripts/tests/run_verifier_tests.py
+host_admission	scripts/tests/test_attribution_admission.py
 host_admission	scripts/tests/test_host_admission.py
 host_admission	scripts/tests/test_host_admission_activation.py
 host_admission	scripts/tests/test_host_admission_adapter.py
@@ -301,6 +323,8 @@ tracked_tree_linked_worktree	:(glob)**/*
 trailing_arguments	:(glob)**/*
 type_slug_call_sites	:(glob)**/*
 unassessed_priority_paths	:(glob)**/*
+verification_attribution	:(glob)src/service/attribution/**
+verification_attribution	:(glob)src/store/**
 verification_progress_timeout	:(glob)**/*
 verification_queue	:(glob)**/*
 verification_retry_shell	scripts/test-git-endpoint.py

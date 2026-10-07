@@ -6,13 +6,7 @@ use storyhook::service::project_recovery::{
 
 pub(super) fn decided(f: &ServiceFixture) -> RecoveryView {
     let initial = decision::ready(f);
-    let ctx = f.ctx();
-    ProjectRecoveryService::new(&ctx)
-        .decide(
-            &initial.record.id,
-            &decision::input(&initial, RepairScope::SeparateStory),
-        )
-        .unwrap()
+    legacy::retain(f, initial.clone(), RepairScope::SeparateStory)
 }
 
 pub(super) fn land(f: &ServiceFixture, view: &RecoveryView) {
@@ -67,7 +61,7 @@ pub(super) fn land(f: &ServiceFixture, view: &RecoveryView) {
 }
 
 #[test]
-fn confirmed_landing_retires_fault_and_resumes_exact_submission_once() {
+fn sh870_retained_confirmed_landing_retires_fault_and_resumes_exact_submission_once() {
     let f = fixture();
     let view = decided(&f);
     let ctx = f.ctx();
@@ -117,7 +111,7 @@ fn confirmed_landing_retires_fault_and_resumes_exact_submission_once() {
 }
 
 #[test]
-fn unrelated_dependency_delays_owned_hold_release_until_it_clears() {
+fn sh870_retained_unrelated_dependency_delays_owned_hold_release_until_it_clears() {
     let f = fixture();
     let view = decided(&f);
     let ctx = f.ctx();
@@ -158,7 +152,7 @@ fn unrelated_dependency_delays_owned_hold_release_until_it_clears() {
 }
 
 #[test]
-fn replaced_even_identical_hold_and_changed_state_are_not_recovery_authority() {
+fn sh870_retained_replaced_even_identical_hold_and_changed_state_are_not_recovery_authority() {
     for mutation in ["replace", "state", "clear"] {
         let f = fixture();
         let view = decided(&f);
@@ -193,7 +187,7 @@ fn replaced_even_identical_hold_and_changed_state_are_not_recovery_authority() {
 }
 
 #[test]
-fn later_unrelated_unblock_keeps_ordinary_resume_and_stale_recovery_cannot_claim() {
+fn sh870_retained_later_unrelated_unblock_keeps_ordinary_resume_and_stale_recovery_cannot_claim() {
     let f = fixture();
     let view = decided(&f);
     land(&f, &view);
@@ -226,7 +220,7 @@ fn later_unrelated_unblock_keeps_ordinary_resume_and_stale_recovery_cannot_claim
 }
 
 #[test]
-fn resume_intent_rolls_back_with_failed_story_append() {
+fn sh870_retained_resume_intent_rolls_back_with_failed_story_append() {
     let f = fixture();
     let view = decided(&f);
     land(&f, &view);
@@ -260,7 +254,7 @@ fn resume_intent_rolls_back_with_failed_story_append() {
 }
 
 #[test]
-fn stop_and_transient_reservation_preserve_owned_holds_after_landing() {
+fn sh870_retained_stop_and_transient_reservation_preserve_owned_holds_after_landing() {
     for stop in [true, false] {
         let f = fixture();
         let view = decided(&f);

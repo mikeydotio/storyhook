@@ -385,7 +385,14 @@ fn revoked_candidates_cannot_write_verdicts_progress_or_remediation() {
         ));
         assert!(matches!(
             queue
-                .record_generation_returned(&ctx, &c, "repair")
+                .record_generation_held(
+                    &ctx,
+                    &c,
+                    "stale",
+                    "repair",
+                    crate::service::attribution::FailureCause::Unknown,
+                    "repair"
+                )
                 .unwrap(),
             GenerationWrite::Superseded
         ));

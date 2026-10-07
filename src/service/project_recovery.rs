@@ -137,10 +137,10 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
                     version: 1, created_at: now.clone(), updated_at: now.clone(), subjects: Vec::new(), decision: None, holds: Vec::new(), work: Vec::new(), attempts: Vec::new(), refusals: Vec::new(), landing: None, legacy_incidents: Vec::new(), prerequisite: None, supersedes,
                     assessment: Assessment {
                         dispatch_identity: uuid::Uuid::new_v4().to_string(), story, generation,
-                        status: if policy_hold.is_some() { AssessmentStatus::Held } else { AssessmentStatus::Pending },
-                        hold: policy_hold,
+                        status: AssessmentStatus::Held,
+                        hold: Some(policy_hold.unwrap_or(AssessmentHold::CauseUnproved)),
                         epoch: 0, failures: 0, started_at: None, delivered_at: None,
-                        detail: policy_hold.map(|hold| hold.detail().to_string()).unwrap_or_else(|| "scope assessment pending after verifier ownership release".into()),
+                        detail: policy_hold.unwrap_or(AssessmentHold::CauseUnproved).detail().into(),
                         last_result: None,
                     },
                 };
@@ -155,22 +155,14 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
                 story, generation, attempt_id: attempt.into(), observed_at: now.clone(), evidence: evidence.clone() };
             tx.insert_project_recovery_observation(&observation)?;
             view.observations.push(observation);
-            let returned = policy_hold.is_none();
-            if returned {
-                let states = tx.state_map(candidate.project)?;
-                let target = states.get(super::verification::RETURNED_STATE).ok_or_else(|| StoreError::Validation("project has no in-progress state for fault assessment".into()))?;
-                let instructions = if view.state.decision.is_some() {
-                    format!("Read `story verifier repair show {} --json` and follow its accepted scope decision; retain the existing repair lineage.", view.record.id)
-                } else if story == view.state.assessment.story {
-                    assessment_charter(&view)
-                } else {
-                    format!("{} owns the scope assessment. Read `story verifier repair show {} --json`. Wait for the recorded scope decision; do not start a competing repair.", view.state.assessment.story.to_id(&prefix), view.record.id)
-                };
-                let diagnosis = format!("PROJECT VERIFICATION FAULT — recovery {} retains the unjudged submission. {}\n\n{}",
-                    view.record.id, instructions, crate::text_lint::quote_evidence(fault.detail()));
-                super::story::append_state_transition(tx, candidate.project, story, &row, &prefix, &states, target, &now,
-                    vec![StoryEvent::StoryCommentAdded { at: now.clone(), text: diagnosis }], self.ctx.provenance())?;
-            }
+            // Typed project ownership is not proof that the submitted change caused
+            // this fault. Preserve the observation and any accepted lineage, but
+            // do not move the story or grant a new repair delivery.
+            let returned = false;
+            super::append_and_fold(tx, candidate.project, story, &prefix, &tx.state_map(candidate.project)?,
+                crate::store::ExpectedSeq::Exact(row.head_seq),
+                &[StoryEvent::StoryCommentAdded { at: now.clone(), text: format!(
+                    "PROJECT VERIFICATION FAULT HELD — recovery {} retains the unjudged submission and existing lineage. No new repair is assigned without causal evidence. Read `story verifier repair show {} --json`.\n\n{}", view.record.id, view.record.id, crate::text_lint::quote_evidence(fault.detail())) }], self.ctx.provenance())?;
             view.state.subjects.push(AffectedSubmission {
                 candidate: candidate.clone(), story, returned,
                 state_revision: authority::state_revision(tx, candidate.project, story)?,

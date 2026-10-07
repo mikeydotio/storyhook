@@ -8,12 +8,7 @@ fn repair(f: &ServiceFixture) -> (RecoveryView, VerificationCandidate, RepairInp
     let view = decision::ready(f);
     let ctx = f.ctx();
     let service = ProjectRecoveryService::new(&ctx);
-    let view = service
-        .decide(
-            &view.record.id,
-            &decision::input(&view, RepairScope::SameStory),
-        )
-        .unwrap();
+    let view = legacy::retain(f, view.clone(), RepairScope::SameStory);
     StoryService::new(&ctx)
         .set_state("SH-1", "verifying", None, None, None)
         .unwrap();
@@ -38,7 +33,7 @@ fn repair(f: &ServiceFixture) -> (RecoveryView, VerificationCandidate, RepairInp
 }
 
 #[test]
-fn confirmed_landing_retains_exact_repair_and_merge_event_atomically() {
+fn sh870_retained_confirmed_landing_retains_exact_repair_and_merge_event_atomically() {
     let f = fixture();
     let (view, candidate, input) = repair(&f);
     let ctx = f.ctx();
@@ -90,7 +85,7 @@ fn confirmed_landing_retains_exact_repair_and_merge_event_atomically() {
 }
 
 #[test]
-fn manual_close_and_green_prose_do_not_prove_repair_landing() {
+fn sh870_retained_manual_close_and_green_prose_do_not_prove_repair_landing() {
     let f = fixture();
     let (view, _, _) = repair(&f);
     let ctx = f.ctx();
@@ -120,7 +115,7 @@ fn manual_close_and_green_prose_do_not_prove_repair_landing() {
 }
 
 #[test]
-fn landing_that_does_not_match_completed_repair_keeps_pending_authority() {
+fn sh870_retained_landing_that_does_not_match_completed_repair_keeps_pending_authority() {
     let f = fixture();
     let (view, candidate, input) = repair(&f);
     let ctx = f.ctx();
@@ -158,7 +153,7 @@ fn landing_that_does_not_match_completed_repair_keeps_pending_authority() {
 }
 
 #[test]
-fn retained_landing_cannot_substitute_an_unrelated_completion_event() {
+fn sh870_retained_retained_landing_cannot_substitute_an_unrelated_completion_event() {
     let f = fixture();
     let (view, candidate, input) = repair(&f);
     let ctx = f.ctx();

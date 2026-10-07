@@ -22,7 +22,7 @@ const STORIES: [(&str, &str); 4] = [
     ("d", "fourth\n"),
 ];
 
-const RED: &str = "CENTRAL VERIFICATION RED —";
+const HOLD: &str = "CENTRAL VERIFICATION ATTRIBUTION HELD —";
 
 /// A board of the first `members` stories whose live run's lanes let all of
 /// them batch.
@@ -53,12 +53,12 @@ fn bisection(batch: &VerificationBatch) -> &BatchBisection {
         .expect("the red batch was bisected")
 }
 
-fn reds(board: &Board, id: &str) -> Vec<String> {
+fn holds(board: &Board, id: &str) -> Vec<String> {
     story_row(&board.fixture, id)
         .snapshot
         .comments
         .iter()
-        .filter(|comment| comment.text.starts_with(RED))
+        .filter(|comment| comment.text.starts_with(HOLD))
         .map(|comment| comment.text.clone())
         .collect()
 }
@@ -87,7 +87,7 @@ fn ceil_log2(members: usize) -> usize {
 fn only_blamed(board: &Board, culprit: Option<usize>) {
     for (index, id) in board.stories.iter().enumerate() {
         if Some(index) != culprit {
-            assert!(reds(board, id).is_empty(), "{id} was blamed");
+            assert!(holds(board, id).is_empty(), "{id} was blamed");
         }
     }
 }
@@ -167,14 +167,14 @@ fn a_single_culprit(members: usize, position: usize) {
         bisection(&parent).probes
     );
 
-    let red = reds(&board, &ids[position - 1]);
+    let red = holds(&board, &ids[position - 1]);
     assert_eq!(red.len(), 1, "{context}: {red:?}");
     for named in [tree.as_str(), log.as_str(), parent.id.as_str()] {
         assert!(red[0].contains(named), "{context}: {named} in {}", red[0]);
     }
     assert_eq!(
         story_row(&board.fixture, &ids[position - 1]).state,
-        "in-progress"
+        "verifying"
     );
     only_blamed(&board, Some(position - 1));
 
@@ -233,21 +233,21 @@ fn a_single_culprit(members: usize, position: usize) {
 }
 
 #[test]
-fn a_culprit_is_found_at_every_position_of_a_batch_of_two() {
+fn sh870_a_culprit_is_found_at_every_position_of_a_batch_of_two() {
     for position in 1..=2 {
         a_single_culprit(2, position);
     }
 }
 
 #[test]
-fn a_culprit_is_found_at_every_position_of_a_batch_of_three() {
+fn sh870_a_culprit_is_found_at_every_position_of_a_batch_of_three() {
     for position in 1..=3 {
         a_single_culprit(3, position);
     }
 }
 
 #[test]
-fn a_culprit_is_found_at_every_position_of_a_batch_of_four() {
+fn sh870_a_culprit_is_found_at_every_position_of_a_batch_of_four() {
     for position in 1..=4 {
         a_single_culprit(4, position);
     }
@@ -256,7 +256,7 @@ fn a_culprit_is_found_at_every_position_of_a_batch_of_four() {
 /// A receipt for the head alone makes the second member the culprit with
 /// no probe gate at all: the head's own gate reuses the receipt and lands.
 #[test]
-fn a_receipt_finds_the_culprit_without_a_probe_gate() {
+fn sh870_a_receipt_finds_the_culprit_without_a_probe_gate() {
     let board = board_of(2);
     let ids = board.stories.clone();
     let mut batcher = Batcher::new(&board, Gate::Culprits(vec![1]));
@@ -275,10 +275,10 @@ fn a_receipt_finds_the_culprit_without_a_probe_gate() {
     assert_eq!(probes.len(), 1, "{probes:?}");
     assert_eq!((probes[0].prefix, probes[0].kind), (1, ProbeKind::Receipt));
     assert_eq!(search_runs(&parent), 0);
-    assert_eq!(reds(&board, &ids[1]).len(), 1);
+    assert_eq!(holds(&board, &ids[1]).len(), 1);
     assert!(
-        reds(&board, &ids[1])[0].contains("gate receipt"),
-        "the RED says how the head was certified"
+        holds(&board, &ids[1])[0].contains("preceding members were certified"),
+        "the hold retains the certified prefix"
     );
     assert_eq!(story_row(&board.fixture, &ids[0]).state, "done");
 }
@@ -287,7 +287,7 @@ fn a_receipt_finds_the_culprit_without_a_probe_gate() {
 /// without a search gate, and the certified pair lands through a fresh
 /// probe batch whose gate the receipt makes a reuse.
 #[test]
-fn a_receipt_for_a_longer_prefix_lands_it_through_a_fresh_probe() {
+fn sh870_a_receipt_for_a_longer_prefix_lands_it_through_a_fresh_probe() {
     let board = board_of(3);
     let ids = board.stories.clone();
     let mut batcher = Batcher::new(&board, Gate::Culprits(vec![2]));
@@ -313,14 +313,14 @@ fn a_receipt_for_a_longer_prefix_lands_it_through_a_fresh_probe() {
     for id in &ids[..2] {
         assert_eq!(story_row(&board.fixture, id).state, "done", "{id}");
     }
-    assert_eq!(story_row(&board.fixture, &ids[2]).state, "in-progress");
+    assert_eq!(story_row(&board.fixture, &ids[2]).state, "verifying");
     only_blamed(&board, Some(2));
 }
 
 /// Two independent culprits: the first is returned, the members before it
 /// land, and the second stays queued to meet its own next gate.
 #[test]
-fn of_two_culprits_the_first_is_returned_and_the_second_stays_queued() {
+fn sh870_first_suspect_is_held_and_second_stays_queued() {
     let board = board_of(3);
     let ids = board.stories.clone();
     let before = queued(&board);
@@ -328,7 +328,7 @@ fn of_two_culprits_the_first_is_returned_and_the_second_stays_queued() {
 
     assert_eq!(tick(&board, &batcher), TickResult::Completed);
 
-    assert_eq!(reds(&board, &ids[1]).len(), 1);
+    assert_eq!(holds(&board, &ids[1]).len(), 1);
     only_blamed(&board, Some(1));
     assert_eq!(story_row(&board.fixture, &ids[0]).state, "done");
     let third = before.iter().find(|entry| entry.0 == ids[2]).unwrap();
@@ -451,7 +451,7 @@ fn a_member_in_the_search_that_changes_ends_the_bisection_without_blame() {
 /// A member the search already put back in the queue may change freely: the
 /// probe it no longer belongs to runs on and finds the culprit.
 #[test]
-fn a_member_outside_the_search_that_changes_does_not_stop_it() {
+fn sh870_a_member_outside_the_search_that_changes_does_not_stop_it() {
     let board = board_of(4);
     let ids = board.stories.clone();
     let batcher = Batcher::new(&board, Gate::Culprits(vec![0]));
@@ -467,7 +467,7 @@ fn a_member_outside_the_search_that_changes_does_not_stop_it() {
 
     assert_eq!(tick(&board, &batcher), TickResult::Returned);
 
-    assert_eq!(reds(&board, &ids[0]).len(), 1);
+    assert_eq!(holds(&board, &ids[0]).len(), 1);
     only_blamed(&board, Some(0));
     assert_eq!(story_row(&board.fixture, &ids[3]).state, "in-progress");
 }
@@ -512,7 +512,7 @@ fn a_probe_cleanup_failure_halts_the_queue() {
 /// A culprit a person holds by the time it is found is not returned; the
 /// members before it still land.
 #[test]
-fn a_culprit_a_person_holds_is_not_returned() {
+fn sh870_a_culprit_a_person_holds_is_not_returned() {
     let board = board_of(3);
     let ids = board.stories.clone();
     let mut batcher = Batcher::new(&board, Gate::Culprits(vec![2]));
@@ -538,41 +538,27 @@ fn a_culprit_a_person_holds_is_not_returned() {
     let Some(BisectionOutcome::Culprit { detail, .. }) = &bisection(&parent).outcome else {
         panic!("{:?}", parent.bisection);
     };
-    assert!(detail.contains("a person holds it"), "{detail}");
+    assert!(detail.contains("authority changed"), "{detail}");
 }
 
 /// A culprit whose agent is absent is re-dispatched under its own lock and
 /// its diagnosis pasted again, as a single-story return is.
 #[test]
-fn an_absent_culprit_agent_is_redispatched() {
+fn sh870_absent_suspect_agent_is_not_redispatched() {
     let board = board_of(2);
     let ids = board.stories.clone();
     let mut batcher = Batcher::new(&board, Gate::Culprits(vec![1]));
     batcher.absent.insert(ids[1].clone());
-
     assert_eq!(tick(&board, &batcher), TickResult::Completed);
-
-    let calls = batcher.calls();
-    let delivery: Vec<_> = calls
-        .iter()
-        .filter(|call| call.starts_with("notify-member ") || call.starts_with("redispatch-member "))
-        .cloned()
-        .collect();
-    assert_eq!(
-        delivery,
-        [
-            format!("notify-member {}", ids[1]),
-            format!("redispatch-member {}", ids[1]),
-            format!("notify-member {}", ids[1]),
-        ]
-    );
     assert!(
-        story_row(&board.fixture, &ids[1])
-            .snapshot
-            .comments
+        batcher
+            .calls()
             .iter()
-            .any(|comment| comment.text.starts_with("CENTRAL VERIFICATION RESUME"))
+            .all(|call| !call.starts_with("notify-member ")
+                && !call.starts_with("redispatch-member "))
     );
+    assert_eq!(story_row(&board.fixture, &ids[1]).state, "verifying");
+    assert_eq!(holds(&board, &ids[1]).len(), 1);
 }
 
 /// A project recovery that starts during the bisection needs the head's own
@@ -769,4 +755,43 @@ fn the_verifier_help_topic_names_the_bisection() {
     ] {
         assert!(topic.contains(named), "{named}: {topic}");
     }
+}
+
+#[test]
+fn sh870_bisection_holds_the_suspect_without_assigning_repair_and_lands_certified_prefix() {
+    let board = board_of(4);
+    let ids = board.stories.clone();
+    let batcher = Batcher::new(&board, Gate::Culprits(vec![2]));
+    assert_eq!(tick(&board, &batcher), TickResult::Completed);
+    for id in &ids[..2] {
+        assert_eq!(story_row(&board.fixture, id).state, "done");
+    }
+    assert_eq!(story_row(&board.fixture, &ids[2]).state, "verifying");
+    assert_eq!(holds(&board, &ids[2]).len(), 1);
+    let retained = board
+        .fixture
+        .store()
+        .read(|tx| tx.attributions(board.fixture.project()))
+        .unwrap();
+    let held = retained
+        .iter()
+        .find(|record| record.submission.story_id == ids[2])
+        .expect("suspect held");
+    assert!(held.held);
+    assert!(held.probes.is_empty());
+    assert!(
+        held.components[0]
+            .signature
+            .contains(parent(&board).id.as_str())
+    );
+    assert!(!queued(&board).iter().any(|entry| entry.0 == ids[2]));
+    assert!(queued(&board).iter().any(|entry| entry.0 == ids[3]));
+    assert!(
+        !batcher
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("notify ")
+                || call.starts_with("notify-member ")
+                || call.starts_with("redispatch "))
+    );
 }

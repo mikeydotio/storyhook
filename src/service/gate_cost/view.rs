@@ -1,5 +1,5 @@
 //! Read-only cost history. Shared physical work is never divided by members.
-use crate::store::{GateAttempt, GateSubmission};
+use crate::store::{GateAttempt, GateSubmission, ProjectId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -18,12 +18,21 @@ pub struct SubmissionCost {
     pub queue_milliseconds: Option<u64>,
     /// Sum of admission elapsed observations, not CPU time or submission wall time.
     pub admission_milliseconds: Option<u64>,
-    /// Total physical gate time; unknown if any physical execution is incomplete.
+    /// Total physical gate time; unknown if any gate execution is incomplete.
     pub execution_milliseconds: Option<u64>,
-    /// Sum of the completed physical execution durations that are known.
+    /// Sum of the completed physical gate durations that are known.
     pub known_execution_milliseconds: Option<u64>,
-    /// Unique physical executions represented by this submission.
+    /// Unique physical gate executions represented by this submission.
     pub executions: usize,
+    /// Diagnostic preparation and probe time; unknown if an execution is incomplete.
+    #[serde(default)]
+    pub diagnosis_milliseconds: Option<u64>,
+    /// Sum of the completed diagnostic durations that are known.
+    #[serde(default)]
+    pub known_diagnosis_milliseconds: Option<u64>,
+    /// Unique diagnostic preparation and probe executions, separate from gates.
+    #[serde(default)]
+    pub diagnosis_executions: usize,
     /// Admission identities with sticky process-budget breaches.
     pub breaches: Vec<String>,
     /// Wall and queue intervals use UTC boundaries and are estimates.
@@ -41,28 +50,35 @@ pub struct EvidenceView {
     pub attempts: Vec<GateAttempt>,
     /// Distinct submission generations; replacements do not erase history.
     pub submissions: Vec<SubmissionCost>,
+    /// Causal observations for this story, including retired generations; absent legacy data is unknown.
+    #[serde(default)]
+    pub attributions: Vec<crate::service::attribution::AttributionRecord>,
 }
 
 impl EvidenceView {
     /// Selects a story's history without dividing or duplicating shared costs.
-    pub fn new(story_id: &str, attempts: Vec<GateAttempt>) -> Self {
+    pub fn new(project: ProjectId, story_id: &str, attempts: Vec<GateAttempt>) -> Self {
         let mut seen = BTreeSet::new();
         let attempts: Vec<_> = attempts
             .into_iter()
             .filter(|a| {
-                let involved = a.submission.story_id == story_id
-                    || a.executions
-                        .iter()
-                        .any(|e| e.submissions.iter().any(|s| s.story_id == story_id));
+                let involved = a.submission.matches_story(project, story_id)
+                    || a.executions.iter().any(|e| {
+                        e.submissions
+                            .iter()
+                            .any(|s| s.matches_story(project, story_id))
+                    });
                 involved && seen.insert(a.id.clone())
             })
             .collect();
-        let mut identities = Vec::new();
+        let mut identities: Vec<GateSubmission> = Vec::new();
         for attempt in &attempts {
             for identity in std::iter::once(&attempt.submission)
                 .chain(attempt.executions.iter().flat_map(|e| &e.submissions))
             {
-                if identity.story_id == story_id && !identities.contains(identity) {
+                if identity.matches_story(project, story_id)
+                    && !identities.iter().any(|s| s.same_generation(identity))
+                {
                     identities.push(identity.clone());
                 }
             }
@@ -76,7 +92,21 @@ impl EvidenceView {
             story_id: story_id.into(),
             attempts,
             submissions,
+            attributions: Vec::new(),
         }
+    }
+
+    /// Attach this story's causal history from the same project snapshot as its costs.
+    pub fn with_attributions(
+        mut self,
+        project: ProjectId,
+        records: Vec<crate::service::attribution::AttributionRecord>,
+    ) -> Self {
+        self.attributions = records
+            .into_iter()
+            .filter(|r| r.submission.matches_story(project, &self.story_id))
+            .collect();
+        self
     }
 
     /// Renders separate test and budget outcomes, with unavailable values named.
@@ -106,15 +136,19 @@ impl EvidenceView {
         for submission in &self.submissions {
             let number =
                 |value: Option<u64>| value.map_or_else(|| "unknown".into(), |n| n.to_string());
-            output.push_str(&format!("\nGeneration {}: wall {} ms (UTC estimate), queue {} ms, admission cost {} ms, physical gate cost {} ms; {} breach(es). Observed through {}.\n",
+            output.push_str(&format!("\nGeneration {}: wall {} ms (UTC estimate), queue {} ms, admission cost {} ms, physical gate cost {} ms, diagnosis cost {} ms; {} breach(es). Observed through {}.\n",
                 submission.submission.generation.map_or_else(|| "unknown".into(), |g| g.get().to_string()),
                 number(submission.wall_milliseconds), number(submission.queue_milliseconds),
                 number(submission.admission_milliseconds), number(submission.execution_milliseconds),
+                number(submission.diagnosis_milliseconds),
                 submission.breaches.len(), submission.observed_through.as_deref().unwrap_or("unknown")));
         }
         if self.attempts.is_empty() {
             output.push_str("\nNo retained admission evidence.\n");
         }
+        output.push_str(&crate::service::attribution::render_evidence(
+            &self.attributions,
+        ));
         output
     }
 }
@@ -123,10 +157,10 @@ fn summarize(submission: GateSubmission, all: &[GateAttempt]) -> SubmissionCost 
     let attempts: Vec<_> = all
         .iter()
         .filter(|a| {
-            a.submission == submission
+            a.submission.same_generation(&submission)
                 || a.executions
                     .iter()
-                    .any(|e| e.submissions.contains(&submission))
+                    .any(|e| e.submissions.iter().any(|s| s.same_generation(&submission)))
         })
         .collect();
     let observed_through = attempts
@@ -157,16 +191,25 @@ fn summarize(submission: GateSubmission, all: &[GateAttempt]) -> SubmissionCost 
         .iter()
         .flat_map(|a| {
             a.executions.iter().filter(|e| {
-                e.submissions.contains(&submission)
-                    || (e.submissions.is_empty() && a.submission == submission)
+                e.submissions.iter().any(|s| s.same_generation(&submission))
+                    || (e.submissions.is_empty() && a.submission.same_generation(&submission))
             })
         })
         .filter(|e| seen.insert(&e.id))
         .collect();
-    let execution_milliseconds = executions
+    let (gates, diagnoses): (Vec<_>, Vec<_>) =
+        executions.into_iter().partition(|e| e.purpose.is_gate());
+    let execution_milliseconds = gates
         .iter()
         .try_fold(0_u64, |sum, e| sum.checked_add(e.milliseconds?));
-    let known_execution_milliseconds = executions
+    let known_execution_milliseconds = gates
+        .iter()
+        .filter_map(|e| e.milliseconds)
+        .try_fold(0_u64, u64::checked_add);
+    let diagnosis_milliseconds = diagnoses
+        .iter()
+        .try_fold(0_u64, |sum, e| sum.checked_add(e.milliseconds?));
+    let known_diagnosis_milliseconds = diagnoses
         .iter()
         .filter_map(|e| e.milliseconds)
         .try_fold(0_u64, u64::checked_add);
@@ -179,7 +222,10 @@ fn summarize(submission: GateSubmission, all: &[GateAttempt]) -> SubmissionCost 
         admission_milliseconds,
         execution_milliseconds,
         known_execution_milliseconds,
-        executions: executions.len(),
+        executions: gates.len(),
+        diagnosis_milliseconds,
+        known_diagnosis_milliseconds,
+        diagnosis_executions: diagnoses.len(),
         breaches: attempts
             .iter()
             .filter(|a| a.elapsed.breached_at.is_some())
@@ -215,7 +261,7 @@ mod tests {
         let a = attempt("a", "2026-10-03T00:01:00Z", "2026-10-03T00:16:00Z", 900_000);
         let mut b = attempt("b", "2026-10-03T00:20:00Z", "2026-10-03T00:21:00Z", 60_000);
         b.verdict = Some("certified".into());
-        let view = EvidenceView::new("SH-1", vec![a.clone(), a, b]);
+        let view = EvidenceView::new(ProjectId::new(1), "SH-1", vec![a.clone(), a, b]);
         assert_eq!(view.attempts.len(), 2);
         let cost = &view.submissions[0];
         assert_eq!(cost.wall_milliseconds, Some(1_260_000));
@@ -235,13 +281,13 @@ mod tests {
         gate.milliseconds = Some(900_000);
         a.executions.push(gate.clone());
         for story in ["SH-1", "SH-2"] {
-            let view = EvidenceView::new(story, vec![a.clone()]);
+            let view = EvidenceView::new(ProjectId::new(1), story, vec![a.clone()]);
             assert_eq!(view.submissions[0].execution_milliseconds, Some(900_000));
         }
         gate.id = "unfinished".into();
         gate.milliseconds = None;
         a.executions.push(gate);
-        let view = EvidenceView::new("SH-2", vec![a]);
+        let view = EvidenceView::new(ProjectId::new(1), "SH-2", vec![a]);
         assert_eq!(view.submissions[0].execution_milliseconds, None);
         assert_eq!(
             view.submissions[0].known_execution_milliseconds,

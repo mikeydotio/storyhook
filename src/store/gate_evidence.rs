@@ -1,6 +1,6 @@
 //! Durable, non-authoritative evidence for admitted verifier attempts.
 
-use super::{GlobalSeq, ProjectId, StoreError};
+use super::{GlobalSeq, ProjectId, StoreError, StoryNo};
 use crate::service::gate_cost::Elapsed;
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +15,38 @@ pub struct GateSubmission {
     pub generation: Option<GlobalSeq>,
     /// Original queue-entry time, never replaced by retry admission.
     pub submitted_at: Option<String>,
+}
+
+impl GateSubmission {
+    /// Stable story number from the canonical ID retained when evidence was recorded.
+    /// The project key, not a historical prefix, determines the owning project.
+    pub fn story_number(&self) -> Option<StoryNo> {
+        recorded_number(&self.story_id)
+    }
+
+    /// Associates history with a story across prefix changes, within its owning project.
+    pub fn matches_story(&self, project: ProjectId, story_id: &str) -> bool {
+        self.project == project
+            && self
+                .story_number()
+                .is_some_and(|number| Some(number) == recorded_number(story_id))
+    }
+
+    /// Associates a submission across renames without weakening immutable payload equality.
+    /// Legacy evidence without a generation also needs the same queue-entry timestamp.
+    pub fn same_generation(&self, other: &Self) -> bool {
+        self.matches_story(other.project, &other.story_id)
+            && self.generation == other.generation
+            && (self.generation.is_some() || self.submitted_at == other.submitted_at)
+    }
+}
+
+fn recorded_number(id: &str) -> Option<StoryNo> {
+    let (prefix, _) = id.rsplit_once('-')?;
+    if crate::domain::prefix::validate(prefix).ok()? != prefix {
+        return None;
+    }
+    StoryNo::parse_id(prefix, id).ok()
 }
 
 /// A measured producer interval; a missing end is not zero work.
@@ -101,11 +133,52 @@ impl GateInputs {
     }
 }
 
-/// One physical gate within an admission, with its own immutable tree identity.
+/// Immutable reason for a physical execution. This is observation metadata, not authority.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum GateExecutionPurpose {
+    /// An ordinary gate or bisection execution under existing verifier authority.
+    #[default]
+    Gate,
+    /// Owned setup for a diagnosis, separate from its bounded test probes.
+    DiagnosisPreparation {
+        /// Attribution record that owns preparation.
+        attribution: String,
+    },
+    /// One reserved diagnostic probe, which cannot certify a tree.
+    Diagnosis {
+        /// Attribution record that owns the probe.
+        attribution: String,
+        /// Durable probe reservation within that record.
+        probe: String,
+    },
+}
+
+impl GateExecutionPurpose {
+    /// Whether this execution contributes to ordinary physical gate cost.
+    pub fn is_gate(&self) -> bool {
+        matches!(self, Self::Gate)
+    }
+
+    fn valid(&self) -> bool {
+        match self {
+            Self::Gate => true,
+            Self::DiagnosisPreparation { attribution } => !attribution.trim().is_empty(),
+            Self::Diagnosis { attribution, probe } => {
+                !attribution.trim().is_empty() && !probe.trim().is_empty()
+            }
+        }
+    }
+}
+
+/// One physical execution within an admission, with its own immutable tree identity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateExecution {
     /// Unique physical execution token; never reused by a bisection probe.
     pub id: String,
+    /// Gate or diagnostic operation; missing legacy values mean ordinary gate.
+    #[serde(default, skip_serializing_if = "GateExecutionPurpose::is_gate")]
+    pub purpose: GateExecutionPurpose,
     /// UTC time before calling the actuator.
     pub started_at: String,
     /// UTC return after supervision and cleanup, absent if interrupted.
@@ -146,6 +219,7 @@ impl GateExecution {
     pub fn new(id: String, at: &str, journal_path: String) -> Self {
         Self {
             id,
+            purpose: GateExecutionPurpose::Gate,
             started_at: at.into(),
             finished_at: None,
             milliseconds: None,
@@ -171,6 +245,7 @@ impl GateExecution {
             return self == next;
         }
         self.id == next.id
+            && self.purpose == next.purpose
             && self.started_at == next.started_at
             && self.submissions == next.submissions
             && self.inputs.preserved_by(&next.inputs)
@@ -221,6 +296,9 @@ pub struct GateAttempt {
     pub revision: i64,
     /// UTC admission, before preparation or resource waits.
     pub admitted_at: String,
+    /// Control epoch captured atomically at admission; absent legacy evidence grants no causal authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_revision: Option<i64>,
     /// UTC completion; absent while live or unresolved after interruption.
     pub finished_at: Option<String>,
     /// Total admission-to-verdict elapsed observation.
@@ -249,6 +327,7 @@ impl GateAttempt {
             previous_attempt: None,
             revision: 0,
             admitted_at: at.into(),
+            control_revision: None,
             finished_at: None,
             elapsed: Elapsed::new(at),
             verdict: None,
@@ -265,6 +344,7 @@ impl GateAttempt {
             || self.id.is_empty()
             || self.submission.story_id.is_empty()
             || self.revision < 0
+            || self.control_revision.is_some_and(|revision| revision < 0)
             || chrono::DateTime::parse_from_rfc3339(&self.admitted_at).is_err()
             || chrono::DateTime::parse_from_rfc3339(&self.elapsed.checkpoint_at).is_err()
             || self
@@ -298,6 +378,7 @@ impl GateAttempt {
             super::gate_resources::ordered(&execution.resource_events)
                 .map_err(StoreError::Validation)?;
             if execution.id.is_empty()
+                || !execution.purpose.valid()
                 || !ids.insert(&execution.id)
                 || chrono::DateTime::parse_from_rfc3339(&execution.started_at).is_err()
                 || execution

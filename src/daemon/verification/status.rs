@@ -28,6 +28,9 @@ pub struct VerifierStatus {
     pub verifying: Vec<String>,
     /// Stories held by stopped admission or an infrastructure incident.
     pub held_stories: Vec<String>,
+    /// Current causal holds, independent of gate certification and infrastructure state.
+    #[serde(default)]
+    pub attribution_holds: Vec<crate::service::attribution::AttributionHold>,
     /// Queue exclusions and their authoritative reasons, independent of gate policy.
     #[serde(default)]
     pub held_reasons: Vec<(String, String)>,
@@ -363,6 +366,7 @@ pub(crate) fn snapshot(
             retry_count,
             verifying,
             held_stories,
+            attribution_holds: crate::service::attribution::holds::current(tx, ctx.project())?,
             held_reasons: crate::service::verification::held_verifying_for_status(
                 tx,
                 ctx.project(),
@@ -494,6 +498,12 @@ impl VerifierStatus {
             if let Some(link) = &recovery.repair_link {
                 text.push_str(&format!("Repair PR: {link}\n"));
             }
+        }
+        for hold in &self.attribution_holds {
+            text.push_str(&format!(
+                "Attribution hold {}: {:?}; {}; evidence {}\nNext: {}\n",
+                hold.story_id, hold.cause, hold.diagnosis, hold.evidence_id, hold.next_action
+            ));
         }
         let receipt = self.command_receipt.as_ref().unwrap_or(&self.recovery);
         if let Some(ack) = &receipt.acknowledgement {

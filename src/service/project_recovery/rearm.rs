@@ -6,7 +6,7 @@ use super::{
 use crate::{
     domain::{StoryEvent, is_reserved_label},
     error::AppError,
-    service::{project_prefix, verification},
+    service::verification,
     store::{GlobalSeq, ReadOps, Store, StoreError, StoryNo},
 };
 use std::collections::BTreeSet;
@@ -139,6 +139,9 @@ pub(super) fn assessment(
     if let Some(hold) = authority::policy_hold(tx, project, &row.snapshot)? {
         return Ok(Some(PolicyRearm::Held(hold)));
     }
+    if !subject.returned || view.state.decision.is_none() {
+        return Ok(Some(PolicyRearm::Held(AssessmentHold::CauseUnproved)));
+    }
     if !undelivered(
         assessment.epoch,
         assessment.failures,
@@ -260,35 +263,32 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
     /// No transport runs here; the ordinary claim must still validate current authority.
     pub fn rearm_policy_hold(&self, id: &str, effect: Option<&str>) -> Result<bool, AppError> {
         let now = self.ctx.now();
-        self.ctx.write_stories(|tx| {
-            let mut view = persistence::find(tx, self.ctx.project(), id)?;
-            if !matches!(evaluate(tx, &view, effect)?, Some(PolicyRearm::Ready)) { return Ok(false); }
-            if let Some(effect) = effect {
-                let work = view.state.work.iter_mut().find(|work| work.id == effect).expect("evaluated effect");
-                work.status = WorkStatus::Pending;
-                work.hold = None;
-                work.detail = "policy released; managed delivery pending under retained authority".into();
-            } else {
-                let index = view.state.subjects.iter().position(|subject| subject.story == view.state.assessment.story && subject.candidate.verifying_generation == Some(view.state.assessment.generation)).expect("evaluated assessment subject");
-                if !view.state.subjects[index].returned {
-                    let project = view.record.project;
-                    let story = view.state.subjects[index].story;
-                    let row = tx.story(project, story)?.ok_or_else(|| StoreError::Corrupt("held assessment subject disappeared".into()))?;
-                    let states = tx.state_map(project)?;
-                    let target = states.get(verification::RETURNED_STATE).ok_or_else(|| StoreError::Validation("project has no in-progress state for fault assessment".into()))?;
-                    super::super::story::append_state_transition(tx, project, story, &row, &project_prefix(tx, project)?, &states, target, &now,
-                        vec![StoryEvent::StoryCommentAdded { at: now.clone(), text: format!("PROJECT RECOVERY {} — enrollment policy released. The original submission remains unjudged. {}", view.record.id, super::assessment_charter(&view)) }], self.ctx.provenance())?;
-                    let subject = &mut view.state.subjects[index];
-                    subject.returned = true;
-                    subject.state_revision = authority::state_revision(tx, project, story)?;
-                    subject.label_revision = authority::label_revision(tx, project, story)?;
+        self.ctx
+            .write_stories(|tx| {
+                let mut view = persistence::find(tx, self.ctx.project(), id)?;
+                if !matches!(evaluate(tx, &view, effect)?, Some(PolicyRearm::Ready)) {
+                    return Ok(false);
                 }
-                view.state.assessment.status = AssessmentStatus::Pending;
-                view.state.assessment.hold = None;
-                view.state.assessment.detail = "policy released; scope assessment pending under retained authority".into();
-            }
-            persistence::save(tx, &mut view, &now)?;
-            Ok(true)
-        }).map_err(Into::into)
+                if let Some(effect) = effect {
+                    let work = view
+                        .state
+                        .work
+                        .iter_mut()
+                        .find(|work| work.id == effect)
+                        .expect("evaluated effect");
+                    work.status = WorkStatus::Pending;
+                    work.hold = None;
+                    work.detail =
+                        "policy released; managed delivery pending under retained authority".into();
+                } else {
+                    view.state.assessment.status = AssessmentStatus::Pending;
+                    view.state.assessment.hold = None;
+                    view.state.assessment.detail =
+                        "policy released; scope assessment pending under retained authority".into();
+                }
+                persistence::save(tx, &mut view, &now)?;
+                Ok(true)
+            })
+            .map_err(Into::into)
     }
 }
