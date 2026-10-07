@@ -1,3 +1,4 @@
+import { installBoardFixture } from "../board-fixture";
 import { test, expect } from "./support";
 import { openProject, projectSlug, seedToken } from "./support";
 
@@ -34,52 +35,48 @@ async function injectPinnedTimes(
   page: import("@playwright/test").Page,
   slug: string,
 ): Promise<void> {
-  await page.route(
-    (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`,
-    async (route) => {
-      const response = await route.fetch();
-      const data = await response.json();
-      const template = data.stories?.[0];
-      if (!template) throw new Error("local-time fixture has no story to clone");
+  await installBoardFixture(page, slug, async (data, options) => {
+    const template = data.stories?.[0];
+    if (!template) throw new Error("local-time fixture has no story to clone");
 
-      const fixture = JSON.parse(JSON.stringify(template));
-      fixture.story.id = FIXTURE_ID;
-      fixture.story.title = FIXTURE;
-      fixture.story.state = "todo";
-      fixture.story.superstate = "OPEN";
-      fixture.story.updated_at = AT;
-      fixture.story.comments = [{ at: AT, text: "SH-679 pinned comment" }];
-      fixture.story.referenced_by_commits = [
-        { at: AT, sha: "0123456789abcdef0123456789abcdef01234567", subject: "feat: pinned commit" },
-      ];
-      fixture.display_state = null;
-      fixture.is_ready = true;
-      fixture.is_blocked = false;
+    const fixture = JSON.parse(JSON.stringify(template));
+    fixture.story.id = FIXTURE_ID;
+    fixture.story.title = FIXTURE;
+    fixture.story.state = "todo";
+    fixture.story.superstate = "OPEN";
+    fixture.story.updated_at = AT;
+    fixture.story.comments = [{ at: AT, text: "SH-679 pinned comment" }];
+    fixture.story.referenced_by_commits = [
+      { at: AT, sha: "0123456789abcdef0123456789abcdef01234567", subject: "feat: pinned commit" },
+    ];
+    fixture.display_state = null;
+    fixture.is_ready = true;
+    fixture.is_blocked = false;
 
-      const later = JSON.parse(JSON.stringify(fixture));
-      later.story.id = LATER_ID;
-      later.story.title = LATER;
-      later.story.updated_at = LATER_AT;
-      later.story.comments = [];
-      later.story.referenced_by_commits = [];
+    const later = JSON.parse(JSON.stringify(fixture));
+    later.story.id = LATER_ID;
+    later.story.title = LATER;
+    later.story.updated_at = LATER_AT;
+    later.story.comments = [];
+    later.story.referenced_by_commits = [];
 
-      data.stories.push(fixture, later);
-      data.verification_control = { state: "running" };
-      data.verification_incident = {
-        incident_id: "fixture:verification:679",
-        project: slug,
-        story_id: FIXTURE_ID,
-        generation: 679,
-        disposition: "permanent",
-        halted: true,
-        attempts: 1,
-        detail: "pinned incident for SH-679",
-        first_failed_at: AT,
-        last_failed_at: AT,
-      };
-      await route.fulfill({ response, json: data });
-    },
-  );
+    // Explicit server response order: the browser sends Updated direction
+    // and renders dates locally; backend comparator tests own timestamp order.
+    data.stories.push(...(options.sort === "updated" && options.dir === -1 ? [later, fixture] : [fixture, later]));
+    data.verification_control = { state: "running" };
+    data.verification_incident = {
+      incident_id: "fixture:verification:679",
+      project: slug,
+      story_id: FIXTURE_ID,
+      generation: 679,
+      disposition: "permanent",
+      halted: true,
+      attempts: 1,
+      detail: "pinned incident for SH-679",
+      first_failed_at: AT,
+      last_failed_at: AT,
+    };
+  });
 }
 
 for (const expected of ZONES) {
@@ -107,13 +104,14 @@ for (const expected of ZONES) {
       await expect(cell).toHaveAttribute("title", new RegExp(expected.zone.replace("/", "\\/")));
     });
 
-    test("sorting by Updated still orders by the stored instant", async ({ page }) => {
+    test("Updated requests preserve server instant order in either local timezone", async ({ page }) => {
       await page.locator('#view-toggle button[data-view="list"]').click();
       await expect(page.locator("#list-view")).toBeVisible();
 
       const header = page.locator('thead th[data-col="updated"]');
       await header.click();
       await expect(page.locator("#sort-updated")).toHaveText("▲");
+      await expect.poll(() => page.locator(`#list-body tr[data-id="${FIXTURE_ID}"], #list-body tr[data-id="${LATER_ID}"]`).evaluateAll(rows => rows.map(row => row.getAttribute("data-id")))).toEqual([FIXTURE_ID, LATER_ID]);
       const ascending = await page.locator("#list-body tr[data-id]").evaluateAll((rows) =>
         rows.map((row) => row.getAttribute("data-id")),
       );
@@ -121,6 +119,7 @@ for (const expected of ZONES) {
 
       await header.click();
       await expect(page.locator("#sort-updated")).toHaveText("▼");
+      await expect.poll(() => page.locator(`#list-body tr[data-id="${FIXTURE_ID}"], #list-body tr[data-id="${LATER_ID}"]`).evaluateAll(rows => rows.map(row => row.getAttribute("data-id")))).toEqual([LATER_ID, FIXTURE_ID]);
       const descending = await page.locator("#list-body tr[data-id]").evaluateAll((rows) =>
         rows.map((row) => row.getAttribute("data-id")),
       );

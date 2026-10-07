@@ -1,3 +1,4 @@
+import { isBoardMetadata, isCatalog } from "./board-network";
 import { gracedOperationBudget } from "../load-grace";
 import { test, expect } from "./support";
 import type { APIRequestContext, Page } from "@playwright/test";
@@ -21,7 +22,7 @@ const DRAFT_RECOVERY_BASE_MS = 10_000;
  * Pins SH-222's readiness rule: reaching a board means its data has arrived,
  * not that the board is on screen.
  *
- * Both tests run with `/data` deliberately slowed. That delay is the only
+ * Both tests run with `/board` metadata deliberately slowed. That delay is the only
  * thing a busy machine was ever contributing: `selectRepo()` renders the
  * board screen from `state.data = null` and fetches afterwards, so the
  * window between "board visible" and "board has data" exists on every run —
@@ -38,7 +39,7 @@ test("choosing Settings while the initial catalog is in flight is not undone by 
   await seedToken(page);
   const catalogGate = latch();
   const catalogRequested = latch();
-  await page.route(/\/api\/repos$/, async (route) => {
+  await page.route(isCatalog, async (route) => {
     if (route.request().method() !== "GET") {
       await route.continue();
       return;
@@ -65,10 +66,11 @@ test("choosing Settings while the initial catalog is in flight is not undone by 
 });
 
 /** Holds every project-data read for `DATA_DELAY_MS`. Registered before the
- * navigation that triggers one, since the very first `/data` is the one
+ * navigation that triggers one, since the very first metadata page is the one
  * under test. */
 async function slowData(page: import("@playwright/test").Page): Promise<void> {
-  await page.route(/\/data(\?|$)/, async (route) => {
+  await page.route((url) => isBoardMetadata(url), async (route) => {
+    if (route.request().method() !== "GET") { await route.continue(); return; }
     await new Promise((resolve) => setTimeout(resolve, DATA_DELAY_MS));
     await route.continue();
   });
@@ -81,7 +83,8 @@ async function withHeldData(
 ): Promise<void> {
   const gate = latch();
   const requested = latch();
-  await page.route(/\/data(\?|$)/, async route => {
+  await page.route((url) => isBoardMetadata(url), async route => {
+    if (route.request().method() !== "GET") { await route.continue(); return; }
     requested.release();
     await gate.held;
     await route.continue();
@@ -486,7 +489,7 @@ test("a popover opened moments after a navigation is not hidden by the previous 
  * SH-291: the same window, when it never ends.
  *
  * Both readiness surfaces above are keyed on `!state.data`, which is also the
- * state a project stays in *permanently* when `/data` times out, errors, or
+ * state a project stays in *permanently* when board metadata times out, errors, or
  * answers 401 — `fetchData()` assigns `state.data` only on a parsed 200. So a
  * store that never answers used to say "Loading…" forever: true, in the sense
  * that the 25s safety poll really is still trying, and useless as an
@@ -496,7 +499,7 @@ test("a popover opened moments after a navigation is not hidden by the previous 
  * reads identically before the first fetch and after a failed one, and copy
  * keyed on it would name an error during boot, before anything had gone wrong.
  * What the surfaces read instead is `state.fetchSettledFor` — the project whose
- * `/data` has *completed*, with data, with an error, or with no answer at all —
+ * board metadata has *completed*, with data, with an error, or with no answer at all —
  * and the first test below is red against either shortcut: against the old code
  * on its second assertion, against a `fetchOk` version on its first.
  *
@@ -513,14 +516,14 @@ test("a popover opened moments after a navigation is not hidden by the previous 
  * so the boundary really is the test's now, not the page's clock racing it.
  */
 
-/** Holds every `/data` read for `slug` in flight until `refuse()` is called.
+/** Holds every board metadata read for `slug` in flight until `refuse()` is called.
  *
  * Scoped to one project on purpose: a store is not what fails here, a
  * project's own reads are — which is what lets the third test below hold two
  * projects in two different states at once.
  *
  * A thin wrapper over `holdUntilRefused()` (SH-301, `./support`), which
- * generalised this function beyond one project's `/data` once
+ * generalised this function beyond one project's metadata once
  * `catalog-readiness.spec.ts` needed the identical held/refused/restored
  * lifecycle on the catalog and statuses-editor routes. See its own doc
  * comment for why `restore()` flips a flag rather than calling
@@ -528,7 +531,7 @@ test("a popover opened moments after a navigation is not hidden by the previous 
 function holdDataFor(page: import("@playwright/test").Page, slug: string) {
   return holdUntilRefused(
     page,
-    (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`,
+    (url) => isBoardMetadata(url, slug),
   );
 }
 
@@ -710,7 +713,7 @@ test("one board's failure never re-scopes the global Drafts surface", async ({
  * selector, the home cards and the settings table, and nothing belonging to
  * the Drafts popover. So a project renamed by another client repainted the
  * topbar and left the popover naming the old one, and *indefinitely*: the
- * board's own `/data` is a separate request, `renderAll()` runs only on a
+ * board's own metadata is a separate request, `renderAll()` runs only on a
  * parsed 200, and `markDataSettled()` fires at most once per project. A stale
  * name is worse than no name, and this is exactly the dwell state the naming
  * was added for.
@@ -737,7 +740,8 @@ test("a project renamed elsewhere renames its global draft rows, not just the to
   const slug = await projectSlug(request, "Alpha Project");
 
   let name = "Alpha Project";
-  await page.route("**/api/repos", async (route) => {
+  await page.route(isCatalog, async (route) => {
+    if (route.request().method() !== "GET") { await route.continue(); return; }
     // The token explicitly: `route.fetch()` replays the request without the
     // cookie the page authenticates with, and the daemon answers a 401 whose
     // body is not JSON at all.
@@ -780,7 +784,7 @@ test("a project renamed elsewhere renames its global draft rows, not just the to
   // board read could repaint the popover for reasons that have nothing to do
   // with the catalog, and this test would pass against the defect.
   await page.route(
-    (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`,
+    (url) => isBoardMetadata(url, slug),
     (route) => route.abort(),
   );
   name = "Alpha Project Renamed Elsewhere";

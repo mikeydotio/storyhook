@@ -1,3 +1,4 @@
+import { isCatalog } from "./board-network";
 import { test, expect } from "./support";
 import type { Locator, Page } from "@playwright/test";
 import {
@@ -536,7 +537,8 @@ for (const width of SWEEP_WIDTHS) {
     page,
   }) => {
     await page.setViewportSize({ width, height: SWEEP_HEIGHT });
-    await page.route("**/api/repos", async (route) => {
+    await page.route(isCatalog, async (route) => {
+      if (route.request().method() !== "GET") { await route.continue(); return; }
       // The token explicitly: `route.fetch()` replays the request without the
       // cookie the page authenticates with, and the daemon answers a 401 whose
       // body is not JSON at all.
@@ -637,7 +639,8 @@ for (const width of SWEEP_WIDTHS) {
     page,
   }) => {
     await page.setViewportSize({ width, height: SWEEP_HEIGHT });
-    await page.route("**/api/repos", async (route) => {
+    await page.route(isCatalog, async (route) => {
+      if (route.request().method() !== "GET") { await route.continue(); return; }
       // The token explicitly: `route.fetch()` replays the request without the
       // cookie the page authenticates with, and the daemon answers a 401 whose
       // body is not JSON at all.

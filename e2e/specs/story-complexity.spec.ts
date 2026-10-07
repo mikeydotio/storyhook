@@ -1,3 +1,4 @@
+import { isCatalog } from "./board-network";
 import {
   test,
   expect,
@@ -103,7 +104,8 @@ test("policy scope follows a project catalog that arrives after Settings opens",
   await seedToken(page);
   let release!: () => void;
   const catalog = new Promise<void>(resolve => { release = resolve; });
-  await page.route("**/api/repos", async route => {
+  await page.route(isCatalog, async route => {
+    if (route.request().method() !== "GET") { await route.continue(); return; }
     await catalog;
     await route.continue();
   });

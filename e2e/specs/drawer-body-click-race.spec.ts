@@ -1,3 +1,4 @@
+import { isBoardPage } from "./board-network";
 import { test, expect } from "./support";
 import type { Locator, Page } from "@playwright/test";
 import {
@@ -40,7 +41,7 @@ import {
  * `description-edit-mode.spec.ts`'s Comments `.section-toggle` stuck at
  * `aria-expanded="true"` after a click Playwright reported as successful.
  * These tests force that race deterministically through the real production
- * render path (`holdFetch` gates a genuine `/data` reply; no DOM is touched by
+ * render path (`holdFetch` gates a genuine detail or List-page reply; no DOM is touched by
  * hand), rather than waiting out the rare organic occurrence.
  *
  * This is not a test-only defect. A user clicking any drawer control at the
@@ -51,9 +52,9 @@ import {
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
   // `boardFetchTimeoutMs` past this suite's own maximum patience (SH-347):
-  // the tests below hold `/data`, and must not race the page's own read
+  // the tests below hold detail and summary reads, and must not race the page's own read
   // deadline for that hold.
-  await page.goto(`/?boardFetchTimeoutMs=${heldReadDeadlineMs()}`);
+  await page.goto(`/?boardFetchTimeoutMs=${heldReadDeadlineMs()}&apiGetTimeoutMs=${heldReadDeadlineMs()}`);
 });
 
 cleanUpCreatedStories("Alpha Project");
@@ -84,32 +85,34 @@ async function openDrawerFor(page: Page, card: Locator, id: string): Promise<voi
 }
 
 /**
- * Arms a hold on the `/data` reply that will carry `id` at `priority`, then
+ * Arms a hold on the detail (or List summary) reply carrying `id` at `priority`, then
  * makes that change through the daemon's own API — a mutation from outside
  * this tab, so the resulting re-render is a genuine SSE-driven one on the
  * production path, not a synthetic call into the renderer.
  *
- * The predicate is what makes this deterministic: a priority is a field
- * `diffSnapshots` compares, so only a reply that actually carries it produces
- * the `hasChanges` that makes `fetchData()` call `renderDrawer()` at all. A
- * bare "hold the next `/data`" would sometimes hold a pre-mutation snapshot,
- * whose delivery rebuilds nothing — and the test would pass having exercised
- * precisely nothing.
+ * Match the changed priority, not simply the next response: an older read
+ * would exercise no changed-state render. SH-894 refreshes drawer detail
+ * separately from summaries, so drawer and List witnesses hold their own
+ * transport boundary.
  */
 async function holdARebuildingReply(
   page: Page,
   request: Parameters<typeof projectSlug>[0],
   id: string,
   priority: string,
+  target: "detail" | "list" = "detail",
 ) {
-  const held = await holdFetch(
-    page,
-    (url) => url.pathname.endsWith("/data"),
-    (body: { stories: { story: { id: string; priority: string } }[] }) =>
-      body.stories.some((v) => v.story.id === id && v.story.priority === priority),
-  );
-
   const slug = await projectSlug(request, "Alpha Project");
+  type Story = { id: string; priority: string };
+  const held = await holdFetch<{ stories?: { story: Story }[]; story?: { story: Story } }>(
+    page,
+    (url) => target === "detail"
+      ? url.pathname === `/api/repos/${encodeURIComponent(slug)}/story/${encodeURIComponent(id)}`
+      : isBoardPage(url, slug, null),
+    (body) => target === "detail"
+      ? body.story?.story.id === id && body.story.story.priority === priority
+      : !!body.stories?.some((view) => view.story.id === id && view.story.priority === priority),
+  );
   const changed = await request.post(
     `/api/repos/${encodeURIComponent(slug)}/story/${encodeURIComponent(id)}/priority`,
     {
@@ -124,7 +127,7 @@ async function holdARebuildingReply(
   if (!changed.ok()) {
     throw new Error(
       `POST .../priority answered ${changed.status()}: ${await changed.text()} -- ` +
-        "this spec depends on it landing, to drive the held /data reply",
+        "this spec depends on it landing, to drive the held detail or List reply",
     );
   }
   await held.taken;
@@ -149,9 +152,8 @@ test("a /data reply landing between mousedown and mouseup does not swallow a dra
 
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
-  // Releases the held reply -- `fetchData()`'s success handler runs
-  // `renderAll()` and then `renderDrawer()` synchronously, and `renderDrawer()`
-  // reaches its reconciliation before `deliver()` resolves. SH-423 now retains
+  // The detail completion calls renderDrawer(), reaching its reconciliation
+  // before deliver() resolves. SH-423 now retains
   // this output-identical Comments node; before that fix the whole body was
   // cleared here. Either way the mouse is still down, so this remains the
   // production-path witness for the gate around a drawer paint.
@@ -261,7 +263,7 @@ test("a /data reply landing mid-press does not swallow a list row's click (SH-40
   await page.locator('#view-toggle button[data-view="list"]').click();
   const row = page.locator(`#list-body tr[data-id="${id}"]`);
   await expect(row).toBeVisible();
-  const held = await holdARebuildingReply(page, request, id, "high");
+  const held = await holdARebuildingReply(page, request, id, "high", "list");
   // The mutation/route handshake above can take arbitrarily long under
   // contention. Measure the live row only after that handshake, immediately
   // before the coordinate press, rather than aiming at a pre-network box.

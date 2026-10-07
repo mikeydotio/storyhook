@@ -1,35 +1,12 @@
+import { installBoardFixture } from "../board-fixture";
 import { test, expect } from "./support";
-import { openProject, projectSlug, requiredEnv, seedToken } from "./support";
+import { openProject, projectSlug, seedToken } from "./support";
 
-/**
- * SH-336's own tiebreak, proven directly rather than inferred from a
- * boundary condition. `board-sort.spec.ts`'s "Modified" test proves the
- * sort reads `updated_at`, not `created_at`, and for that it needs the two
- * to *diverge* — `waitUntilStoreClockPasses` exists to keep them apart.
- * This spec proves the opposite half: what happens when two stories
- * genuinely tie on `updated_at`, which is this tracker's normal workload
- * (agents writing in bursts), not an edge case.
- *
- * The store cannot be told to make two real writes land in the same second
- * on demand — that would be exactly the race SH-245/SH-318/SH-329 already
- * removed from this suite. So the tie is forced in the payload instead:
- * `injectTiedTodoCards` clones a real story-view from the fixture project's
- * own `/data` response (guaranteeing every field the renderer needs is
- * correctly shaped) and pushes two copies back in with a shared
- * `updated_at` and two distinct, real-looking `head_global_seq` values.
- * Nothing is written to the store — this proves the **browser
- * comparator**, not that the daemon emits the field (`web_test.rs::
- * web_serve_api_data_carries_head_global_seq` covers that half).
- *
- * Both directions are asserted, deliberately: a single-direction check
- * cannot tell "reads head_global_seq" apart from "happens to agree with
- * insertion order", and cannot prove the tiebreak follows `dir` at all.
- *
- * This file does not touch "Alpha Project"'s own fixture stories or create
- * any of its own — `route.fulfill` only changes what is served to this
- * page, never the real backend — so there is nothing for
- * `cleanUpCreatedStories` to sweep.
- */
+/** SH-336 transport/rendering contract after SH-894: sort choices must reach
+ * the server and the browser must preserve its returned same-second ordering.
+ * The explicit fixture orders below do not prove a comparator. The equivalent
+ * disagreeing head_global_seq/story-number cases are covered by board API Rust
+ * comparator tests, where ordering now happens before pagination. */
 
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
@@ -40,60 +17,52 @@ const OLDER_TITLE = "SH-336 tiebreak test — written first";
 const NEWER_TITLE = "SH-336 tiebreak test — written last";
 const TIED_AT = "2026-01-01T00:00:00Z";
 
-/**
- * Registered before the navigation that triggers the first `/data` fetch
- * (the same discipline `board-readiness.spec.ts`'s `slowData()` uses),
- * since a route registered after the page has already loaded would never
- * see a request to intercept — nothing here causes the client to refetch on
- * its own once it holds data.
- */
+/** Load a real template before routing: metadata and empty columns cannot
+ * provide the first story that the old exhaustive response guaranteed. */
 async function injectTiedTodoCards(
   page: import("@playwright/test").Page,
   slug: string,
 ): Promise<void> {
-  await page.route(
-    (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`,
-    async (route) => {
-      const response = await route.fetch();
-      const data: { stories?: Array<Record<string, unknown>> } =
-        await response.json();
-      const template = (data.stories ?? [])[0];
-      if (!template) {
-        throw new Error(
-          "injectTiedTodoCards: the fixture project has no story to clone from",
-        );
-      }
-      const cards = [
-        // Story number is the DISAGREEING id/write-order pair on purpose:
-        // OLDER_TITLE gets the *higher* story number and the *lower*
-        // head_global_seq (written first), NEWER_TITLE the reverse. If the
-        // real tiebreak (head_global_seq) were ever mistakenly bypassed, the
-        // comparator's residual `byNumber` fallback would produce the
-        // OPPOSITE order from the one asserted below — so this fixture
-        // cannot pass by accident the way same-direction ids would.
-        { id: "SH-90002", title: OLDER_TITLE, headGlobalSeq: 10 },
-        { id: "SH-90001", title: NEWER_TITLE, headGlobalSeq: 20 },
-      ];
-      for (const card of cards) {
-        const clone = JSON.parse(JSON.stringify(template)) as {
-          story: Record<string, unknown>;
-          head_global_seq?: number;
-          is_ready?: boolean;
-          is_blocked?: boolean;
-        };
-        clone.story.id = card.id;
-        clone.story.title = card.title;
-        clone.story.state = "todo";
-        clone.story.superstate = "OPEN";
-        clone.story.updated_at = TIED_AT;
-        clone.head_global_seq = card.headGlobalSeq;
-        clone.is_ready = false;
-        clone.is_blocked = false;
-        (data.stories ??= []).push(clone);
-      }
-      await route.fulfill({ response, json: data });
-    },
-  );
+  await installBoardFixture(page, slug, async (data, options) => {
+    const template = (data.stories ?? [])[0];
+    if (!template) {
+      throw new Error(
+        "injectTiedTodoCards: the fixture project has no story to clone from",
+      );
+    }
+    const cards = [
+      // Story number is the DISAGREEING id/write-order pair on purpose:
+      // OLDER_TITLE gets the *higher* story number and the *lower*
+      // head_global_seq (written first), NEWER_TITLE the reverse. If the
+      // authoritative backend tiebreak were bypassed, its numeric fallback
+      // would produce the opposite order. Rust pins that computation; these
+      // same identities pin preservation of its wire order in the browser.
+      { id: "SH-90002", title: OLDER_TITLE, headGlobalSeq: 10 },
+      { id: "SH-90001", title: NEWER_TITLE, headGlobalSeq: 20 },
+    ];
+    for (const card of cards) {
+      const clone = JSON.parse(JSON.stringify(template)) as {
+        story: Record<string, unknown>;
+        head_global_seq?: number;
+        is_ready?: boolean;
+        is_blocked?: boolean;
+      };
+      clone.story.id = card.id;
+      clone.story.title = card.title;
+      clone.story.state = "todo";
+      clone.story.superstate = "OPEN";
+      clone.story.updated_at = TIED_AT;
+      clone.head_global_seq = card.headGlobalSeq;
+      clone.is_ready = false;
+      clone.is_blocked = false;
+      (data.stories ??= []).push(clone);
+    }
+    if (options.sort === "updated") {
+      const expected = options.dir === 1 ? ["SH-90002", "SH-90001"] : ["SH-90001", "SH-90002"];
+      const injected = new Map(data.stories.filter((view: any) => expected.includes(view.story.id)).map((view: any) => [view.story.id, view]));
+      data.stories = data.stories.filter((view: any) => !expected.includes(view.story.id)).concat(expected.map(id => injected.get(id)));
+    }
+  });
 }
 
 function columnSortBtn(page: import("@playwright/test").Page, slug: string) {
@@ -126,7 +95,7 @@ async function ourColumnTitles(
   );
 }
 
-test('"Modified" breaks a same-second tie by write order, and follows the sort direction', async ({
+test('"Modified" requests and renders both server tiebreak directions', async ({
   page,
   request,
 }) => {
@@ -139,7 +108,7 @@ test('"Modified" breaks a same-second tie by write order, and follows the sort d
     "title",
     "Sort: Modified ↓",
   );
-  expect(await ourColumnTitles(page, "todo")).toEqual([
+  await expect.poll(() => ourColumnTitles(page, "todo")).toEqual([
     NEWER_TITLE,
     OLDER_TITLE,
   ]);
@@ -149,13 +118,13 @@ test('"Modified" breaks a same-second tie by write order, and follows the sort d
     "title",
     "Sort: Modified ↑",
   );
-  expect(await ourColumnTitles(page, "todo")).toEqual([
+  await expect.poll(() => ourColumnTitles(page, "todo")).toEqual([
     OLDER_TITLE,
     NEWER_TITLE,
   ]);
 });
 
-test("the List view's Updated column breaks a same-second tie by write order, and follows the sort direction", async ({
+test("the List view requests and renders both server Updated tiebreak directions", async ({
   page,
   request,
 }) => {
@@ -188,12 +157,14 @@ test("the List view's Updated column breaks a same-second tie by write order, an
     await header.click();
   }
   await expect(arrow).toHaveText("▼");
+  await expect.poll(orderedTitles).toEqual([NEWER_TITLE, OLDER_TITLE]);
   const descending = await orderedTitles();
   expect(descending[0]).toContain(NEWER_TITLE);
   expect(descending[1]).toContain(OLDER_TITLE);
 
   await header.click();
   await expect(arrow).toHaveText("▲");
+  await expect.poll(orderedTitles).toEqual([OLDER_TITLE, NEWER_TITLE]);
   const ascending = await orderedTitles();
   expect(ascending[0]).toContain(OLDER_TITLE);
   expect(ascending[1]).toContain(NEWER_TITLE);

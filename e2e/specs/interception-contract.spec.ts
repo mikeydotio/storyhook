@@ -1,3 +1,4 @@
+import { isBoardMetadata } from "./board-network";
 import { expect, test } from "./support";
 import { contention, cores } from "../load-grace";
 import {
@@ -215,7 +216,7 @@ test.describe("SH-347 interception-contract probes", () => {
     const slug = await projectSlug(request, "Alpha Project");
     const data = await holdUntilRefused(
       page,
-      (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`,
+      (url) => isBoardMetadata(url, slug),
     );
 
     const beforeNav = Date.now();
@@ -253,13 +254,13 @@ test.describe("SH-347 interception-contract probes", () => {
     const beta = await projectSlug(request, "Beta Project");
     const alphaData = await holdUntilRefused(
       page,
-      (url) => url.pathname === `/api/repos/${encodeURIComponent(alpha)}/data`,
+      (url) => isBoardMetadata(url, alpha),
     );
     // Beta's read is held and never refused, mirroring
     // `board-readiness.spec.ts`'s own third quarantined test exactly.
     await holdUntilRefused(
       page,
-      (url) => url.pathname === `/api/repos/${encodeURIComponent(beta)}/data`,
+      (url) => isBoardMetadata(url, beta),
     );
 
     const beforeNav = Date.now();

@@ -1,3 +1,4 @@
+import { isCatalog } from "./board-network";
 import type { Page } from "@playwright/test";
 import { expect, requiredEnv, awaitSettled } from "./support";
 
@@ -6,7 +7,8 @@ export const LONG_NAME = "Alpha Project with a very long unbroken identifier ABC
 
 /** Serves "Alpha Project" under `LONG_NAME` without renaming the shared seed. */
 export async function useLongProjectName(page: Page): Promise<void> {
-  await page.route("**/api/repos", async route => {
+  await page.route(isCatalog, async route => {
+    if (route.request().method() !== "GET") { await route.continue(); return; }
     const response = await route.fetch({
       headers: { ...route.request().headers(), "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN") },
     });

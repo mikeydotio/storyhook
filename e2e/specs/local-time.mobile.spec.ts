@@ -1,3 +1,4 @@
+import { installBoardFixture } from "../board-fixture";
 import { test, expect } from "./support";
 import { openProject, projectSlug, seedToken } from "./support";
 
@@ -26,26 +27,20 @@ for (const expected of ZONES) {
       await page.setViewportSize({ width: 390, height: 844 });
       await page.goto("/");
       const slug = await projectSlug(request, "Alpha Project");
-      await page.route(
-        (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`,
-        async (route) => {
-          const response = await route.fetch();
-          const data = await response.json();
-          const template = data.stories?.[0];
-          if (!template) throw new Error("mobile local-time fixture has no story to clone");
-          const fixture = JSON.parse(JSON.stringify(template));
-          fixture.story.id = FIXTURE_ID;
-          fixture.story.title = FIXTURE;
-          fixture.story.state = "todo";
-          fixture.story.superstate = "OPEN";
-          fixture.story.updated_at = AT;
-          fixture.display_state = null;
-          fixture.is_ready = true;
-          fixture.is_blocked = false;
-          data.stories.push(fixture);
-          await route.fulfill({ response, json: data });
-        },
-      );
+      await installBoardFixture(page, slug, async (data) => {
+        const template = data.stories?.[0];
+        if (!template) throw new Error("mobile local-time fixture has no story to clone");
+        const fixture = JSON.parse(JSON.stringify(template));
+        fixture.story.id = FIXTURE_ID;
+        fixture.story.title = FIXTURE;
+        fixture.story.state = "todo";
+        fixture.story.superstate = "OPEN";
+        fixture.story.updated_at = AT;
+        fixture.display_state = null;
+        fixture.is_ready = true;
+        fixture.is_blocked = false;
+        data.stories.push(fixture);
+      });
       await openProject(page, "Alpha Project");
     });
 

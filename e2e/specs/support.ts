@@ -666,6 +666,29 @@ export async function waitForBoardData(page: Page): Promise<void> {
   });
 }
 
+/** Waits for the currently visible summary pages, not just their metadata.
+ * Use before collection/geometry snapshots. Tests of incremental rendering
+ * or pre-data readiness deliberately use their narrower boundary instead. */
+export async function waitForBoardPages(page: Page): Promise<void> {
+  await waitForBoardData(page);
+  await page.waitForFunction(() => {
+    const board = document.getElementById("board-view") as HTMLElement | null;
+    const list = document.getElementById("list-view") as HTMLElement | null;
+    const root = board && !board.hidden ? board : list && !list.hidden ? list : null;
+    if (!root) return false;
+    const controls = Array.from(root.querySelectorAll(".page-controls[data-page-key]"));
+    if (!controls.length) {
+      const empty = document.getElementById("empty-msg") as HTMLElement | null;
+      return !!empty && !empty.hidden;
+    }
+    return controls.every(control => {
+      const label = control.querySelector("span")?.textContent || "";
+      return !control.querySelector(".board-page-retry") &&
+        (/^Showing \d+ of \d+$/.test(label) || label === "No matching stories");
+    });
+  });
+}
+
 /**
  * Opens `name`'s board from the Home screen and waits for its data.
  *
@@ -1174,6 +1197,10 @@ export interface HeldFetch {
   /** Delivers the held reply to the page, and resolves once the page's own
    * `onreadystatechange` has had its turn on the renderer's task queue. */
   deliver: () => Promise<void>;
+  /** Proves the browser canceled the held request, then releases its old
+   * response and waits for the route handler. Never substitutes for deliver()
+   * in a test that needs the response to reach the renderer. */
+  deliverCanceled: () => Promise<void>;
 }
 
 /**
@@ -1218,6 +1245,9 @@ export async function holdFetch<T>(
     request.method() === "GET" && matches(new URL(request.url()));
   let heldRequest: Request | null = null;
   let sealed = false;
+  let expectCanceledDelivery = false;
+  const canceled = new Set<Request>();
+  const heldHandlerSettled = latch();
 
   // Matching fetches still in flight. `seal()` drops the held one (which has
   // no reply until `deliver()`) and waits for the rest to empty, because a
@@ -1229,7 +1259,10 @@ export async function holdFetch<T>(
   });
   const settled = (request: Request) => outstanding.delete(request);
   page.on("requestfinished", settled);
-  page.on("requestfailed", settled);
+  page.on("requestfailed", (request) => {
+    if (isHeldFetch(request)) canceled.add(request);
+    settled(request);
+  });
 
   /** What one candidate turned out to be: not the one (`pass`), an earlier
    * reply to answer immediately (`answer`), or the one to hold (`hold`). */
@@ -1333,11 +1366,26 @@ export async function holdFetch<T>(
     // otherwise block every candidate behind it from being answered at all,
     // and `seal()` would wait for exactly the requests it just sealed off.
     if (outcome.kind === "hold") await gate.held;
-    await route.fulfill({ response: outcome.response });
+    try {
+      await route.fulfill({ response: outcome.response });
+    } catch (error) {
+      if (!(outcome.kind === "hold" && expectCanceledDelivery && canceled.has(route.request())))
+        throw error;
+    } finally {
+      if (outcome.kind === "hold") heldHandlerSettled.release();
+    }
   });
 
   return {
     taken: taken.held,
+    deliverCanceled: async () => {
+      await taken.held;
+      await expect.poll(() => heldRequest !== null && canceled.has(heldRequest)).toBe(true);
+      expectCanceledDelivery = true;
+      gate.release();
+      await heldHandlerSettled.held;
+      await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    },
     seal: async () => {
       sealed = true;
       if (heldRequest) outstanding.delete(heldRequest);
@@ -1411,6 +1459,10 @@ export async function holdUntilRefused(
   const taken = latch();
   let refusing = true;
   let active = 0;
+  const failedRequests = new Set<Request>();
+  page.on("requestfailed", request => {
+    if (matches(new URL(request.url()))) failedRequests.add(request);
+  });
   await page.route(matches, async (route) => {
     const request = route.request();
     active++;
@@ -1418,11 +1470,14 @@ export async function holdUntilRefused(
     try {
       await gate.held;
       if (refusing) {
-        const failed = page.waitForEvent("requestfailed", {
-          predicate: (r) => r === request,
-        });
-        await route.abort();
-        await failed;
+        // Navigation may already have canceled this exact request while the
+        // route was held. Observe that terminal event rather than waiting for
+        // a second requestfailed event the browser will never send.
+        if (!failedRequests.has(request)) {
+          try { await route.abort(); }
+          catch (error) { if (!failedRequests.has(request)) throw error; }
+        }
+        await expect.poll(() => failedRequests.has(request)).toBe(true);
       } else {
         await route.continue();
       }
@@ -1746,7 +1801,7 @@ export async function deleteStatus(
  * authenticates nothing and says so in its own header. */
 export async function refuseTheFirstReposRead(page: Page): Promise<void> {
   let refused = false;
-  await page.route(/\/api\/repos$/, async (route) => {
+  await page.route((url) => url.pathname === "/api/repos", async (route) => {
     if (refused || route.request().method() !== "GET") {
       await route.continue();
       return;

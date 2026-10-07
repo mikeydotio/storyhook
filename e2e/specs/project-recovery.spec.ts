@@ -1,10 +1,12 @@
+import { isBoardMetadata } from "./board-network";
 import { test, expect, openProject, projectSlug, seedToken } from "./support";
 
 for (const infrastructureHalted of [false, true]) {
   test(`project recovery keeps its own diagnosis with infrastructure halt=${infrastructureHalted}`, async ({ page, request }) => {
     await seedToken(page);
     const slug = await projectSlug(request, "Alpha Project");
-    await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async route => {
+    await page.route((url) => isBoardMetadata(url, slug), async route => {
+      if (route.request().method() !== "GET") { await route.continue(); return; }
       const response = await route.fetch();
       const data = await response.json();
       data.verification_control = { state: "running" };
@@ -40,7 +42,8 @@ test("invalid project recovery shows literal diagnostics without ownership or co
   await seedToken(page);
   const slug = await projectSlug(request, "Alpha Project");
   const diagnostic = 'Recovery invalid-fixture is invalid: <script>alert("invalid")</script>. Inspect: story verifier repair show invalid-fixture --json';
-  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async route => {
+  await page.route((url) => isBoardMetadata(url, slug), async route => {
+    if (route.request().method() !== "GET") { await route.continue(); return; }
     const response = await route.fetch();
     const data = await response.json();
     data.verifier = { ...data.verifier, project_recoveries: [{
@@ -68,7 +71,8 @@ test("invalid project recovery shows literal diagnostics without ownership or co
 test("external-scope recovery names its scope instead of an undecided repair", async ({ page, request }) => {
   await seedToken(page);
   const slug = await projectSlug(request, "Alpha Project");
-  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async route => {
+  await page.route((url) => isBoardMetadata(url, slug), async route => {
+    if (route.request().method() !== "GET") { await route.continue(); return; }
     const response = await route.fetch();
     const data = await response.json();
     data.verifier = { ...data.verifier, warning: null, project_recoveries: [{

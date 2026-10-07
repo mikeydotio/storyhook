@@ -1173,6 +1173,10 @@ macro_rules! impl_read_ops {
                 read::stories(&self.conn, project, query)
             }
 
+            fn board_stories(&self, project: ProjectId) -> Result<Vec<StoryRow>, StoreError> {
+                read::board_stories(&self.conn, project)
+            }
+
             fn relations_from(
                 &self,
                 project: ProjectId,

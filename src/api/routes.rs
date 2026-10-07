@@ -131,6 +131,8 @@ pub enum ProjectRoute<'a> {
     PolicyResolve { id: &'a str, agent: &'a str },
     /// `GET .../data` — the whole board in one request.
     Data,
+    /// Bounded summary pages; detail remains on StoryShow.
+    Board,
     /// `PATCH .../visibility` — this token's project display preference.
     Visibility,
     /// `POST .../verification/ack` — acknowledge one exact halted incident.
@@ -342,6 +344,10 @@ fn classify_project<'a>(rest: &[&'a str], method: &Method) -> ProjectRoute<'a> {
             Method::Patch => ProjectRoute::Visibility,
             _ => ProjectRoute::MethodNotAllowed,
         },
+        ["board"] => match method {
+            Method::Get => ProjectRoute::Board,
+            _ => ProjectRoute::MethodNotAllowed,
+        },
         ["data"] => match method {
             Method::Get => ProjectRoute::Data,
             _ => ProjectRoute::MethodNotAllowed,
@@ -478,6 +484,7 @@ impl ProjectRoute<'_> {
             ProjectRoute::DispatchPolicy => "DispatchPolicy",
             ProjectRoute::PolicyResolve { .. } => "PolicyResolve",
             ProjectRoute::Data => "Data",
+            ProjectRoute::Board => "Board",
             ProjectRoute::Visibility => "Visibility",
             ProjectRoute::VerificationAck => "VerificationAck",
             ProjectRoute::VerificationControl => "VerificationControl",

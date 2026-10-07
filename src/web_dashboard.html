@@ -1730,6 +1730,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   .status-add { flex-direction: column; align-items: stretch; }
   .status-add .status-add-slug, .status-add .status-add-desc { flex: none; min-width: 0; }
 }
+.page-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; padding: .5rem; font-size: .75rem; color: var(--fg-muted); }
+.page-controls > span { flex: 1 1 100%; }
 </style>
 </head>
 <body>
@@ -2560,16 +2562,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       syncUrl();
       return;
     }
-    var id = pending.storyId;
-    var target = (state.data.stories || []).filter(function(v) {
-      return v.story.id.toLowerCase() === id.toLowerCase();
-    })[0];
-    if (!target) {
-      toast("No story `" + id + "` in " + state.repoId, "error");
-      syncUrl();
-      return;
-    }
-    openDrawer(target.story.id);
+    // A valid link can target a hidden column or an unloaded page.
+    openDrawer(pending.storyId);
   }
 
   // ============================================================
@@ -3533,125 +3527,352 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   var boardFetchTicket = 0;
   var boardFetchFloor = 0;
 
-  function fetchData() {
-    var ticket = ++boardFetchTicket;
-    // The project this question was asked about. A reply that arrives after
-    // `selectRepo()` has moved on describes a board nobody is looking at,
-    // and painting it over the open one is not a stale render but the wrong
-    // project's stories entirely.
+  // One page per visible column (or one List page). Only cursors, counts and
+  // filter vocabulary survive paging; old story rows are never a cache.
+  var BOARD_PAGE_SIZE = 50;
+  var boardPages = Object.create(null);
+  var boardScope = null;
+  var boardEpoch = 0;
+  var boardRequests = [];
+  var boardQueue = [];
+  var boardActiveReads = 0;
+  var boardMetadataLoading = false;
+  var boardMetadataError = null;
+  var boardRefreshPending = false;
+
+  function boardScopeKey() {
+    return JSON.stringify([state.screen, state.repoId, state.view, state.filter,
+      state.hiddenColumns, state.showArchived, state.columnSort, state.sort]);
+  }
+
+  function cancelBoardReads() {
+    boardEpoch++;
+    var requests = boardRequests;
+    boardRequests = [];
+    boardQueue = [];
+    boardActiveReads = 0;
+    boardMetadataLoading = false;
+    boardMetadataError = null;
+    boardRefreshPending = false;
+    requests.forEach(function(xhr) { xhr.abort(); });
+  }
+
+  function clearBoardRows() {
+    boardPages = Object.create(null);
+    if (state.data) {
+      state.data.stories = [];
+      state.data.ready_ids = [];
+      state.data.blocked_ids = [];
+      state.data.next_ids = [];
+      state.data.refs = {};
+    }
+    pendingAnimations = null;
+    clearedBlockers = {};
+    clear($("board-view"));
+    clear($("list-body"));
+    clear($("mobile-list-body"));
+    var pager = $("list-page-controls");
+    if (pager) clear(pager);
+    clearMobileListDetails();
+    closeStoryMenu(false);
+    closeColumnSortMenu(false);
+    if (state.drawerId && state.drawerDetail) renderDrawer();
+  }
+
+  function syncBoardScope() {
+    var key = boardScopeKey();
+    if (key === boardScope) return false;
+    if (pendingDeepLink && (state.screen !== "repo" || state.repoId !== pendingDeepLink.repoId)) consumeDeepLinkStory();
+    cancelBoardReads();
+    clearBoardRows();
+    boardScope = key;
+    if (state.screen === "repo" && state.repoId) fetchData();
+    return true;
+  }
+
+  function boardOptions(column, cursor, metadataOnly) {
+    var sort = column === null ? state.sort : columnSortFor(column);
+    var key = sort.key || sort.col;
+    var names = { added: "created", modified: "updated", order: "next" };
+    var options = {
+      limit: metadataOnly ? 0 : BOARD_PAGE_SIZE,
+      states: state.filter.states, types: state.filter.types,
+      priorities: state.filter.priorities, hidden_columns: state.view === "board" ? state.hiddenColumns : [],
+      show_archived: state.showArchived, text: state.filter.text,
+      sort: names[key] || key, dir: sort.dir
+    };
+    if (column !== null) options.column = column;
+    if (cursor) options.cursor = cursor;
+    return options;
+  }
+
+  function boardRead(options, epoch, callback) {
     var askedFor = state.repoId;
     var xhr = new XMLHttpRequest();
-    xhr.open("GET", dashboardPath(apiBase() + "/data"), true);
-    // SH-319: the daemon's cookie-borne-read gate accepts this marker on
-    // its own -- the same one api() already sends on every other request --
-    // instead of depending on Sec-Fetch-Site, which a plain-http tailnet
-    // origin never gets from the browser at all.
+    var finished = false;
+    boardRequests.push(xhr);
+    xhr.open("GET", dashboardPath(apiBase() + "/board?options=" + encodeURIComponent(JSON.stringify(options))), true);
     xhr.setRequestHeader("X-Storyhook", "1");
     xhr.timeout = BOARD_FETCH_TIMEOUT_MS;
+    function finish(error, payload) {
+      if (finished) return;
+      finished = true;
+      var index = boardRequests.indexOf(xhr);
+      if (index !== -1) boardRequests.splice(index, 1);
+      if (epoch !== boardEpoch || askedFor !== state.repoId || state.screen !== "repo") return;
+      callback(error, payload);
+    }
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
-      // Below the floor — a newer reply has already been applied, or a write
-      // has landed since this was asked — or the project it asked about is no
-      // longer the one on screen. Nothing is read from it, not even its
-      // freshness: whatever raised the floor knows a strictly newer world.
-      if (xhr.status === 200 && (ticket <= boardFetchFloor || askedFor !== state.repoId)) {
+      if (epoch !== boardEpoch || askedFor !== state.repoId || state.screen !== "repo") { finish(null, null); return; }
+      if (xhr.status === 200) {
+        var payload;
+        try { payload = JSON.parse(xhr.responseText); }
+        catch (e) { finish({ status: 0, message: "The board response could not be read." }); return; }
+        finish(null, payload);
+      } else {
+        if (xhr.status === 401) openTokenModal(fetchData);
+        finish({ status: xhr.status, message: xhr.status === 401 ? "Sign in to load stories." : "Stories could not be loaded. Retry this page." });
+      }
+    };
+    xhr.ontimeout = xhr.onerror = function() { finish({ status: 0, message: "This page did not arrive. Retry when the connection is ready." }); };
+    xhr.send();
+  }
+
+  function mergeBoardPages() {
+    if (!state.data) return;
+    // Column reads can straddle an external move. Keep the exact newest
+    // write once, without waiting for the other visible columns to arrive.
+    var winners = Object.create(null);
+    Object.keys(boardPages).forEach(function(key) {
+      boardPages[key].rows.forEach(function(view) {
+        var prior = winners[view.story.id];
+        if (!prior || compareWriteOrder(view, prior.view) > 0) winners[view.story.id] = { key: key, view: view };
+      });
+    });
+    var rows = [], ready = [], blocked = [], next = [], refs = {};
+    Object.keys(boardPages).forEach(function(key) {
+      var page = boardPages[key], resident = Object.create(null), related = Object.create(null);
+      page.rows = page.rows.filter(function(view) {
+        var winner = winners[view.story.id];
+        if (winner.key !== key || winner.view !== view || resident[view.story.id]) return false;
+        resident[view.story.id] = true;
+        (view.story.relationships || []).forEach(function(relation) { related[relation.other_id] = true; });
+        return true;
+      });
+      // Flags and relation status belong to the winning page, too: a stale
+      // ready flag must not outlive the stale copy of a now-claimed card.
+      page.ready = (page.ready || []).filter(function(id) { return resident[id]; });
+      page.blocked = (page.blocked || []).filter(function(id) { return resident[id]; });
+      page.next = (page.next || []).filter(function(id) { return resident[id]; });
+      Object.keys(page.refs || {}).forEach(function(id) {
+        if (related[id]) refs[id] = page.refs[id];
+        else delete page.refs[id];
+      });
+      rows = rows.concat(page.rows);
+      ready = ready.concat(page.ready);
+      blocked = blocked.concat(page.blocked);
+      next = next.concat(page.next);
+    });
+    state.data.stories = rows;
+    state.data.ready_ids = ready;
+    state.data.blocked_ids = blocked;
+    state.data.next_ids = next;
+    state.data.refs = refs;
+  }
+
+  function drainBoardQueue() {
+    while (boardActiveReads < 2 && boardQueue.length) {
+      var job = boardQueue.shift();
+      job();
+    }
+  }
+
+  function loadBoardPage(key, cursor, history) {
+    var page = boardPages[key];
+    if (!page || page.loading) return;
+    var epoch = boardEpoch;
+    page.loading = true;
+    // Keep a failed page's recovery control through a background retry.
+    // Only a successful response establishes that the failure is resolved.
+    // Navigating discards the old page immediately; polling the same page
+    // keeps its visible cards and scroll position until the refresh arrives.
+    if (cursor !== page.cursor) {
+      page.rows = [];
+      page.ready = page.blocked = page.next = [];
+      page.refs = {};
+      mergeBoardPages();
+    }
+    page.cursor = cursor || null;
+    page.history = history || [];
+    boardQueue.push(function() {
+      if (epoch !== boardEpoch || boardPages[key] !== page) return;
+      boardActiveReads++;
+      boardRead(boardOptions(key === "$list" ? null : key, page.cursor, false), epoch, function(error, payload) {
+        boardActiveReads--;
+        page.loading = false;
+        if (error && error.status === 409 && page.cursor) {
+          page.rows = [];
+          page.ready = page.blocked = page.next = [];
+          page.refs = {};
+          page.cursor = null;
+          page.history = [];
+          mergeBoardPages();
+          loadBoardPage(key, null, []);
+        } else if (error) {
+          page.error = error.message;
+          state.fetchOk = false;
+        } else {
+          var previous = { stories: state.data.stories, ready_ids: state.data.ready_ids, blocked_ids: state.data.blocked_ids };
+          page.rows = payload.stories || [];
+          page.ready = payload.ready_ids || [];
+          page.blocked = payload.blocked_ids || [];
+          page.next = payload.next_ids || [];
+          page.refs = payload.refs || {};
+          page.total = payload.page.total;
+          page.nextCursor = payload.page.next_cursor;
+          page.error = null;
+          mergeBoardPages();
+          var changes = diffSnapshots(previous, state.data, state.pending);
+          pendingAnimations = pendingAnimations ? unionAnimations(pendingAnimations, changes) : changes;
+          if (pressHeld) pressDataArrivals++;
+          if (recordClearedBlockers(previous, state.data, Date.now())) setTimeout(renderView, BLOCKER_CLEARED_DWELL_MS + 50);
+          state.lastFetchAt = Date.now();
+          state.fetchOk = true;
+        }
+        renderView();
+        updateConnection();
+        drainBoardQueue();
+        if (!boardActiveReads && !boardQueue.length && boardRefreshPending) fetchData();
+      });
+    });
+    drainBoardQueue();
+  }
+
+  function visibleBoardPageKeys() {
+    if (state.view === "list") return ["$list"];
+    return meta().states.filter(function(def) {
+      return state.hiddenColumns.indexOf(def.slug) === -1 && inclusiveFacetMatches(state.filter.states, def.slug);
+    }).map(function(def) { return def.slug; });
+  }
+
+  function fetchData() {
+    if (state.screen !== "repo" || !state.repoId) return;
+    if (boardScopeKey() !== boardScope) { syncBoardScope(); return; }
+    if (boardMetadataLoading || boardActiveReads || boardQueue.length) { boardRefreshPending = true; return; }
+    boardRefreshPending = false;
+    var ticket = ++boardFetchTicket;
+    var epoch = boardEpoch;
+    var askedFor = state.repoId;
+    boardMetadataLoading = true;
+    boardMetadataError = null;
+    renderBoardLoading();
+    boardRead(boardOptions(null, null, true), epoch, function(error, parsed) {
+      boardMetadataLoading = false;
+      if (ticket <= boardFetchFloor) { fetchData(); return; }
+      if (error) {
+        state.fetchOk = false;
+        boardMetadataError = error.message;
+        renderBoardLoading();
         updateConnection();
         markDataSettled(askedFor);
         return;
       }
-      if (xhr.status === 200) {
-        try {
-          var parsed = JSON.parse(xhr.responseText);
-          // `state.data` is only ever null right after `selectRepo()` (see
-          // its own comment) — every other caller of `fetchData()` is a
-          // refresh of an already-open repo.
-          var isFirstLoadForRepo = !state.data;
-          // Diff against the previous snapshot *before* replacing it, so
-          // the next render knows exactly what changed and can animate
-          // accordingly. Skipped on the first load of a repo, so opening a
-          // repo never animates every card in as if it had just appeared.
-          if (state.data) {
-            var arriving = diffSnapshots(state.data, parsed, state.pending);
-            // Unioned, not assigned, so gating renderView() costs nothing: see
-            // unionAnimations()'s own doc comment for why that is provably
-            // harmless, and why this is a no-op outside a press (SH-401).
-            pendingAnimations = pendingAnimations ? unionAnimations(pendingAnimations, arriving) : arriving;
-            if (pressHeld) pressDataArrivals++;
-          }
-          // SH-203: an open drawer's relation and referenced-by rows carry
-          // a status light (storyRef() -> findStory(), reading state.data)
-          // for whichever OTHER story they name -- but renderAll() below
-          // only re-renders the board/list; renderDrawer() otherwise runs
-          // only from handleMutationSuccess(), and only for the drawer's
-          // own story. Without this, a blocker (or any referenced story)
-          // closing elsewhere would leave every light in an open drawer
-          // stale until it was closed and reopened. Checked before
-          // `pendingAnimations` is consumed by renderView() (it's nulled
-          // out there) and gated on the diff actually holding a change, so
-          // the 25s safety poll's ordinary no-op tick doesn't churn the
-          // drawer -- clobbering in-progress focus/caret for nothing.
-          var hasChanges = !!(pendingAnimations && (
-            pendingAnimations.entered.length || pendingAnimations.exited.length ||
-            pendingAnimations.moved.length || Object.keys(pendingAnimations.changed).length
-          ));
-          // SH-203 consumer 2's cleared-blocker dwell: same "diff before
-          // replacing" timing as pendingAnimations above, and the same
-          // reason -- recordClearedBlockers needs both snapshots, not
-          // just the fresh one. `foundClearance` decides whether a
-          // follow-up render is worth scheduling once the dwell elapses
-          // (below); populateCard() itself reads the ledger on every
-          // render regardless, so a render this tick already shows it.
-          var foundClearance = recordClearedBlockers(state.data, parsed, Date.now());
-          // Raised only once the body has parsed: a reply that turns out to
-          // be malformed has applied nothing, so it must not stop a later
-          // (higher-ticket) reply from applying either.
-          boardFetchFloor = ticket;
-          var mediaStoryId = state.drawerId;
-          var oldMedia = mediaStoryId ? drawerMedia(mediaStoryId) : [];
-          state.data = parsed;
-          var mediaChanged = !!mediaStoryId &&
-            JSON.stringify(oldMedia) !== JSON.stringify(drawerMedia(mediaStoryId));
-          if (attachmentViewer && !storyReferenceExists(attachmentViewer.storyId)) closeAttachmentModal();
-          state.verificationObservedAt = Date.now();
-          state.lastFetchAt = Date.now();
-          state.fetchOk = true;
-          // Per-repo-vocabulary filter values (SH-155) can only be
-          // validated once this repo's own vocabulary (`meta()`) is
-          // available, which it now is — and only on the load a repo
-          // switch triggered, not on every subsequent poll of the same
-          // repo's data.
-          if (isFirstLoadForRepo) pruneCarriedFilters();
-          renderAll();
-          if ((hasChanges || mediaChanged) && state.drawerId) renderDrawer();
-          if (isFirstLoadForRepo) consumeDeepLinkStory();
-          // Nothing else re-renders once the dwell window closes (no
-          // further fetch is guaranteed to land exactly then) -- one
-          // extra tick, timed just past the ledger entry's own expiry, so
-          // the cleared blocker's card drops it instead of it lingering
-          // until the next unrelated update happens to trigger a render.
-          if (foundClearance) setTimeout(renderView, BLOCKER_CLEARED_DWELL_MS + 50);
-        } catch (e) {
-          state.fetchOk = false;
+      var first = !state.data;
+      var rows = state.data ? state.data.stories : [];
+      state.data = parsed;
+      state.data.paged = true;
+      state.data.stories = rows;
+      state.data.ready_ids = [];
+      state.data.blocked_ids = [];
+      state.data.next_ids = [];
+      state.verificationObservedAt = Date.now();
+      state.lastFetchAt = Date.now();
+      state.fetchOk = true;
+      boardFetchFloor = ticket;
+      if (first) {
+        pruneCarriedFilters();
+        // Counts were computed with the carried filters. If pruning changes
+        // that query, refresh metadata as well as pages before claiming totals.
+        var prunedScope = boardScopeKey();
+        if (prunedScope !== boardScope) {
+          boardScope = prunedScope;
+          fetchData();
+          return;
         }
-      } else if (xhr.status === 401) {
-        // The stored token is stale (the daemon restarted, minting a new
-        // one) or was never set. The next poll tick retries on its own; the
-        // modal gives the user a way to fix it sooner.
-        state.fetchOk = false;
-        openTokenModal(fetchData);
-      } else {
-        state.fetchOk = false;
       }
-      updateConnection();
-      // After the branches, not before: on the success path `state.data` is
-      // already assigned by the time this runs, which is what keeps a
-      // readiness surface from repainting its "not loaded" state a beat
-      // before the loaded one lands over it.
+      var keys = visibleBoardPageKeys();
+      Object.keys(boardPages).forEach(function(key) { if (keys.indexOf(key) === -1) delete boardPages[key]; });
+      keys.forEach(function(key) {
+        var page = boardPages[key];
+        if (!page) page = boardPages[key] = { rows: [], cursor: null, history: [], total: null, nextCursor: null };
+        loadBoardPage(key, page.cursor, page.history);
+      });
+      mergeBoardPages();
+      renderAll();
       markDataSettled(askedFor);
-    };
-    xhr.ontimeout = function() { state.fetchOk = false; updateConnection(); markDataSettled(askedFor); };
-    xhr.onerror = function() { state.fetchOk = false; updateConnection(); markDataSettled(askedFor); };
-    xhr.send();
+      if (pendingDeepLink) consumeDeepLinkStory();
+      if (state.drawerId) refreshDrawerDetail();
+      updateConnection();
+      if (!boardActiveReads && !boardQueue.length && boardRefreshPending) fetchData();
+    });
+  }
+
+  function renderBoardLoading() {
+    var mount = $("board-load-status");
+    if (!mount) {
+      mount = el("div", { id: "board-load-status", class: "page-controls", role: "status" }, []);
+      $("board-view").parentNode.insertBefore(mount, $("board-view"));
+    }
+    clear(mount);
+    mount.hidden = state.screen !== "repo" || (!boardMetadataError && (state.data || !boardMetadataLoading));
+    if (mount.hidden) return;
+    mount.appendChild(el("span", {}, [boardMetadataError || readinessNote("board", false)]));
+    if (boardMetadataError) mount.appendChild(el("button", { type: "button", class: "btn btn-ghost board-metadata-retry", onClick: fetchData }, ["Retry"]));
+  }
+
+  function renderPageControls(mount, key) {
+    var page = boardPages[key];
+    if (!page) { clear(mount); return; }
+    mount.setAttribute("role", "status");
+    mount.dataset.pageKey = key;
+    var label = page.error || (page.loading ? readinessNote("stories", false) :
+      (page.total === 0 ? "No matching stories" : "Showing " + page.rows.length + " of " + page.total));
+    if (page.error && page.loading) label += " " + readinessNote("stories", false);
+    var note = mount.querySelector("span");
+    if (!note) { note = el("span", {}, []); mount.insertBefore(note, mount.firstChild); }
+    if (note.textContent !== label) note.textContent = label;
+    // Keep controls themselves through independent arrivals and repeated
+    // failed background reads. Updating a label or disabled state must not
+    // discard the user's focus or the node a click is about to target.
+    var wanted = [note], cursor = note.nextSibling;
+    function button(className, title, disabled, onClick) {
+      var control = mount.querySelector("." + className);
+      if (!control) control = el("button", { type: "button", class: "btn btn-ghost " + className, onClick: onClick }, [title]);
+      control.disabled = disabled;
+      if (control === cursor) cursor = cursor.nextSibling;
+      else mount.insertBefore(control, cursor);
+      wanted.push(control);
+    }
+    if (page.error) button("board-page-retry", "Retry", !!page.loading, function() {
+      var current = boardPages[key];
+      if (current) { loadBoardPage(key, current.cursor, current.history); renderView(); }
+    });
+    if (page.history.length) button("board-page-previous", "Previous", !!page.loading, function() {
+      var current = boardPages[key];
+      if (!current || !current.history.length) return;
+      var previous = current.history.slice();
+      var cursor = previous.pop();
+      loadBoardPage(key, cursor, previous); renderView();
+    });
+    if (page.nextCursor) button("board-page-next", "Next", !!page.loading, function() {
+      var current = boardPages[key];
+      if (!current || !current.nextCursor) return;
+      loadBoardPage(key, current.nextCursor, current.history.concat([current.cursor])); renderView();
+    });
+    Array.prototype.slice.call(mount.children).forEach(function(child) {
+      if (wanted.indexOf(child) === -1) detach(child);
+    });
   }
 
   /** Records that a `/data` round trip for `askedFor` has completed, which is
@@ -3796,7 +4017,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function fetchReposOnce(onDone) {
     var ticket = ++reposFetchTicket;
     var xhr = new XMLHttpRequest();
-    xhr.open("GET", dashboardPath("/api/repos"), true);
+    xhr.open("GET", dashboardPath("/api/repos?board=1"), true);
     // SH-319: see the identical comment in fetchData().
     xhr.setRequestHeader("X-Storyhook", "1");
     xhr.timeout = CATALOG_FETCH_TIMEOUT_MS;
@@ -7308,9 +7529,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       { label: "Copy URL", onSelect: function() { copyText(storyPermalink(st.id), "URL"); } },
       {
         label: "Copy Description",
-        disabled: !description,
-        title: description ? null : "This story has no description",
-        onSelect: function() { copyText(description, "Description"); }
+        disabled: v.is_summary ? v.has_description === false : !description,
+        title: v.is_summary ? "Load and copy this story's description" : (description ? null : "This story has no description"),
+        onSelect: function() {
+          if (!v.is_summary) { copyText(description, "Description"); return; }
+          api("GET", repoApiBase(state.repoId) + "/story/" + encodeURIComponent(st.id)).then(function(response) {
+            copyText((response.story && response.story.story.description || "").trim(), "Description");
+          }).catch(toastError);
+        }
       },
       { separator: true },
       launch ? {
@@ -7409,12 +7635,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       return;
     }
     var defaultState = (meta().defaults || {}).state;
-    api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/reopen", {})
+    var project = state.repoId;
+    var base = repoApiBase(project) + "/story/" + encodeURIComponent(id);
+    api("POST", base + "/reopen", {})
       .then(function(resp) {
-        if (resp && resp.story && resp.story.story) applyStory(resp.story.story);
-        if (targetSlug === defaultState) { fetchData(); return; }
-        moveStory(id, targetSlug, false);
+        if (targetSlug === defaultState) return resp;
+        return api("POST", base + "/move", { state: targetSlug });
       })
+      .then(mutationSuccessFor(project))
       .catch(toastError);
   }
 
@@ -8192,6 +8420,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function blockedSet() {
     var set = {};
     (state.data && state.data.blocked_ids || []).forEach(function(id) { set[id] = true; });
+    if (state.drawerDetail && state.drawerDetail.is_blocked) set[state.drawerId] = true;
     return set;
   }
 
@@ -8213,7 +8442,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // renders under, shared by column placement and the State filter below.
       var shownState = v.display_state || st.state;
       if (!state.showArchived && st.hidden_at) return false;
-      if (text) {
+      if (text && !v.is_summary) {
+        // Summaries may shorten display text; the server searched the full
+        // title and labels before paging, so do not reject its matching row.
         var hay = (st.id + " " + st.title + " " + (st.labels || []).join(" ")).toLowerCase();
         if (hay.indexOf(text) === -1) return false;
       }
@@ -8640,13 +8871,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * view rather than being copied into it, matching the server's additive
    * `/api/repos[].drafts` shape (SH-442). */
   function catalogDrafts() {
-    var result = [];
-    visibleRepos().forEach(function(project) {
-      (project.drafts || []).forEach(function(draft) {
-        result.push({ project: project, draft: draft });
-      });
-    });
-    return result;
+    if (!draftWindow) return [];
+    return draftWindow.rows.map(function(draft) { return { project: draftWindow.project, draft: draft }; });
   }
 
   function catalogHasDraftErrors() {
@@ -8660,7 +8886,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * the unknown part honest and the open popover names the failure. */
   function updateDraftsButton() {
     var complete = state.reposReadiness === "loaded" && !catalogHasDraftErrors();
-    var count = catalogDrafts().length;
+    var count = visibleRepos().reduce(function(total, project) { return total + (project.draft_count || 0); }, 0);
     $("drafts-btn-text").textContent = complete ? (count || "No") + " Drafts" : "Drafts";
     $("more-draft-count").hidden = !complete || count === 0;
     $("more-draft-count").textContent = count ? String(count) : "";
@@ -8831,7 +9057,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // `screen = "repo"` this one is false exactly when that one must fire.
     // No single rule covers both.
     if (!isRepo) {
-      closeDrawer();
+      if (!closeDrawer()) { state.screen = "repo"; renderScreen(); return; }
+      syncBoardScope();
+      state.data = null;
+      renderBoardLoading();
       closeFilterSheet();
     }
 
@@ -8851,12 +9080,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function renderView() {
+    syncBoardScope();
+    renderBoardLoading();
+    if (state.screen !== "repo") return;
     if (pressDefer("view", renderView)) return;
     var visible = filteredStories();
-    var total = state.data ? state.data.stories.length : 0;
-    $("filter-count").textContent = total ? (visible.length + " / " + total) : "";
-    syncFilterToggle(visible.length, total);
-    $("empty-msg").hidden = visible.length !== 0 || !state.data;
+    var counts = state.data && state.data.counts;
+    var total = counts ? counts.all : 0;
+    var matching = counts ? counts.total : 0;
+    $("filter-count").textContent = total ? (matching + " / " + total) : "";
+    syncFilterToggle(matching, total);
+    $("empty-msg").hidden = visible.length !== 0 || !state.data || boardMetadataLoading || !!boardMetadataError ||
+      Object.keys(boardPages).some(function(key) { return boardPages[key].loading || boardPages[key].error; });
 
     // Consumed here, once, regardless of which view actually renders below
     // — renderView() runs on every filter/sort/view-toggle/optimistic-update
@@ -8871,11 +9106,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (state.view === "board") {
       $("board-view").hidden = false;
       $("list-view").hidden = true;
+      clear($("list-body"));
+      clear($("mobile-list-body"));
+      var listPager = $("list-page-controls");
+      if (listPager) clear(listPager);
       renderBoard(visible, anims);
     } else {
       $("board-view").hidden = true;
       $("list-view").hidden = false;
+      clear($("board-view"));
       renderList(visible, anims);
+      var pager = $("list-page-controls");
+      if (!pager) { pager = el("div", { id: "list-page-controls", class: "page-controls" }, []); $("list-view").appendChild(pager); }
+      renderPageControls(pager, "$list");
     }
   }
 
@@ -9222,6 +9465,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** Reflects the active presentation's open state without conflating the
    * transient mobile sheet with the persisted desktop disclosure. */
   function syncFilterToggle(visible, total) {
+    if (state.data && state.data.counts) {
+      visible = state.data.counts.total;
+      total = state.data.counts.all;
+    }
     var open = state.compactHeader ? state.mobileFiltersOpen : state.filtersOpen;
     var active = !!total && visible !== total;
     $("filter-panel").hidden = !open;
@@ -9512,6 +9759,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * serialized name back out of a live daemon rather than hand-copying it
    * on both sides. */
   function nextRank(id) {
+    var view = findStory(id);
+    if (view && view.next_rank !== undefined && view.next_rank !== null) return view.next_rank;
     var ids = (state.data && state.data.next_ids) || [];
     var idx = ids.indexOf(id);
     return idx === -1 ? Infinity : idx;
@@ -9658,8 +9907,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // so "empty" means empty *given the current filters*, matching what a
     // user looking at the board actually sees.
     var states = meta().states.filter(function(s) {
-      if (state.hiddenColumns.indexOf(s.slug) !== -1) return false;
-      if (state.hideEmptyColumns && !(byState[s.slug] && byState[s.slug].length)) return false;
+      if (state.hiddenColumns.indexOf(s.slug) !== -1 || !inclusiveFacetMatches(state.filter.states, s.slug)) return false;
+      var page = boardPages[s.slug];
+      if (state.hideEmptyColumns && page && page.total === 0 && !page.loading && !page.error) return false;
       return true;
     });
     ensureColumnShells(container, states);
@@ -9681,8 +9931,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var column = findColumnBySlug(container, stateDef.slug);
       if (!column) return;
       var isClosed = stateDef.super_state === "CLOSED";
-      var cards = (byState[stateDef.slug] || []).slice().sort(columnCardCompare(stateDef.slug));
-      column.querySelector(".column-count").textContent = String(cards.length);
+      // The server orders before paging. Re-sorting a partial page would
+      // misrepresent global queue position and tie-breaking.
+      var cards = (byState[stateDef.slug] || []).slice();
+      var page = boardPages[stateDef.slug];
+      column.querySelector(".column-count").textContent = page && page.total !== null ? String(page.total) : "…";
+      renderPageControls(column.querySelector(".page-controls"), stateDef.slug);
       // SH-305: the sort button's name is set here rather than baked into
       // `ensureColumnShells`'s one-time shell -- that only rebuilds when the
       // *set* of states changes, not on every render, so a stale label
@@ -9692,10 +9946,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var sortBtn = column.querySelector(".column-sort-btn");
       sortBtn.title = sortLabel;
       sortBtn.setAttribute("aria-label", sortLabel);
-      reconcileColumnCards(column.querySelector(".column-cards"), cards, ready, blocked, isClosed, anims, reduceMotion, claimed, existingById);
+      reconcileColumnCards(column.querySelector(".column-cards"), cards, ready, blocked, isClosed, anims, reduceMotion, claimed, existingById,
+        !!page && page.total === 0 && !page.loading && !page.error);
     });
 
-    removeUnclaimedCards(container, claimed, reduceMotion);
+    // Evicted pages/categories must not linger as invisible exit DOM.
+    removeUnclaimedCards(container, claimed, true);
     if (!reduceMotion) playFlip(container, firstRects);
     syncRoving(container, ".card[data-id]", focusedId);
   }
@@ -9752,7 +10008,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           }, [emojiIcon("sort")])
         ]),
         stateDef.slug === "verifying" ? el("div", { class: "verification-control-status", role: "status", hidden: true }, []) : null,
-        el("div", { class: "column-cards" }, [])
+        el("div", { class: "column-cards" }, []),
+        el("div", { class: "page-controls" }, [])
       ]);
       bindColumnDrop(column, stateDef.slug, isClosed);
       container.appendChild(column);
@@ -9801,15 +10058,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * SH-401 subsequently made the paint wait for every primary press by gating
    * `renderView`, so this function cannot run in that interval on any browser;
    * `card-reposition-click-race.spec.ts` drives this exact path. */
-  function reconcileColumnCards(cardsEl, desiredCards, ready, blocked, isClosed, anims, reduceMotion, claimed, existingById) {
-    if (!desiredCards.length) {
-      if (!cardsEl.querySelector(".column-empty")) {
-        cardsEl.appendChild(el("div", { class: "column-empty" }, ["No stories"]));
-      }
+  function reconcileColumnCards(cardsEl, desiredCards, ready, blocked, isClosed, anims, reduceMotion, claimed, existingById, knownEmpty) {
+    var placeholder = cardsEl.querySelector(".column-empty");
+    if (!desiredCards.length && knownEmpty) {
+      if (!placeholder) cardsEl.appendChild(el("div", { class: "column-empty" }, ["No stories"]));
       return;
     }
-    var placeholder = cardsEl.querySelector(".column-empty");
+    // Loading and failed reads have their own page status; an absent card
+    // window is not evidence that the column contains no stories.
     if (placeholder) detach(placeholder);
+    if (!desiredCards.length) return;
 
     var cursor = cardsEl.firstElementChild;
     desiredCards.forEach(function(v) {
@@ -9989,8 +10247,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function openBlockers(st) {
     return (st.relationships || []).filter(function(r) {
       if (r.relation !== "blocked-by") return false;
-      var v = findStory(r.other_id);
-      return !!v && v.story.superstate === "OPEN";
+      var status = storyStatus(r.other_id);
+      return !!status && status.superstate === "OPEN";
     });
   }
 
@@ -10335,6 +10593,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var flagDesc = blockedFlag(st, !!blocked[st.id]);
     var floor = blockerFloor(v);
     var continuationAlerts = Array.isArray(v.continuation_alerts) ? v.continuation_alerts : [];
+    var continuationNeedsAttention = continuationAlerts.length || v.continuation_needs_attention;
     // SH-309: `card`'s subtree is presentational to assistive tech (see
     // `.card-actions-btn`'s own comment below), so a blocked reason that
     // reaches only the badge's `title` never reaches AT at all -- appending
@@ -10348,7 +10607,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // SH-788: in the base label, so updateVerificationElapsedLabels'
       // per-tick rewrite keeps it.
       + (floor ? " — priority " + st.priority + ", sorted as " + floor + " while it blocks more urgent work" : "")
-      + (continuationAlerts.length ? " — Continuation needs attention" : "");
+      + (continuationNeedsAttention ? " — Continuation needs attention" : "")
+      + (v.summary_truncated ? " — Summary shortened; open for full details" : "");
     var verification = (v.display_state || st.state) === "verifying" ? v.verification : null;
     var verificationDesc = verificationDescription(verification);
     card.dataset.baseAriaLabel = baseAriaLabel;
@@ -10441,12 +10701,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     next.appendChild(metaRow);
 
     var flags = el("div", { class: "card-flags" }, []);
+    if (v.summary_truncated) flags.appendChild(summaryShortenedNote());
     if (flagDesc) {
       var flag = el("span", { class: "flag flag-blocked" }, flagDesc.children);
       if (flagDesc.title) flag.title = flagDesc.title;
       flags.appendChild(flag);
     }
-    if (continuationAlerts.length) {
+    if (continuationNeedsAttention) {
       flags.appendChild(el("span", { class: "flag continuation-alert-chip" }, [
         "⚠ Continuation needs attention"
       ]));
@@ -10528,7 +10789,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function findStory(id) {
-    return (state.data && state.data.stories || []).filter(function(v) { return v.story.id === id; })[0] || null;
+    return (state.data && state.data.stories || []).filter(function(v) { return v.story.id === id; })[0] ||
+      (state.drawerId === id ? state.drawerDetail : null) || null;
   }
 
   /** Whether `id` still names any story in the project's exhaustive `/data`
@@ -10603,6 +10865,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var story = findStory(id);
     if (!story) return;
     var originSlug = story.story.state;
+    var project = state.repoId;
+    var pending = state.pending;
     // Every caller, including Set Status, must collect the override before
     // changing the card or sending a request. Modal submission supplies it.
     if (automationsEnabled() && originSlug === "verifying" && targetSlug === "done" && !(comment || "").trim()) {
@@ -10610,7 +10874,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       return;
     }
     story.story.state = targetSlug; // optimistic
-    state.pending[id] = true;
+    pending[id] = true;
     renderView();
 
     var body = { state: targetSlug };
@@ -10629,12 +10893,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     request
       .then(function(resp) {
-        delete state.pending[id];
+        delete pending[id];
+        if (state.repoId !== project || state.screen !== "repo") return;
         if (resp && resp.story && resp.story.story) applyStory(resp.story.story);
         fetchData();
       })
       .catch(function(err) {
-        delete state.pending[id];
+        delete pending[id];
+        if (state.repoId !== project || state.screen !== "repo") return;
         var reverted = findStory(id);
         if (reverted) reverted.story.state = originSlug;
         toastError(err);
@@ -10656,11 +10922,45 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function applyStory(snapshot) {
     if (!state.data) return;
     boardFetchFloor = boardFetchTicket;
+    cancelBoardReads();
+    Object.keys(boardPages).forEach(function(key) { boardPages[key].loading = false; });
+    if (state.drawerId === snapshot.id) {
+      cancelDrawerRead();
+      drawerReadError = null;
+      drawerUnavailable = false;
+      if (state.drawerDetail) state.drawerDetail.story = snapshot;
+    }
     var idx = state.data.stories.findIndex(function(v) { return v.story.id === snapshot.id; });
-    if (idx === -1) {
-      state.data.stories.push({ story: snapshot, is_ready: false, is_blocked: false });
-    } else {
-      state.data.stories[idx].story = snapshot;
+    // A mutation echo is a full story. Only the visible drawer may own
+    // it; summary pages keep their existing bounded field set until refreshed.
+    if (idx !== -1) {
+      var summary = state.data.stories[idx];
+      var compact = {};
+      Object.keys(summary.story).forEach(function(key) {
+        if (["description", "comments", "history", "attachments", "referenced_by_commits"].indexOf(key) !== -1) return;
+        var value = snapshot[key];
+        if (key === "labels") {
+          var policyLabels = (value || []).filter(function(label) { return label === "human-only" || label === "no-auto"; });
+          value = policyLabels.concat((value || []).filter(function(label) { return label !== "human-only" && label !== "no-auto"; }));
+        }
+        if (key === "labels" || key === "relationships") value = (value || []).slice(0, 16).filter(function(item) { return JSON.stringify(item).length <= 1024; });
+        if ((key === "title" || key === "awaiting") && typeof value === "string") value = value.slice(0, 512);
+        compact[key] = value;
+      });
+      summary.story = compact;
+      var shown = summary.display_state || snapshot.state;
+      var search = state.filter.text.toLowerCase();
+      var haystack = (snapshot.id + " " + snapshot.title + " " + (snapshot.labels || []).join(" ")).toLowerCase();
+      if ((search && haystack.indexOf(search) === -1) || (!state.showArchived && snapshot.hidden_at) ||
+          (state.view === "board" && (state.hiddenColumns.indexOf(shown) !== -1 || state.hiddenColumns.indexOf(snapshot.state) !== -1)) ||
+          !inclusiveFacetMatches(state.filter.states, shown) ||
+          !inclusiveFacetMatches(state.filter.types, snapshot.story_type) ||
+          !inclusiveFacetMatches(state.filter.priorities, snapshot.priority)) {
+        Object.keys(boardPages).forEach(function(key) {
+          boardPages[key].rows = boardPages[key].rows.filter(function(view) { return view.story.id !== snapshot.id; });
+        });
+        mergeBoardPages();
+      }
     }
     renderView();
   }
@@ -10745,15 +11045,21 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * Reads `display_state || story.state`, the same expression the board
    * itself places a card by (`renderBoard`), so an epic's light never
    * disagrees with the column its own card sits in. */
+  function storyStatus(id) {
+    var view = findStory(id);
+    if (view) return { state: view.story.state, superstate: view.story.superstate, display_state: view.display_state };
+    return drawerRefs[id] || (state.data && state.data.refs && state.data.refs[id]) || null;
+  }
+
   function storyLight(id) {
-    var v = findStory(id);
-    if (!v) {
+    var status = storyStatus(id);
+    if (!status) {
       return el("span", {
         class: "dot story-light unknown", role: "img",
         title: "unknown", "aria-label": "Status: unknown"
       }, []);
     }
-    var slug = v.display_state || v.story.state;
+    var slug = status.display_state || status.state;
     return el("span", {
       class: "dot story-light", role: "img", style: "background:" + stateColor(slug),
       title: slug, "aria-label": "Status: " + slug
@@ -10816,8 +11122,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var highestStoryNumber = state.data && state.data.highest_story_number;
       var canonical = Number.isSafeInteger(storyNumber) && storyNumber >= 1 && String(storyNumber) === rawNumber;
       var watermarkIsSafe = Number.isSafeInteger(highestStoryNumber) && highestStoryNumber >= 0;
-      var deleted = canonical && watermarkIsSafe && storyNumber <= highestStoryNumber && !storyReferenceExists(id);
-      parts.push(id === selfId ? id : story ? storyRef(id) : deleted ? "<DELETED>" : id);
+      var refs = drawerRefs;
+      var knownMissing = Object.prototype.hasOwnProperty.call(refs, id) && refs[id] === null;
+      var paged = state.data && state.data.paged;
+      var allocated = canonical && watermarkIsSafe && storyNumber <= highestStoryNumber;
+      var deleted = knownMissing || (!paged && allocated && !storyReferenceExists(id));
+      parts.push(id === selfId ? id : deleted ? "<DELETED>" : (story || storyStatus(id) || (paged && allocated)) ? storyRef(id) : id);
       lastIndex = idStart + id.length;
       re.lastIndex = lastIndex;
     }
@@ -11563,6 +11873,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function syncListPresentation(transferFocus) {
     var descriptor = transferFocus ? listFocusDescriptor() : null;
     var mobile = compactHeaderQuery.matches;
+    if (transferFocus && state.screen === "repo" && state.view === "list") renderList(filteredStories(), null);
     $("list-desktop").hidden = mobile;
     $("mobile-list").hidden = !mobile;
 
@@ -11622,7 +11933,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** Renders both keyed List presentations from one sorted collection, then
    * exposes only the presentation matching the current media boundary. */
   function renderList(stories, anims) {
-    var sorted = sortedListStories(stories);
+    var sorted = stories.slice();
 
     document.querySelectorAll(".sort-arrow").forEach(function(a) { a.textContent = ""; });
     var arrow = $("sort-" + state.sort.col);
@@ -11630,8 +11941,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("mobile-sort-column").value = state.sort.col;
     $("mobile-sort-direction").value = String(state.sort.dir);
 
-    renderDesktopList(sorted, anims);
-    renderMobileList(sorted, anims);
+    if (compactHeaderQuery.matches) {
+      clear($("list-body"));
+      renderMobileList(sorted, anims);
+    } else {
+      clear($("mobile-list-body"));
+      renderDesktopList(sorted, anims);
+    }
     syncListPresentation(false);
   }
 
@@ -11754,6 +12070,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     while (parent.children.length > candidates.length) detach(parent.lastElementChild);
   }
 
+  function summaryShortenedNote() {
+    return el("span", { class: "flag summary-truncated", title: "Some title, label or relationship details are shortened. Open the story for full details." }, ["Summary shortened · open for details"]);
+  }
+
   function populateListRow(row, v, ready, blocked) {
     var st = v.story;
     var engineLane = engineLaneForStory(st.id);
@@ -11762,7 +12082,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var order = nextRank(st.id);
     row.setAttribute(
       "aria-label",
-      st.id + ": " + st.title + (engineLaneDesc ? " — " + engineLaneDesc : "")
+      st.id + ": " + st.title + (engineLaneDesc ? " — " + engineLaneDesc : "") +
+        (v.summary_truncated ? " — Summary shortened; open for full details" : "")
     );
     row.style.borderLeft = blocked[st.id] ? "3px solid var(--danger)" : "";
 
@@ -11773,7 +12094,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var badge = buildTypeBadge(st.story_type);
     next.appendChild(el("td", { class: "col-id" }, badge ? [badge, " ", st.id] : [st.id]));
     next.appendChild(el("td", { class: "col-order" }, [order === Infinity ? "—" : String(order + 1)]));
-    next.appendChild(el("td", { class: "col-title" }, [st.title, buildEngineLaneChip(engineLane)]));
+    next.appendChild(el("td", { class: "col-title" }, [st.title, buildEngineLaneChip(engineLane), v.summary_truncated ? summaryShortenedNote() : null]));
     next.appendChild(el("td", {}, [buildStatePill(v)]));
     next.appendChild(el("td", {}, [priorityDot(st.priority, blockerFloor(v))]));
     next.appendChild(el("td", { class: "col-labels" }, [labelChips(st.labels)]));
@@ -11871,9 +12192,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var next = el("li", {}, []);
     var title = el("button", {
       type: "button", class: "mobile-story-title", dataset: { id: id }, tabIndex: -1,
-      "aria-label": st.title + (engineLaneDesc ? " — " + engineLaneDesc : ""),
+      "aria-label": st.title + (engineLaneDesc ? " — " + engineLaneDesc : "") +
+        (v.summary_truncated ? " — Summary shortened; open for full details" : ""),
       onClick: function() { openDrawer(id); }
-    }, [st.title, buildEngineLaneChip(engineLane)]);
+    }, [st.title, buildEngineLaneChip(engineLane), v.summary_truncated ? summaryShortenedNote() : null]);
     next.appendChild(title);
 
     var badge = buildTypeBadge(st.story_type);
@@ -12176,7 +12498,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var previous = existing[key];
       var chosen;
       var inPosition = previous === cursor;
-      if (previous && previous.dataset.drawerRendered === rendered) {
+      // Refreshes must preserve every edited section, not just the focused
+      // control: hiding a category or opening a filter moves focus elsewhere.
+      var liveControls = previous ? JSON.parse(drawerRenderFingerprint(previous)).controls : null;
+      var candidateControls = JSON.parse(rendered).controls;
+      var unsaved = previous && drawerSectionHasEdits(previous) &&
+        JSON.stringify(liveControls) !== JSON.stringify(candidateControls);
+      if (previous && (previous.dataset.drawerRendered === rendered || unsaved)) {
         chosen = previous;
       } else {
         candidate.dataset.drawerRendered = rendered;
@@ -12220,20 +12548,118 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * own note nearby (`closeDrawer()`) is that a second way of saying the
    * same state fact is only a second thing to keep true, not a second
    * safeguard. */
+  var drawerRead = null;
+  var drawerReadTicket = 0;
+  var drawerReadError = null;
+  var drawerUnavailable = false;
+  var drawerLockedControls = new WeakMap();
+  var drawerRefs = {};
+
+  // An unavailable story may retain an explicit unsaved edit buffer for
+  // copying. Prevent blur/Enter autosaves as well as button submissions.
+  ["blur", "change", "submit", "keydown", "click"].forEach(function(type) {
+    $("drawer").addEventListener(type, function(event) {
+      if (!drawerUnavailable || !event.target.closest || !event.target.closest("#drawer-body, #drawer-footer") || event.target.closest(".drawer-detail-retry")) return;
+      if (type === "keydown" && event.key !== "Enter") return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
+  });
+
+  function lockUnavailableDrawerControls() {
+    $("drawer").querySelectorAll("#drawer-body input, #drawer-body textarea, #drawer-body select, #drawer-body button, #drawer-footer button").forEach(function(control) {
+      if (control.classList.contains("drawer-detail-retry")) return;
+      if (drawerUnavailable) {
+        if (!drawerLockedControls.has(control)) drawerLockedControls.set(control, { disabled: control.disabled, readOnly: control.readOnly });
+        if (control.tagName === "TEXTAREA" || (control.tagName === "INPUT" && ["checkbox", "radio", "file", "button", "submit"].indexOf(control.type) === -1)) control.readOnly = true;
+        else control.disabled = true;
+      } else if (drawerLockedControls.has(control)) {
+        var original = drawerLockedControls.get(control);
+        control.disabled = original.disabled;
+        if (original.readOnly !== undefined) control.readOnly = original.readOnly;
+        drawerLockedControls.delete(control);
+      }
+    });
+  }
+
+  function cancelDrawerRead() {
+    drawerReadTicket++;
+    if (drawerRead) drawerRead.abort();
+    drawerRead = null;
+  }
+
+  function drawerSectionHasEdits(node) {
+    if (!node.dataset.drawerRendered) return false;
+    try {
+      return JSON.stringify(JSON.parse(drawerRenderFingerprint(node)).controls) !==
+        JSON.stringify(JSON.parse(node.dataset.drawerRendered).controls);
+    } catch (e) { return false; }
+  }
+
+  function drawerHasEdits() {
+    return !!state.drawerId && Array.prototype.some.call($("drawer-body").children, drawerSectionHasEdits);
+  }
+
+  function refreshDrawerDetail() {
+    var id = state.drawerId, repo = state.repoId;
+    if (!id || drawerRead) return;
+    var ticket = ++drawerReadTicket;
+    var xhr = new XMLHttpRequest();
+    drawerRead = xhr;
+    xhr.open("GET", dashboardPath(repoApiBase(repo) + "/story/" + encodeURIComponent(id)), true);
+    xhr.setRequestHeader("X-Storyhook", "1");
+    xhr.timeout = API_GET_TIMEOUT_MS;
+    var finished = false;
+    function finish() {
+      if (finished) return;
+      finished = true;
+      if (ticket !== drawerReadTicket || state.drawerId !== id || state.repoId !== repo) return;
+      drawerRead = null;
+      if (xhr.status === 200) {
+        try {
+          var payload = JSON.parse(xhr.responseText);
+          if (!payload.story || !payload.story.story) throw new Error("Missing story detail");
+          state.drawerDetail = payload.story;
+          drawerRefs = payload.refs || {};
+          state.drawerId = state.drawerDetail.story.id;
+          drawerReadError = null;
+          drawerUnavailable = false;
+        } catch (e) { drawerReadError = "The story response could not be read."; }
+      } else {
+        drawerReadError = xhr.status === 404 ? "This story is no longer available." : "Story details did not arrive. Retry when the connection is ready.";
+        if (xhr.status === 404) {
+          drawerUnavailable = true;
+          if (!drawerHasEdits()) {
+            state.drawerDetail = null;
+            drawerRefs = {};
+            closeAttachmentModal();
+          }
+        }
+        if (xhr.status === 401) openTokenModal(refreshDrawerDetail);
+      }
+      renderDrawer();
+    }
+    xhr.onreadystatechange = function() { if (xhr.readyState === 4) finish(); };
+    xhr.onerror = xhr.ontimeout = finish;
+    xhr.send();
+  }
+
   function openDrawer(id) {
-    if (state.drawerId !== id) closeAttachmentModal();
+    if (state.drawerId === id) return;
+    if (drawerHasEdits() && !window.confirm("Discard the unsaved edits in the open story?")) return;
+    cancelDrawerRead();
+    closeAttachmentModal();
     var wasOpen = state.drawerId !== null;
     var invoker = document.activeElement;
-    // A board/list activation retargets this peer and becomes its new return
-    // point. A relation inside the panel is replaced by the render it starts,
-    // so keep the stable external return point for that route.
-    if (!wasOpen || (invoker !== document.body && !$("drawer").contains(invoker))) {
-      drawerReturnFocus = invoker;
-    }
+    if (!wasOpen || (invoker !== document.body && !$("drawer").contains(invoker))) drawerReturnFocus = invoker;
     state.drawerId = id;
     state.drawerDetail = null;
-    // Scratch belonging to whichever story's form was last on screen.
+    drawerRefs = {};
+    drawerReadError = null;
+    drawerUnavailable = false;
     clearPendingRelation();
+    clear($("drawer-body"));
+    clear($("drawer-footer"));
     $("drawer").removeAttribute("inert");
     $("drawer").classList.add("open");
     $("drawer").setAttribute("aria-hidden", "false");
@@ -12241,21 +12667,26 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (!wasOpen) $("drawer").focus();
     measureNoticeBands();
     syncUrl();
-    api("GET", apiBase() + "/story/" + encodeURIComponent(id))
-      .then(function(resp) {
-        if (state.drawerId !== id) return;
-        state.drawerDetail = resp.story || null;
-        renderDrawer();
-      })
-      .catch(function() { /* fall back to the summary already shown */ });
+    refreshDrawerDetail();
   }
 
   function closeDrawer() {
+    if (drawerHasEdits() && !window.confirm("Discard the unsaved edits in the open story?")) return false;
+    cancelDrawerRead();
     closeAttachmentModal();
     var wasOpen = state.drawerId !== null;
     state.drawerId = null;
     state.drawerDetail = null;
+    drawerRefs = {};
+    drawerReadError = null;
+    drawerUnavailable = false;
     clearPendingRelation();
+    // A closed drawer must not leave full history or captured story objects
+    // resident in hidden DOM event handlers.
+    clear($("drawer-body"));
+    clear($("drawer-footer"));
+    clear($("drawer-type-badge"));
+    $("drawer-id").textContent = "";
     $("drawer").classList.remove("open");
     $("drawer").setAttribute("aria-hidden", "true");
     $("drawer").setAttribute("inert", "");
@@ -12263,14 +12694,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     drawerReturnFocus = null;
     measureNoticeBands();
     syncUrl();
+    return true;
   }
 
-  /** The board carries complete, live attachment metadata; retained detail
-   * predates later SSE updates and must not resurrect a removed image. */
+  /** Attachments belong only to the visible detail. Its own refresh follows
+   * board events without retaining attachment metadata in summary pages. */
   function drawerAttachments() {
     if (!state.drawerId) return [];
-    var view = findStory(state.drawerId);
-    return (view && view.story.attachments) || [];
+    var story = currentDrawerStory(state.drawerId);
+    return (story && story.attachments) || [];
   }
 
   /** Owns one opening, including callbacks from its image request. Replacing
@@ -12323,10 +12755,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * of description text, never attachment metadata or daemon-owned bytes. */
   function drawerMedia(storyId) {
     if (!state.drawerId || state.drawerId !== storyId) return [];
-    var view = findStory(storyId);
-    if (!view) return [];
+    var story = currentDrawerStory(storyId);
+    if (!story) return [];
     var repoId = state.repoId;
-    var stored = (view.story.attachments || []).map(function(attachment) {
+    var stored = (story.attachments || []).map(function(attachment) {
       return {
         kind: "stored",
         key: "stored:" + attachment.id,
@@ -12335,7 +12767,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         url: attachmentUrl(repoId, storyId, attachment.id)
       };
     });
-    return stored.concat(remoteImagesFromDescription(view.story.description || ""));
+    return stored.concat(remoteImagesFromDescription(story.description || ""));
   }
 
   /** Finds a current thumbnail by exact dataset identity. A remote URL never
@@ -12599,8 +13031,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (!state.drawerId) return;
     var summary = findStory(state.drawerId);
     var full = state.drawerDetail;
-    var st = (full && full.story) || (summary && summary.story);
-    if (!st) { closeDrawer(); return; }
+    var st = full && full.story;
+    if (!st) {
+      $("drawer-id").textContent = state.drawerId;
+      clear($("drawer-body"));
+      clear($("drawer-footer"));
+      clear($("drawer-type-badge"));
+      $("drawer-body").appendChild(el("p", { role: "status", class: "drawer-detail-status" }, [drawerReadError || readinessNote("story details", false)]));
+      if (drawerReadError) $("drawer-body").appendChild(el("button", { type: "button", class: "btn drawer-detail-retry", onClick: refreshDrawerDetail }, ["Retry"]));
+      return;
+    }
     var continuationAlerts = (full && full.continuation_alerts)
       || (summary && summary.continuation_alerts) || [];
 
@@ -12621,6 +13061,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var sameDrawer = body.dataset.storyId === st.id && body.dataset.repoId === state.repoId;
     var focused = sameDrawer ? captureDrawerFocus(body) : null;
     var nextBody = el("div", {}, []);
+    var onBoard = (state.data && state.data.stories || []).some(function(view) { return view.story.id === st.id; });
+    if (!onBoard) nextBody.appendChild(drawerSection("retained-detail", el("p", { class: "field-note" }, [
+      "This story is outside the visible page. Its details and unsaved edits stay here until you close this panel."
+    ])));
+    if (drawerReadError) nextBody.appendChild(drawerSection("detail-error", el("p", { role: "status", class: "drawer-detail-status" }, [
+      drawerUnavailable ? drawerReadError + " Unsaved edits are kept here for copying; changes cannot be saved." : "These details may be out of date. " + drawerReadError,
+      el("button", { type: "button", class: "btn btn-ghost drawer-detail-retry", onClick: refreshDrawerDetail }, ["Retry"])
+    ])));
 
     nextBody.appendChild(drawerSection("title", buildTitleField(st)));
     nextBody.appendChild(drawerSection("fields", buildFieldGrid(st, full || summary)));
@@ -12703,6 +13151,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     restoreDrawerFocus(body, focused);
     renderDrawerFooter(st);
+    lockUnavailableDrawerControls();
     // The footer is in the bottom band, and its height is not fixed: swapping
     // its button row for a confirmation panel takes it from 68.5px to 124.5px
     // (measured, SH-323). The observer sees that resize, but this call covers
@@ -12939,16 +13388,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function buildLabelsSection(st) {
+    var project = state.repoId;
     var wrap = el("div", {}, [el("div", { class: "section-label" }, ["Labels"])]);
     var base = apiBase() + "/story/" + encodeURIComponent(st.id) + "/labels";
     var combobox = buildLabelCombobox(st.labels || [], meta().labels || [], {
       dataField: "label-add",
       className: "inline-add",
       onAdd: function(labels) {
-        return api("POST", base, { add: labels }).then(handleMutationSuccess);
+        return api("POST", base, { add: labels }).then(mutationSuccessFor(project));
       },
       onRemove: function(labels) {
-        return api("POST", base, { remove: labels }).then(handleMutationSuccess);
+        return api("POST", base, { remove: labels }).then(mutationSuccessFor(project));
       }
     });
     wrap.appendChild(combobox.element);
@@ -13167,6 +13617,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function buildRelationshipsSection(st, full) {
+    var project = state.repoId;
     var rels = (st.relationships || []).concat((full && full.derived_relationships) || []);
     var wrap = el("div", {}, [buildSectionToggle("relationships", "Relationships", rels.length)]);
     if (!state.drawerSections.relationships) return wrap;
@@ -13184,8 +13635,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     idInput.addEventListener("input", function() { pendingRelation.id = idInput.value; });
     var addBtn = el("button", { class: "btn", onClick: function() {
       if (!idInput.value.trim()) return;
-      api("POST", apiBase() + "/relate", { a: st.id, relation: relationSelect.value, b: idInput.value.trim() })
-        .then(function(r) { idInput.value = ""; clearPendingRelation(); handleMutationSuccess(r); }).catch(toastError);
+      api("POST", repoApiBase(project) + "/relate", { a: st.id, relation: relationSelect.value, b: idInput.value.trim() })
+        .then(function(r) { idInput.value = ""; if (state.repoId === project && state.drawerId === st.id) clearPendingRelation(); handleMutationSuccess(r, project); }).catch(toastError);
     } }, ["Add"]);
     wrap.appendChild(el("div", { class: "inline-add" }, [relationSelect, idInput, addBtn]));
     if (rels.length) {
@@ -13195,8 +13646,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           el("span", { class: "rel-kind" }, [r.relation]),
           storyRef(r.other_id),
           el("button", { type: "button", class: "rel-remove", onClick: function() {
-            api("POST", apiBase() + "/unrelate", { a: st.id, relation: r.relation, b: r.other_id })
-              .then(handleMutationSuccess).catch(toastError);
+            api("POST", repoApiBase(project) + "/unrelate", { a: st.id, relation: r.relation, b: r.other_id })
+              .then(mutationSuccessFor(project)).catch(toastError);
           } }, ["×"])
         ]));
       });
@@ -13206,6 +13657,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function buildCommentsSection(st) {
+    var project = state.repoId;
     var comments = st.comments || [];
     var wrap = el("div", {}, [buildSectionToggle("comments", "Comments", comments.length)]);
     if (!state.drawerSections.comments) return wrap;
@@ -13213,8 +13665,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     bindAttachmentDrop(textarea, st);
     var submit = el("button", { class: "btn", onClick: function() {
       if (!textarea.value.trim()) return;
-      api("POST", apiBase() + "/story/" + encodeURIComponent(st.id) + "/comment", { text: textarea.value.trim() })
-        .then(function(r) { textarea.value = ""; handleMutationSuccess(r); }).catch(toastError);
+      api("POST", repoApiBase(project) + "/story/" + encodeURIComponent(st.id) + "/comment", { text: textarea.value.trim() })
+        .then(function(r) { textarea.value = ""; handleMutationSuccess(r, project); }).catch(toastError);
     } }, ["Comment"]);
     wrap.appendChild(el("div", { class: "comment-add" }, [textarea, el("div", {}, [submit])]));
     if (comments.length) {
@@ -13356,9 +13808,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * confusion the council's dissent flagged, so reopening a hidden one says
    * so explicitly rather than leaving it to be noticed. */
   function attemptReopen(st, wasHidden) {
+    var project = state.repoId;
     api("POST", apiBase() + "/story/" + encodeURIComponent(st.id) + "/reopen", {})
       .then(function(resp) {
-        handleMutationSuccess(resp);
+        handleMutationSuccess(resp, project);
         if (wasHidden) toast(st.id + " reopened — no longer archived", "info");
       })
       .catch(toastError);
@@ -13403,16 +13856,24 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * every field edit and menu action routed through here inherited the
    * identical lie and had nothing to fix it until now. */
   function runFieldMutation(id, method, action, body) {
-    var path = apiBase() + "/story/" + encodeURIComponent(id) + (action ? "/" + action : "");
-    api(method, path, body).then(handleMutationSuccess).catch(function(err) {
+    if (drawerUnavailable && state.drawerId === id) return;
+    var project = state.repoId;
+    var path = repoApiBase(project) + "/story/" + encodeURIComponent(id) + (action ? "/" + action : "");
+    api(method, path, body).then(mutationSuccessFor(project)).catch(function(err) {
       toast(describeMutationFailure(err), "error");
     });
   }
 
-  function handleMutationSuccess(resp) {
+  function mutationSuccessFor(project) {
+    return function(resp) { handleMutationSuccess(resp, project); };
+  }
+
+  function handleMutationSuccess(resp, project) {
+    if (project !== undefined && (state.repoId !== project || state.screen !== "repo")) return;
     if (resp && resp.story && resp.story.story) {
       applyStory(resp.story.story);
       if (state.drawerId === resp.story.story.id) {
+        cancelDrawerRead();
         state.drawerDetail = resp.story;
         renderDrawer();
       }
@@ -13669,11 +14130,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * pruned once its vocabulary is known, in `pruneCarriedFilters()`, called
    * from `fetchData()`'s first successful load for this repo. */
   function selectRepo(id) {
-    closeDrawer();
+    if (!closeDrawer()) return;
+    closeDraftsModal();
     closeFilterSheet();
     clearMobileListDetails();
     state.repoId = id;
     state.screen = "repo";
+    state.pending = {};
     state.data = null;
     state.verificationObservedAt = 0;
     // Beside `state.data`, and for the same reason: this project has not
@@ -13701,6 +14164,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function goHome() {
+    closeDraftsModal();
     clearMobileListDetails();
     state.screen = "home";
     renderScreen();
@@ -13708,6 +14172,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function goSettings() {
+    closeDraftsModal();
     clearMobileListDetails();
     state.screen = "settings";
     state.settingsRepoId = null;
@@ -13728,6 +14193,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * fourth screen: it configures a repo, which is what Settings is for, and
    * the repo need not be the one whose board is open. */
   function goStatuses(repoId) {
+    closeDraftsModal();
     state.screen = "settings";
     state.settingsRepoId = repoId;
     state.statuses = null;
@@ -15485,7 +15951,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // A direct New Story open supersedes any catalog-row detail read still
     // pending. When this call itself came from that read, the reply already
     // passed its ticket check and advancing the ticket simply closes its era.
-    draftOpenTicket++;
+    cancelDraftOpen();
     editingDraft = draft || null;
     createTargetProject = draft ? draftProject : state.repoId;
     createAttachmentSubmissionInFlight = false;
@@ -15575,9 +16041,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function closeCreateModal() {
+    cancelDraftOpen();
     resetCreateAttachments();
     createAttachmentSubmissionInFlight = false;
     editingDraft = null;
+    $("create-title").value = "";
+    $("create-description").value = "";
+    $("create-blocked-by").value = "";
+    var labelsField = $("create-labels-field");
+    while (labelsField.children.length > 1) detach(labelsField.lastChild);
+    createLabelCombobox = null;
     // Cancels a delayed read and invalidates any vocabulary GET still in
     // flight (SH-439, SH-485) -- without both halves, work for a project the
     // user selected right before closing could start or land after
@@ -15661,7 +16134,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // rather than `createApiBase()`, since `target` isn't `createTargetProject`
     // yet (that assignment only happens once this GET succeeds, below).
     var base = repoApiBase(target);
-    api("GET", base + "/data", null)
+    api("GET", base + "/board?options=" + encodeURIComponent(JSON.stringify({limit: 0})), null)
       .then(function(payload) {
         if (ticket !== createVocabTicket) return;
         createTargetProject = target;
@@ -16118,24 +16591,73 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // DRAFTS POPOVER (SH-175)
   // ============================================================
 
-  function openDraftsModal() {
+  var draftWindow = null;
+  var draftPageRead = null;
+  var draftPageTicket = 0;
+
+  function evictDraftWindow() {
+    draftPageTicket++;
+    if (draftPageRead) draftPageRead.abort();
+    draftPageRead = null;
+    draftWindow = null;
+    clear($("drafts-list"));
+  }
+
+  function loadDraftPage(project, cursor, history) {
+    evictDraftWindow();
+    var page = draftWindow = { project: project, rows: [], cursor: cursor || null,
+      history: history || [], loading: true, error: null, total: project.draft_count || 0 };
+    var ticket = draftPageTicket;
+    var xhr = new XMLHttpRequest();
+    draftPageRead = xhr;
+    var options = { drafts: true, limit: BOARD_PAGE_SIZE, sort: "updated", dir: -1 };
+    if (cursor) options.cursor = cursor;
+    xhr.open("GET", dashboardPath(repoApiBase(project.id) + "/board?options=" + encodeURIComponent(JSON.stringify(options))), true);
+    xhr.setRequestHeader("X-Storyhook", "1");
+    xhr.timeout = BOARD_FETCH_TIMEOUT_MS;
+    var finished = false;
+    function finish() {
+      if (finished) return;
+      finished = true;
+      if (ticket !== draftPageTicket || overlayStack.indexOf("drafts-modal") === -1) return;
+      draftPageRead = null;
+      page.loading = false;
+      if (xhr.status === 409 && page.cursor) { loadDraftPage(project, null, []); return; }
+      if (xhr.status === 200) {
+        try {
+          var payload = JSON.parse(xhr.responseText);
+          page.rows = payload.stories || [];
+          page.total = payload.page.total;
+          page.nextCursor = payload.page.next_cursor;
+        } catch (e) { page.error = "The draft response could not be read."; }
+      } else {
+        page.error = "Drafts did not arrive. Retry when the connection is ready.";
+        if (xhr.status === 401) openTokenModal(function() { loadDraftPage(project, cursor, history); });
+      }
+      renderDraftsList();
+    }
+    xhr.onreadystatechange = function() { if (xhr.readyState === 4) finish(); };
+    xhr.onerror = xhr.ontimeout = finish;
+    xhr.send();
     renderDraftsList();
+  }
+
+  function openDraftsModal() {
+    cancelDraftOpen();
+    evictDraftWindow();
     showBackdrop("drafts-backdrop");
     activateOverlay("drafts-modal");
+    renderDraftsList();
     requestAnimationFrame(function() {
+      if (overlayStack.indexOf("drafts-modal") === -1) return;
       $("drafts-modal").classList.add("open");
       $("drafts-modal").setAttribute("aria-hidden", "false");
     });
   }
 
-  /** Closes the Drafts popover.
-   *
-   * This is the surface the stale-hide defect was found on, twice (SH-284,
-   * SH-302), because it is the one with callers that close it when it was
-   * never open, including the Escape handler on every press. Both halves of
-   * the repair are in {@link showBackdrop} and {@link hideBackdrop} now, so
-   * this global surface needs no special navigation-time lifecycle. */
   function closeDraftsModal() {
+    cancelDraftOpen();
+    evictDraftWindow();
     hideBackdrop("drafts-backdrop");
     $("drafts-modal").classList.remove("open");
     $("drafts-modal").setAttribute("aria-hidden", "true");
@@ -16146,35 +16668,65 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * Reopening the Drafts surface and choosing another row can put two reads
    * in flight; only the latest choice may open the singleton editor. */
   var draftOpenTicket = 0;
+  var draftOpenOwner = null;
+  var draftDetailRead = null;
 
-  /** Opens the current version of a catalog draft with its owner's current
-   * vocabulary. The catalog snapshot is enough to list a row but deliberately
-   * not trusted for editing: another client may have edited, published, or
-   * discarded it since that snapshot arrived. */
+  function cancelDraftOpen() {
+    draftOpenTicket++;
+    draftOpenOwner = null;
+    if (draftDetailRead) draftDetailRead.abort();
+    draftDetailRead = null;
+  }
+
+  function draftDetailGet(owner, path, callback) {
+    var xhr = new XMLHttpRequest();
+    draftDetailRead = xhr;
+    xhr.open("GET", dashboardPath(path), true);
+    xhr.setRequestHeader("X-Storyhook", "1");
+    xhr.timeout = API_GET_TIMEOUT_MS;
+    var finished = false;
+    function finish() {
+      if (finished) return;
+      finished = true;
+      if (draftOpenOwner !== owner || owner.ticket !== draftOpenTicket || overlayStack.indexOf("drafts-modal") === -1) return;
+      draftDetailRead = null;
+      var payload;
+      if (xhr.status === 200) {
+        try { payload = JSON.parse(xhr.responseText); }
+        catch (e) { owner.error = "The draft response could not be read."; }
+      } else {
+        owner.error = "The draft did not arrive. Return to the list to retry.";
+      }
+      if (payload) callback(payload);
+      else renderDraftsList();
+    }
+    xhr.onreadystatechange = function() { if (xhr.readyState === 4) finish(); };
+    xhr.onerror = xhr.ontimeout = finish;
+    xhr.send();
+  }
+
+  /** The visible picker owns the opening until the editor is ready. Read
+   * vocabulary first: no full draft waits in memory for a second request. */
   function openCatalogDraft(entry) {
-    var ticket = ++draftOpenTicket;
-    var project = entry.project;
-    var id = entry.draft.story.id;
-    var base = repoApiBase(project.id);
-    closeDraftsModal();
-    api("GET", base + "/data", null)
-      .then(function(payload) {
-        if (ticket !== draftOpenTicket) return;
-        var fresh = (payload.drafts || []).filter(function(draft) {
-          return draft.story.id === id;
-        })[0];
-        if (!fresh) {
+    cancelDraftOpen();
+    evictDraftWindow();
+    var owner = draftOpenOwner = { ticket: draftOpenTicket, project: entry.project.id, id: entry.draft.story.id, error: null };
+    var base = repoApiBase(owner.project);
+    renderDraftsList();
+    draftDetailGet(owner, base + "/board?options=" + encodeURIComponent(JSON.stringify({limit: 0})), function(metadata) {
+      draftDetailGet(owner, base + "/story/" + encodeURIComponent(owner.id), function(payload) {
+        var fresh = payload.story;
+        if (!fresh || !fresh.story || !fresh.story.draft) {
+          owner.error = "This story is no longer an available draft.";
+          renderDraftsList();
           fetchReposOnce();
-          toast(id + " is no longer an available draft.", "error");
           return;
         }
-        openCreateModal(fresh, project.id, payload.meta);
-      })
-      .catch(function() {
-        if (ticket !== draftOpenTicket) return;
-        fetchReposOnce();
-        toast("Failed to load the draft from " + (projectLabel(project.id) || "that project") + ".", "error");
+        var project = owner.project;
+        closeDraftsModal();
+        openCreateModal(fresh, project, metadata.meta);
       });
+    });
   }
 
   /** Populates the dashboard-wide Drafts surface from visible projects (SH-442).
@@ -16185,33 +16737,59 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function renderDraftsList() {
     var list = $("drafts-list");
     clear(list);
-    var drafts = catalogDrafts();
-    if (state.reposReadiness !== "loaded" && !state.repos.length) {
-      list.appendChild(el("li", { class: "drafts-list-empty" }, [readinessNote("drafts", state.reposReadiness === "failed")]));
+    if (overlayStack.indexOf("drafts-modal") === -1) return;
+    if (draftOpenOwner) {
+      list.appendChild(el("li", { class: "drafts-list-empty", role: "status" }, [
+        draftOpenOwner.error || "Opening " + draftOpenOwner.id + "…",
+        el("button", { type: "button", class: "btn btn-ghost draft-open-cancel", onClick: function() {
+          cancelDraftOpen(); renderDraftsList();
+        } }, [draftOpenOwner.error ? "Back to drafts" : "Cancel"])
+      ]));
       return;
     }
-    drafts.forEach(function(entry) {
-      var draft = entry.draft;
-      var row = el("button", {
-        type: "button",
-        class: "drafts-row",
-        onClick: function() { openCatalogDraft(entry); },
-      }, [
-        el("span", { class: "drafts-row-main" }, [
-          el("span", { class: "drafts-row-id" }, [draft.story.id]),
-          el("span", { class: "drafts-row-title" }, [draft.story.title]),
-        ]),
-        el("span", { class: "drafts-row-project" }, [entry.project.prefix + " · " + entry.project.name]),
-      ]);
-      list.appendChild(el("li", {}, [row]));
-    });
-    if (state.reposReadiness !== "loaded") {
-      list.appendChild(el("li", { class: "drafts-list-empty" }, [readinessNote("drafts", state.reposReadiness === "failed")]));
-    } else if (catalogHasDraftErrors()) {
-      list.appendChild(el("li", { class: "drafts-list-empty" }, [readinessNote("some projects' drafts", true)]));
-    } else if (!drafts.length) {
-      list.appendChild(el("li", { class: "drafts-list-empty" }, ["No drafts."]));
+    var projects = visibleRepos().filter(function(project) { return project.draft_count > 0; });
+    if (draftWindow && !projects.some(function(project) { return project.id === draftWindow.project.id; })) evictDraftWindow();
+    if (!draftWindow && projects.length) {
+      var selected = projects.filter(function(project) { return project.id === state.repoId; })[0] || projects[0];
+      loadDraftPage(selected, null, []);
+      return;
     }
+    if (!draftWindow) {
+      list.appendChild(el("li", { class: "drafts-list-empty" }, [state.reposReadiness !== "loaded" || catalogHasDraftErrors()
+        ? readinessNote("drafts", state.reposReadiness === "failed" || catalogHasDraftErrors()) : "No drafts."]));
+      return;
+    }
+    var page = draftWindow;
+    var selector = el("select", { "aria-label": "Draft project" }, projects.map(function(project) {
+      var option = el("option", { value: project.id }, [project.prefix + " · " + project.name + " (" + project.draft_count + ")"]);
+      option.selected = project.id === page.project.id;
+      return option;
+    }));
+    selector.addEventListener("change", function() {
+      var project = projects.filter(function(candidate) { return candidate.id === selector.value; })[0];
+      if (project) loadDraftPage(project, null, []);
+    });
+    list.appendChild(el("li", {}, [selector]));
+    catalogDrafts().forEach(function(entry) {
+      var draft = entry.draft;
+      list.appendChild(el("li", {}, [el("button", { type: "button", class: "drafts-row", onClick: function() { openCatalogDraft(entry); } }, [
+        el("span", { class: "drafts-row-main" }, [el("span", { class: "drafts-row-id" }, [draft.story.id]), el("span", { class: "drafts-row-title" }, [draft.story.title, draft.summary_truncated ? summaryShortenedNote() : null])]),
+        el("span", { class: "drafts-row-project" }, [entry.project.prefix + " · " + entry.project.name])
+      ])]));
+    });
+    var controls = el("li", { class: "page-controls", role: "status" }, [el("span", {}, [page.error ||
+      (page.loading ? readinessNote("drafts", false) : "Showing " + page.rows.length + " of " + page.total + " drafts")])]);
+    if (page.error) controls.appendChild(el("button", { type: "button", class: "btn btn-ghost draft-page-retry", onClick: function() {
+      loadDraftPage(page.project, page.cursor, page.history);
+    } }, ["Retry"]));
+    if (page.history.length) controls.appendChild(el("button", { type: "button", class: "btn btn-ghost draft-page-previous", disabled: page.loading, onClick: function() {
+      var history = page.history.slice(); loadDraftPage(page.project, history.pop(), history);
+    } }, ["Previous"]));
+    if (page.nextCursor) controls.appendChild(el("button", { type: "button", class: "btn btn-ghost draft-page-next", disabled: page.loading, onClick: function() {
+      loadDraftPage(page.project, page.nextCursor, page.history.concat([page.cursor]));
+    } }, ["Next"]));
+    list.appendChild(controls);
+    if (catalogHasDraftErrors()) list.appendChild(el("li", { class: "drafts-list-empty" }, [readinessNote("some projects' drafts", true)]));
   }
 
   /** The bulk "Archive" button on a CLOSED-superstate column's header
@@ -16328,6 +16906,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function submitCloseStory() {
     if (closeModalInFlight) return;
     var id = closeModalStoryId;
+    var project = state.repoId;
     if (!id) return;
     var reason = $("close-reason").value.trim();
     if (!reason) {
@@ -16343,7 +16922,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         setCloseModalInFlight(false);
         closeCloseModal();
         toast(id + " dropped", "success");
-        handleMutationSuccess(resp);
+        handleMutationSuccess(resp, project);
       })
       .catch(function(err) {
         setCloseModalInFlight(false);

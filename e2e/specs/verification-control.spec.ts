@@ -1,3 +1,4 @@
+import { isBoardMetadata } from "./board-network";
 import { test, expect, openProject, seedToken, projectSlug } from "./support";
 
 test.beforeEach(async ({ page }) => {
@@ -85,7 +86,7 @@ test("draining can escalate and restart waits for owned cleanup", async ({ page,
   const slug = await projectSlug(request, "Alpha Project");
   const base = `/api/repos/${encodeURIComponent(slug)}`;
   let mode = "draining";
-  await page.route((url) => url.pathname === `${base}/data`, async (route) => {
+  await page.route((url) => isBoardMetadata(url, slug), async (route) => {
     const response = await route.fetch();
     const data = await response.json();
     data.verification_control = { state: mode };
@@ -98,7 +99,7 @@ test("draining can escalate and restart waits for owned cleanup", async ({ page,
   });
   await page.reload();
   const column = page.locator('.column[data-state="verifying"]');
-  await expect(column.getByRole("status")).toHaveText("Finishing inflight verification…");
+  await expect(column.locator(".verification-control-status")).toHaveText("Finishing inflight verification…");
   await column.getByRole("button", { name: "Stop verifier", exact: true }).click();
   const menu = page.getByRole("menu", { name: "Stop verifier" });
   await expect(menu.getByRole("menuitem", { name: "Let inflight verifications finish" })).toHaveAttribute("aria-disabled", "true");
@@ -106,7 +107,7 @@ test("draining can escalate and restart waits for owned cleanup", async ({ page,
   await expect(cancel).toBeFocused();
   await cancel.press("Enter");
   await expect(column.getByRole("button", { name: "Stopping verifier…", exact: true })).toBeDisabled();
-  await expect(column.getByRole("status")).toHaveText("Stopping inflight verification…");
+  await expect(column.locator(".verification-control-status")).toHaveText("Stopping inflight verification…");
   mode = "stopped";
   await page.reload();
   await expect(column.getByRole("button", { name: "Start verifier", exact: true })).toBeEnabled();
@@ -128,7 +129,7 @@ test("stopped verification explains continuing submission after reload", async (
 
 test("overdue evidence warning is visible outside the verifier column", async ({ page, request }) => {
   const slug = await projectSlug(request, "Alpha Project");
-  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async (route) => {
+  await page.route((url) => isBoardMetadata(url, slug), async (route) => {
     const response = await route.fetch();
     const data = await response.json();
     data.verification_incident = null;
@@ -156,7 +157,7 @@ test("a batch preview reads as activity in its column, not as attention", async 
     ],
     excluded: [{ story_id: "ALPHA-9", reason: "conflict-with-member" }],
   };
-  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async (route) => {
+  await page.route((url) => isBoardMetadata(url, slug), async (route) => {
     const response = await route.fetch();
     const data = await response.json();
     data.verification_incident = null;
@@ -191,7 +192,7 @@ test("a running verification batch reads as activity in its column, not as atten
     members: ["ALPHA-7", "ALPHA-8", "ALPHA-9"],
     phase: "gating",
   };
-  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async (route) => {
+  await page.route((url) => isBoardMetadata(url, slug), async (route) => {
     const response = await route.fetch();
     const data = await response.json();
     data.verification_incident = null;
@@ -230,7 +231,7 @@ test("a running verification batch reads as activity in its column, not as atten
 test("a reserved verifier reads as activity in its column, not as attention", async ({ page, request }) => {
   const slug = await projectSlug(request, "Alpha Project");
   let mode = "running";
-  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async (route) => {
+  await page.route((url) => isBoardMetadata(url, slug), async (route) => {
     const response = await route.fetch();
     const data = await response.json();
     data.verification_incident = null;
@@ -268,7 +269,7 @@ test("a reserved verifier reads as activity in its column, not as attention", as
 
 test("stopped verification shows active submission without claiming a gate passed", async ({ page, request }) => {
   const slug = await projectSlug(request, "Alpha Project");
-  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async (route) => {
+  await page.route((url) => isBoardMetadata(url, slug), async (route) => {
     const response = await route.fetch();
     const data = await response.json();
     data.verification_incident = null;
@@ -282,7 +283,7 @@ test("stopped verification shows active submission without claiming a gate passe
   });
   await page.reload();
   const column = page.locator('.column[data-state="verifying"]');
-  await expect(column.getByRole("status")).toHaveText("Verification stopped — submissions continue without tests · Processing ALPHA-7");
+  await expect(column.locator(".verification-control-status")).toHaveText("Verification stopped — submissions continue without tests · Processing ALPHA-7");
   await expect(column.getByRole("button", { name: "Start verifier", exact: true })).toBeEnabled();
   await expect(page.locator('#verification-banner-region')).toContainText("Verification stopped — submissions continue without tests");
   await expect(page.locator('#verification-banner-region')).toContainText("Held ALPHA-8: verification stopped: managed repair requires certification");

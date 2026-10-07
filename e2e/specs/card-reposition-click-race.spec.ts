@@ -1,3 +1,4 @@
+import { isBoardPage } from "./board-network";
 import { test, expect } from "./support";
 import {
   cleanUpCreatedStories,
@@ -24,7 +25,7 @@ import {
  * SH-401 landed after SH-422 was filed and closes the broader class: the
  * capture-phase press gate defers `renderView()` while a primary press is live,
  * so reconciliation cannot reach that `insertBefore()` until after the click.
- * This suite is the exact missing witness. It gates the real `/data` reply that
+ * This suite is the exact missing witness. It gates the real summary-page reply that
  * moves A, delivers it while B is pressed, and proves both that the old DOM is
  * still painted during the press and that B's own click opens B afterward.
  */
@@ -74,9 +75,10 @@ test("a /data reply that removes the card above does not swallow the staying car
 
   const held = await holdFetch(
     page,
-    (url) => url.pathname.endsWith("/data"),
+    (url) => isBoardPage(url, undefined, "todo"),
     (body: { stories: { story: { id: string; state: string } }[] }) =>
-      body.stories.some((view) => view.story.id === departingId && view.story.state === "done"),
+      body.stories.some((view) => view.story.id === pressedId) &&
+      !body.stories.some((view) => view.story.id === departingId),
     { sealOnHold: true },
   );
   const slug = await projectSlug(request, "Alpha Project");

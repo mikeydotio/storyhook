@@ -1,3 +1,4 @@
+import { isBoardMetadata } from "./board-network";
 import { test, expect } from "./support";
 import {
   heldReadDeadlineMs,
@@ -199,7 +200,7 @@ async function openDrawerOverSettings(
 ): Promise<void> {
   const held = await holdFetch(
     page,
-    (url) => url.pathname.endsWith("/data"),
+    (url) => isBoardMetadata(url, alpha),
     () => true,
     { sealOnHold: true },
   );
@@ -213,7 +214,7 @@ async function openDrawerOverSettings(
   await expect(page.locator("#settings-view")).toBeVisible();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
-  await held.deliver();
+  await held.deliverCanceled();
 }
 
 test("a deep link that resolves after the user left the board is refused, not opened", async ({
@@ -275,10 +276,9 @@ test("a deep link pending for one project is not consumed by a different project
   request,
 }) => {
   const alpha = await projectSlug(request, "Alpha Project");
-  const alphaDataPath = `/api/repos/${alpha}/data`;
   const held = await holdFetch(
     page,
-    (url) => url.pathname === alphaDataPath,
+    (url) => isBoardMetadata(url, alpha),
     () => true,
     { sealOnHold: true },
   );
@@ -305,9 +305,8 @@ test("a deep link pending for one project is not consumed by a different project
   await expect(toast).toContainText(alpha);
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
-  // Alpha's held reply, delivered last, is now a stale/wrong-project reply
-  // by `fetchData()`'s own ticket check -- dropped before it can touch
-  // anything, including the (already-cleared) pending link.
-  await held.deliver();
+  // Navigation must cancel Alpha's metadata request. Releasing its retained
+  // body afterwards cannot reopen the drawer or revive the consumed link.
+  await held.deliverCanceled();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 });

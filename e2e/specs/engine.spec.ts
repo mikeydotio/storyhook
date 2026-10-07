@@ -1,3 +1,5 @@
+import { installBoardFixture } from "../board-fixture";
+import { isBoardPage } from "./board-network";
 import { gracedOperationBudget } from "../load-grace";
 import type { APIRequestContext, Page, Route } from "@playwright/test";
 import { test, expect } from "./support";
@@ -1491,17 +1493,17 @@ test("a definite refusal releases the start claim for another attempt", async ({
 });
 
 test("an epic replaces ordinary Dispatch with an epic-scoped Full Auto start", async ({
-  page,
+  page, request,
 }) => {
   let submitted: Record<string, unknown> | null = null;
   let transformedEpicId = "";
 
-  await page.route(/\/data$/, async (route) => {
-    const response = await route.fetch();
-    const data = await response.json();
-    data.stories[0].story.story_type = "epic";
-    transformedEpicId = data.stories[0].story.id;
-    await route.fulfill({ response, json: data });
+  await page.goto("/");
+  const slug = await projectSlug(request, "Alpha Project");
+  await installBoardFixture(page, slug, data => {
+    const template = data.stories[0];
+    template.story.story_type = "epic";
+    transformedEpicId = template.story.id;
   });
   await page.route(/\/story\/[^/]+$/, async (route) => {
     if (route.request().method() !== "GET") {
@@ -1818,12 +1820,13 @@ test("lane chips identify live Full Auto work and clear through the view press g
   }
 
   await page.locator('#view-toggle button[data-view="board"]').click();
+  await expect(firstCard).toBeVisible();
   const box = await firstCard.boundingBox();
   expect(box).not.toBeNull();
-  const heldData = await holdFetch<unknown>(
+  const heldData = await holdFetch<{ stories: Array<{ story: { id: string } }> }>(
     page,
-    (url) => url.pathname.endsWith("/data"),
-    () => true,
+    (url) => isBoardPage(url, project),
+    (body) => body.stories.some(view => view.story.id === "AA-1"),
   );
   await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
   await page.mouse.down();

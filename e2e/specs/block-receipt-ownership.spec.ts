@@ -1,3 +1,4 @@
+import { isBoardPage } from "./board-network";
 import { test, expect } from "./support";
 import type { Page } from "@playwright/test";
 import {
@@ -74,7 +75,7 @@ test("block receipts stay with their story across navigation, late detail, and b
   await page.locator("#drawer-close").click();
   await openStory(page, second);
   await assertOwner(second, `#108 — resume unreached — ${second}`);
-  await heldDetail.deliver();
+  await heldDetail.deliverCanceled();
   await assertOwner(second, `#108 — resume unreached — ${second}`);
 
   // A real write to another story causes SSE and a genuine board refresh while
@@ -82,7 +83,7 @@ test("block receipts stay with their story across navigation, late detail, and b
   const refreshedTitle = "SH-823 unrelated board refresh";
   const heldBoard = await holdFetch<{ stories: { story: { id: string; title: string } }[] }>(
     page,
-    (url) => url.pathname.endsWith("/data"),
+    (url) => isBoardPage(url, slug, "todo"),
     (body) => body.stories.some((view) => view.story.id === first && view.story.title === refreshedTitle),
   );
   const changed = await request.patch(`${base}${first}`, { headers, data: { title: refreshedTitle } });
