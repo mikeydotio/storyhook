@@ -1,3 +1,4 @@
+import { isBoardPage } from "./board-network";
 import { test, expect } from "./support";
 import {
   cleanUpCreatedStories,
@@ -26,14 +27,13 @@ test("an unresolved continuation is visible on the card and in its detail", asyn
   let unresolved = true;
   try {
     await page.route(
-      (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`,
+      (url) => isBoardPage(url, slug),
       async (route) => {
         const response = await route.fetch();
         const data = await response.json();
         const view = data.stories.find((candidate: { story: { id: string } }) => candidate.story.id === id);
-        if (!view) throw new Error("created fixture story is missing from project data");
-        if (unresolved) view.continuation_alerts = [alert];
-        else delete view.continuation_alerts;
+        // Unrelated and empty columns are legitimate page responses.
+        if (view) view.continuation_needs_attention = unresolved;
         await route.fulfill({ response, json: data });
       },
     );
@@ -42,8 +42,8 @@ test("an unresolved continuation is visible on the card and in its detail", asyn
       async (route) => {
         const response = await route.fetch();
         const view = await response.json();
-        if (unresolved) view.continuation_alerts = [alert];
-        else delete view.continuation_alerts;
+        if (unresolved) view.story.continuation_alerts = [alert];
+        else delete view.story.continuation_alerts;
         await route.fulfill({ response, json: view });
       },
     );

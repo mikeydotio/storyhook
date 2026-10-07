@@ -1216,6 +1216,37 @@ pub(super) fn story(
     }
 }
 
+/// Read only the dependency graph and card fields. SQLite removes large detail
+/// values before crossing the storage boundary, so no comment/history strings
+/// are allocated in Rust merely to answer a board page.
+pub(super) fn board_stories(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<Vec<StoryRow>, StoreError> {
+    let columns = STORY_COLUMNS.replace("closed_at, description,", "closed_at, NULL,")
+        .replace("draft, snapshot,", "draft, json_remove(snapshot, '$.description', '$.comments', '$.referenced_by_commits', '$.attachments'),");
+    let mut stmt = sql(
+        conn.prepare(&format!(
+            "SELECT {columns} FROM stories WHERE project_id = ?1 ORDER BY story_no"
+        )),
+        "preparing board graph",
+    )?;
+    let rows = sql(
+        stmt.query_map(params![project.get()], raw_story_from_row),
+        "reading board graph",
+    )?;
+    let raw = collect(rows, "reading board graph")?;
+    let mut labels = labels_index(conn, project)?;
+    raw.into_iter()
+        .map(|row| {
+            let row_labels = labels
+                .remove(&StoryNo::new(row.story_no))
+                .unwrap_or_default();
+            hydrate(row, row_labels)
+        })
+        .collect()
+}
+
 pub(super) fn stories(
     conn: &Connection,
     project: ProjectId,

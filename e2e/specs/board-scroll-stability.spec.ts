@@ -1,7 +1,8 @@
+import { isBoardPage } from "./board-network";
 import type { APIRequestContext, Page } from "@playwright/test";
 import {
   test, expect, openProject, openFilters, seedToken, projectSlug,
-  requiredEnv, cleanUpCreatedStories, onAFrozenClock, awaitSettled,
+  requiredEnv, cleanUpCreatedStories, onAFrozenClock, awaitSettled, waitForBoardPages,
 } from "./support";
 
 /** SH-729: assert geometry before a locator action can scroll the page back.
@@ -64,11 +65,19 @@ async function expectShellAtOrigin(page: Page) {
 
 /** Drive two real safety polls, including their response delivery. */
 async function idleThroughPolls(page: Page) {
+  await waitForBoardPages(page);
   await onAFrozenClock(page, async () => {
     for (let i = 0; i < 2; i++) {
-      const next = page.waitForResponse(response => response.url().endsWith("/data") && response.ok());
+      const columns = await page.locator("#board-view .column[data-state]").evaluateAll(
+        nodes => nodes.map(node => (node as HTMLElement).dataset.state!),
+      );
+      expect(columns.length).toBeGreaterThan(0);
+      // Metadata alone cannot exercise card reconciliation. Observe every
+      // visible column page, including those queued by the concurrency bound.
+      const pages = columns.map(column => page.waitForResponse(response =>
+        isBoardPage(new URL(response.url()), undefined, column) && response.ok()));
       await page.clock.runFor(25_000);
-      await (await next).finished();
+      await Promise.all(pages.map(async response => (await response).finished()));
       await page.clock.runFor(500);
     }
   });

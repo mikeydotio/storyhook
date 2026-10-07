@@ -1030,6 +1030,7 @@ pub fn peer_admitted(
 struct Job {
     method: Method,
     path: String,
+    query: Option<String>,
     headers: Vec<Header>,
     body: RequestBody,
     loopback: bool,
@@ -1498,6 +1499,7 @@ fn worker(
     let job = Job {
         method,
         path,
+        query,
         headers,
         body,
         loopback,
@@ -1751,17 +1753,21 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
         .read()
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
+    let rest_target = job
+        .query
+        .as_ref()
+        .map_or_else(|| job.path.clone(), |query| format!("{}?{query}", job.path));
     let routed = rest::route_with_activity(
         serving.store,
         &serving.env,
         &serving.verification_activity,
         match &job.body {
             RequestBody::Text(text) => {
-                rest::RouteRequest::new(&job.method, &job.path, &job.headers, text)
+                rest::RouteRequest::new(&job.method, &rest_target, &job.headers, text)
                     .with_token_context(&serving.tokens, &serving.cookie_name, &serving.token)
             }
             RequestBody::Binary(bytes) => {
-                rest::RouteRequest::binary(&job.method, &job.path, &job.headers, bytes)
+                rest::RouteRequest::binary(&job.method, &rest_target, &job.headers, bytes)
                     .with_token_context(&serving.tokens, &serving.cookie_name, &serving.token)
             }
         },

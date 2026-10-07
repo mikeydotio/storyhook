@@ -1,3 +1,4 @@
+import { isBoardMetadata, isCatalog } from "./board-network";
 import { test, expect } from "./support";
 import { withDrainedRoutes } from "../route-lifetime";
 import type { Page } from "@playwright/test";
@@ -281,7 +282,7 @@ test("a selection synchronously guards every mutation and field, then one settle
   const requested = latch();
   const release = latch();
   await page.route(
-    (url) => url.pathname === `/api/repos/${betaSlug}/data`,
+    (url) => isBoardMetadata(url, betaSlug),
     async (route) => {
       requested.release();
       await release.held;
@@ -406,9 +407,9 @@ test("Alpha to Beta to Alpha before debounce reuses Alpha vocabulary without an 
   let betaDataGets = 0;
   page.on("request", (requestEvent) => {
     if (requestEvent.method() !== "GET") return;
-    const path = new URL(requestEvent.url()).pathname;
-    if (path === `/api/repos/${alphaSlug}/data`) alphaDataGets++;
-    if (path === `/api/repos/${betaSlug}/data`) betaDataGets++;
+    const url = new URL(requestEvent.url());
+    if (isBoardMetadata(url, alphaSlug)) alphaDataGets++;
+    if (isBoardMetadata(url, betaSlug)) betaDataGets++;
   });
 
   await onAFrozenClock(page, async () => {
@@ -561,15 +562,21 @@ test("Drafts is global on Home and edits a cross-project draft through its owner
 
   await page.locator("#drafts-btn").click();
   const rows = page.locator("#drafts-list .drafts-row");
-  await expect(rows).toHaveCount(2);
+  // Draft discovery remains global, while only the selected project's
+  // current summary page is resident. Exercise both owners explicitly.
+  const draftProject = page.getByRole("combobox", { name: "Draft project", exact: true });
+  await expect(draftProject.locator("option")).toHaveCount(2);
+  await draftProject.selectOption(alphaSlug);
+  await expect(rows).toHaveCount(1);
   await expect(rows.filter({ hasText: alphaTitle })).toContainText("AA · Alpha Project");
+  await draftProject.selectOption(betaSlug);
   const betaRow = rows.filter({ hasText: betaTitle });
   await expect(betaRow).toContainText("BB · Beta Project");
 
   const ownerData = page.waitForResponse(
     (resp) =>
       resp.request().method() === "GET" &&
-      new URL(resp.url()).pathname === `/api/repos/${betaSlug}/data`,
+      new URL(resp.url()).pathname.startsWith(`/api/repos/${betaSlug}/story/`),
   );
   await betaRow.click();
   await ownerData;
@@ -590,6 +597,7 @@ test("Drafts is global on Home and edits a cross-project draft through its owner
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
 
   await page.locator("#drafts-btn").click();
+  await draftProject.selectOption(betaSlug);
   const editedBetaRow = page.locator("#drafts-list .drafts-row", {
     hasText: editedBetaTitle,
   });
@@ -597,7 +605,7 @@ test("Drafts is global on Home and edits a cross-project draft through its owner
   const refreshedOwnerData = page.waitForResponse(
     (resp) =>
       resp.request().method() === "GET" &&
-      new URL(resp.url()).pathname === `/api/repos/${betaSlug}/data`,
+      new URL(resp.url()).pathname.startsWith(`/api/repos/${betaSlug}/story/`),
   );
   await editedBetaRow.click();
   await refreshedOwnerData;
@@ -615,7 +623,7 @@ test("Drafts is global on Home and edits a cross-project draft through its owner
   const alphaOwnerData = page.waitForResponse(
     (resp) =>
       resp.request().method() === "GET" &&
-      new URL(resp.url()).pathname === `/api/repos/${alphaSlug}/data`,
+      new URL(resp.url()).pathname.startsWith(`/api/repos/${alphaSlug}/story/`),
   );
   await alphaRow.click();
   await alphaOwnerData;
@@ -654,7 +662,7 @@ test("a stale global draft row cannot open an editor for a draft that is gone", 
     await expect(page.locator("#drafts-btn-text")).toHaveText("1 Drafts");
 
     await page.route(
-      (url) => url.pathname === `/api/repos/${alphaSlug}/data`,
+      (url) => url.pathname === `/api/repos/${alphaSlug}/story/${id}`,
       async (route) => {
         const response = await route.fetch({
           headers: {
@@ -663,7 +671,9 @@ test("a stale global draft row cannot open an editor for a draft that is gone", 
           },
         });
         const data = await response.json();
-        data.drafts = [];
+        // The draft summary was available, but the authoritative detail
+        // now represents a story published elsewhere.
+        data.story.story.draft = false;
         await route.fulfill({ response, json: data });
       },
     );
@@ -678,9 +688,10 @@ test("a stale global draft row cannot open an editor for a draft that is gone", 
     await refreshedCatalog;
 
     await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
-    await expect(page.locator("#toast-stack .toast.error")).toContainText(
-      `${id} is no longer an available draft.`,
+    await expect(page.locator("#drafts-list")).toContainText(
+      "This story is no longer an available draft.",
     );
+    await expect(page.locator("#drafts-list .draft-open-cancel")).toHaveText("Back to drafts");
   });
 });
 
@@ -705,7 +716,8 @@ test("a global draft editor closes when its owning project is deleted elsewhere"
     await expect(page.locator("#create-modal")).toHaveClass(/open/);
     await expect(page.locator("#create-project")).toHaveValue(betaSlug);
 
-    await page.route("**/api/repos", async (route) => {
+    await page.route(isCatalog, async (route) => {
+      if (route.request().method() !== "GET") { await route.continue(); return; }
       const response = await route.fetch({
         headers: {
           ...route.request().headers(),
@@ -761,7 +773,7 @@ test("a held Beta reply cannot clear pending, replace Alpha vocabulary, or targe
   const betaTaken = latch();
   const releaseBeta = latch();
   await page.route(
-    (url) => url.pathname === `/api/repos/${betaSlug}/data`,
+    (url) => isBoardMetadata(url, betaSlug),
     async (route) => {
       const response = await route.fetch({
         headers: {
@@ -797,7 +809,7 @@ test("a held Beta reply cannot clear pending, replace Alpha vocabulary, or targe
     const staleArrived = page.waitForResponse(
       (response) =>
         response.request().method() === "GET" &&
-        new URL(response.url()).pathname === `/api/repos/${betaSlug}/data`,
+        isBoardMetadata(new URL(response.url()), betaSlug),
     );
     releaseBeta.release();
     await staleArrived;
@@ -833,7 +845,7 @@ test("the current vocabulary failure reverts to Alpha, restores controls, and ke
   const alphaSlug = await projectSlug(request, "Alpha Project");
   const betaSlug = await projectSlug(request, "Beta Project");
   await page.route(
-    (url) => url.pathname === `/api/repos/${betaSlug}/data`,
+    (url) => isBoardMetadata(url, betaSlug),
     async (route) => route.abort("failed"),
   );
 
@@ -900,7 +912,7 @@ test("Enter in the title cannot submit while a project's vocabulary fetch is in 
 
   const heldVocab = await holdUntilRefused(
     page,
-    (url) => url.pathname === `/api/repos/${betaSlug}/data`,
+    (url) => isBoardMetadata(url, betaSlug),
   );
 
   await page.locator("#new-story-btn").click();

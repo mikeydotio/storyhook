@@ -1,3 +1,4 @@
+import { isBoardPage } from "./board-network";
 import { test, expect } from "./support";
 import {
   cleanUpCreatedStories,
@@ -23,7 +24,7 @@ import {
  *
  * Root cause is the same one SH-397 found: `populateCard()` used to
  * `clear()` and rebuild every child on every render, unconditionally,
- * whether or not anything the card renders actually changed. A `/data`
+ * whether or not anything the card renders actually changed. A summary-page
  * reply landing between a real mousedown and mouseup on `.rel-id` destroyed
  * it out from under the pointer, and per the UI Events click-dispatch
  * algorithm a `mousedown` target disconnected before `mouseup` means no
@@ -37,14 +38,14 @@ import {
  * it proves the actual claim ("an unrelated render must not touch this
  * card's DOM at all"), not merely "some click survived some render."
  * `drawer-open-race.spec.ts` is the template for the race-forcing
- * technique (`holdFetch` gates a genuine `/data` reply so it lands exactly
+ * technique (`holdFetch` gates a genuine summary-page reply so it lands exactly
  * between a real `page.mouse.down()` and `page.mouse.up()`).
  */
 
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
   // Past this suite's own maximum patience (SH-347) -- the test below holds
-  // `/data`, and the page's own read deadline must not race it.
+  // summary-page, and the page's own read deadline must not race it.
   await page.goto(`/?boardFetchTimeoutMs=${heldReadDeadlineMs()}`);
   await openProject(page, "Alpha Project");
 });
@@ -141,12 +142,20 @@ test("a /data reply that changes nothing this card renders does not swallow a cl
   const ref = workerCard.locator(".flag-blocked .rel-id");
   await expect(ref).toHaveText(blockerId);
 
-  // Gate the *next* `/data` reply so it lands exactly where the race needs
+  // Gate the *next* summary-page reply so it lands exactly where the race needs
   // it -- between mousedown and mouseup.
+  const slug = await projectSlug(request, "Alpha Project");
+  const before = await request.get(`/api/repos/${encodeURIComponent(slug)}/story/${encodeURIComponent(workerId)}`, {
+    headers: { "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN") },
+  });
+  expect(before.ok(), await before.text()).toBe(true);
+  const beforeSequence: number = (await before.json()).story.head_global_seq;
+  expect(beforeSequence).toEqual(expect.any(Number));
   const held = await holdFetch(
     page,
-    (url) => url.pathname.endsWith("/data"),
-    () => true,
+    (url) => isBoardPage(url, slug, "blocked"),
+    (body: { stories: { story: { id: string }; head_global_seq: number }[] }) =>
+      body.stories.some((view) => view.story.id === workerId && view.head_global_seq > beforeSequence),
   );
 
   // A real mutation through the daemon's own API drives the `repo-changed`
@@ -154,7 +163,6 @@ test("a /data reply that changes nothing this card renders does not swallow a cl
   // nothing `workerCard` renders (not its title, labels, type,
   // blocked-by set, or awaiting reason), so the render this forces is a
   // genuine no-op for this card.
-  const slug = await projectSlug(request, "Alpha Project");
   const commented = await request.post(
     `/api/repos/${encodeURIComponent(slug)}/story/${encodeURIComponent(workerId)}/comment`,
     {
@@ -201,7 +209,7 @@ test("a /data reply that changes nothing this card renders does not swallow a cl
 /**
  * Control for the test above: the identical mouse choreography and the
  * identical no-op mutation, but the click is driven with no interposed
- * `/data` hold at all -- proves the down/up-split technique itself opens
+ * summary-page hold at all -- proves the down/up-split technique itself opens
  * the blocker's drawer normally, so a pass above is never mistaken for an
  * artifact of how the click was driven rather than of the race removed.
  */

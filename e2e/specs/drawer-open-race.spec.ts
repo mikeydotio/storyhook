@@ -1,3 +1,4 @@
+import { isBoardPage } from "./board-network";
 import { test, expect } from "./support";
 import {
   cleanUpCreatedStories,
@@ -31,7 +32,7 @@ import {
  * assumed): if the element under `mousedown` is disconnected before
  * `mouseup`, no `click` fires anywhere -- not even at an ancestor -- because
  * there is no longer a common inclusive ancestor connecting the two. A
- * `/data` reply landing in that narrow window (any mutation's own refetch,
+ * summary-page reply landing in that narrow window (any mutation's own refetch,
  * the SSE-driven one, the 25s safety poll) destroys the pointer's target out
  * from under it. Playwright's hit-target check runs once, before the
  * gesture, against the node that existed then, and passes -- so the click
@@ -41,7 +42,7 @@ import {
  * `card-reposition-click-race.spec.ts` witnesses it directly.
  *
  * This spec forces that exact race deterministically, through the real
- * production render path (`holdFetch` gates a genuine `/data` reply; no DOM
+ * production render path (`holdFetch` gates a genuine summary-page reply; no DOM
  * is touched by hand) rather than waiting out the rare organic occurrence,
  * and asserts the exact failure signature SH-397 reported. Before the fix
  * (`.card`'s presentational descendants made `pointer-events: none`, so a
@@ -54,7 +55,7 @@ import {
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
   // `boardFetchTimeoutMs` past this suite's own maximum patience (SH-347):
-  // the one test below that holds `/data` must not race the page's own read
+  // the one test below that holds summary-page must not race the page's own read
   // deadline for that hold. Harmless for the sibling test, which never holds
   // anything.
   await page.goto(`/?boardFetchTimeoutMs=${heldReadDeadlineMs()}`);
@@ -74,20 +75,27 @@ test("a /data reply landing between mousedown and mouseup does not swallow the c
     hasText: title,
   });
 
-  // Gate the *next* `/data` reply so it lands exactly where the race needs
+  // Gate the *next* summary-page reply so it lands exactly where the race needs
   // it -- between mousedown and mouseup -- rather than racing the machine's
   // own timing the way the organic occurrence did.
+  const slug = await projectSlug(request, "Alpha Project");
+  const before = await request.get(`/api/repos/${encodeURIComponent(slug)}/story/${encodeURIComponent(id)}`, {
+    headers: { "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN") },
+  });
+  expect(before.ok(), await before.text()).toBe(true);
+  const beforeSequence: number = (await before.json()).story.head_global_seq;
+  expect(beforeSequence).toEqual(expect.any(Number));
   const held = await holdFetch(
     page,
-    (url) => url.pathname.endsWith("/data"),
-    () => true,
+    (url) => isBoardPage(url, slug, "todo"),
+    (body: { stories: { story: { id: string }; head_global_seq: number }[] }) =>
+      body.stories.some((view) => view.story.id === id && view.head_global_seq > beforeSequence),
   );
 
   // A real mutation, through the daemon's own API, is what drives the
   // `repo-changed` SSE this held fetch answers -- the same path a loaded
   // machine's own mutation-triggered refetch takes in production, not a
   // synthetic re-render.
-  const slug = await projectSlug(request, "Alpha Project");
   const commented = await request.post(
     `/api/repos/${encodeURIComponent(slug)}/story/${encodeURIComponent(id)}/comment`,
     {

@@ -1,3 +1,4 @@
+import { isBoardMetadata } from "./board-network";
 import { test, expect, openProject, projectSlug, seedToken } from "./support";
 
 // SH-771: a repository that already committed files under .storyhook/logs
@@ -13,7 +14,8 @@ for (const infrastructureHalted of [false, true]) {
   test(`tracked journal files keep their own banner with infrastructure halt=${infrastructureHalted}`, async ({ page, request }) => {
     await seedToken(page);
     const slug = await projectSlug(request, "Alpha Project");
-    await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async route => {
+    await page.route((url) => isBoardMetadata(url, slug), async route => {
+      if (route.request().method() !== "GET") { await route.continue(); return; }
       const response = await route.fetch();
       const data = await response.json();
       data.verification_control = { state: "running" };
@@ -39,7 +41,8 @@ for (const infrastructureHalted of [false, true]) {
 test("no journal banner appears without a journal warning", async ({ page, request }) => {
   await seedToken(page);
   const slug = await projectSlug(request, "Alpha Project");
-  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async route => {
+  await page.route((url) => isBoardMetadata(url, slug), async route => {
+    if (route.request().method() !== "GET") { await route.continue(); return; }
     const response = await route.fetch();
     const data = await response.json();
     data.verification_control = { state: "running" };

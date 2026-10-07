@@ -573,6 +573,9 @@ pub trait ReadOps {
     /// The stories matching `query`.
     fn stories(&self, project: ProjectId, query: &StoryQuery) -> Result<Vec<StoryRow>, StoreError>;
 
+    /// Board graph projection. Heavy detail fields are excluded before decoding.
+    fn board_stories(&self, project: ProjectId) -> Result<Vec<StoryRow>, StoreError>;
+
     /// The edges this story owns.
     fn relations_from(
         &self,

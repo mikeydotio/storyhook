@@ -1,3 +1,4 @@
+import { isBoardMetadata } from "./board-network";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -236,11 +237,11 @@ test("Escape dismisses authentication above the viewer before the image", async 
   await openStory(page, id);
   await page.locator(".attachment-thumbnail").click();
   await decoded(page);
-  await page.route("**/data", route => route.fulfill({ status: 401, body: "authentication required" }));
+  await page.route(isBoardMetadata, route => route.fulfill({ status: 401, body: "authentication required" }));
   command(["set", id, "--title", "Trigger authenticated board refresh"]);
   await expect(page.locator("#token-modal")).toHaveClass(/open/);
   await expect(page.locator("#attachment-modal")).toHaveAttribute("inert", "");
-  await page.unroute("**/data");
+  await page.unroute(isBoardMetadata);
   await page.keyboard.press("Escape");
   await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
   await expect(page.locator("#attachment-modal")).toHaveClass(/open/);

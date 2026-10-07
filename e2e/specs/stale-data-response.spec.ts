@@ -1,9 +1,11 @@
+import { isBoardPage } from "./board-network";
 import { test, expect } from "./support";
 import type { Page } from "@playwright/test";
 import type { HeldFetch } from "./support";
 import {
   cleanUpCreatedStories,
   holdFetch,
+  heldReadDeadlineMs,
   openProject,
   projectSlug,
   requiredEnv,
@@ -19,7 +21,12 @@ import {
  * so on a loaded machine a request issued *before* a write can be answered
  * *after* one issued behind it, and the older snapshot lands last.
  *
- * Nothing then re-renders for up to `SAFETY_POLL_INTERVAL_MS`: the SSE event
+ * SH-894 now cancels stale reads on local mutation or project navigation.
+ * These tests retain the real pre-write snapshot and explicitly prove that
+ * cancellation before releasing its late body; no replacement reply can
+ * rescue the sealed in-flight-write witness.
+ *
+ * Originally nothing then re-rendered for up to `SAFETY_POLL_INTERVAL_MS`: the SSE event
  * for that write has already been spent, so the board sits showing a state
  * the user has already been told is gone, for 25 seconds. That is what
  * `card-blockers.spec.ts` caught twice inside `make test` -- a blocked card
@@ -36,7 +43,7 @@ cleanUpCreatedStories("Alpha Project");
 
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
-  await page.goto("/");
+  await page.goto(`/?boardFetchTimeoutMs=${heldReadDeadlineMs()}`);
   await openProject(page, "Alpha Project");
 });
 
@@ -49,8 +56,8 @@ interface BoardSnapshot {
  * Holds the first board fetch whose snapshot satisfies `until`, and answers
  * every board fetch before it from the daemon as usual.
  *
- * `GET .../data` is the board's own endpoint and nothing else's, so matching
- * on the path alone is enough to name it. Everything else this needs -- why
+ * Only positive-limit summary pages carry stories. Metadata is deliberately
+ * excluded so its empty stories array cannot masquerade as a board snapshot. Everything else this needs -- why
  * the predicate rather than "the next fetch", why `route.fetch()` rather than
  * a delayed `continue()`, and what `seal()`/`deliver()` are for -- is
  * `holdFetch`'s own contract (`support.ts`), shared with every other spec
@@ -63,7 +70,7 @@ function holdBoardFetch(
 ): Promise<HeldFetch> {
   return holdFetch<BoardSnapshot>(
     page,
-    (url) => /\/data$/.test(url.pathname),
+    (url) => isBoardPage(url),
     until,
     options,
   );
@@ -72,6 +79,15 @@ function holdBoardFetch(
 /** True once `title` is among the snapshot's stories. */
 const holds = (title: string) => (snapshot: BoardSnapshot) =>
   snapshot.stories.some((view) => view.story.title === title);
+
+async function nudgeBoard(page: Page, id: string): Promise<void> {
+  const slug = await projectSlug(page.request, "Alpha Project");
+  const response = await page.request.post(`/api/repos/${encodeURIComponent(slug)}/story/${encodeURIComponent(id)}/comment`, {
+    headers: { "X-Storyhook": "1", "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN") },
+    data: { text: "SH-281 request a real pre-mutation board snapshot" },
+  });
+  expect(response.ok(), await response.text()).toBe(true);
+}
 
 async function createStory(page: Page, title: string) {
   await page.locator("#new-story-btn").click();
@@ -96,8 +112,10 @@ test("a board snapshot taken before a relation must not un-render it when it arr
 
   // Both stories, and no relation between them: exactly the board this test
   // is about not reverting to.
+  const workerCardBefore = await createStory(page, workerTitle);
+  const workerId = (await workerCardBefore.getAttribute("data-id"))!;
   const stale = await holdBoardFetch(page, holds(workerTitle));
-  await createStory(page, workerTitle);
+  await nudgeBoard(page, workerId);
   await stale.taken;
 
   await page.locator(".card", { hasText: workerTitle }).click();
@@ -123,7 +141,7 @@ test("a board snapshot taken before a relation must not un-render it when it arr
   await expect(badge.locator(".rel-id")).toHaveText(blockerId);
 
   await stale.seal();
-  await stale.deliver();
+  await stale.deliverCanceled();
 
   // The card itself is unaffected by the older snapshot -- it exists in
   // both -- so `populateCard` rebuilds it in place, synchronously, with
@@ -191,7 +209,7 @@ test("a board snapshot in flight when a write lands must not un-render that writ
   const badge = workerCard.locator(".flag-blocked");
   await expect(badge.locator(".rel-id")).toHaveText(blockerId);
 
-  await stale.deliver();
+  await stale.deliverCanceled();
 
   await expect(badge.locator(".rel-id")).toHaveText(blockerId);
 });
@@ -202,15 +220,17 @@ test("a board snapshot taken before a story existed must not un-render that stor
   const seedTitle = "SH-281 stale snapshot — the seed";
   const lateTitle = "SH-281 stale snapshot — the vanishing story";
 
+  const seedCard = await createStory(page, seedTitle);
+  const seedId = (await seedCard.getAttribute("data-id"))!;
   const stale = await holdBoardFetch(page, holds(seedTitle));
-  await createStory(page, seedTitle);
+  await nudgeBoard(page, seedId);
   await stale.taken;
 
   await createStory(page, lateTitle);
   const populated = await page.locator("#filter-count").textContent();
 
   await stale.seal();
-  await stale.deliver();
+  await stale.deliverCanceled();
 
   // `#filter-count`, not the card: a card the applied snapshot no longer
   // contains is *animated* out (`.card.exiting`, 0.2s, with the real
@@ -263,7 +283,7 @@ test("a board snapshot for the project the user has left must not be painted ont
     .click();
   await expect(page.locator("#projsel-btn")).toContainText("BB · Beta Project");
 
-  await stale.deliver();
+  await stale.deliverCanceled();
 
   // No exit animation stands in the way this time: Alpha's stories would be
   // *entering* Beta's board, and an entering card is in the DOM from the

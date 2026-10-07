@@ -1995,14 +1995,36 @@ fn opening_a_global_draft_is_ticketed_and_revalidated() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
     )
     .expect("reading src/web_dashboard.html");
-    let body = function_body(script(&html), "openCatalogDraft");
-
+    let source = script(&html);
+    let cancel = function_body(source, "cancelDraftOpen");
     for required in [
-        "var ticket = ++draftOpenTicket;",
-        "if (ticket !== draftOpenTicket) return;",
-        "var fresh = (payload.drafts || []).filter",
-        "if (!fresh)",
-        "openCreateModal(fresh, project.id, payload.meta);",
+        "draftOpenTicket++;",
+        "draftOpenOwner = null;",
+        "if (draftDetailRead) draftDetailRead.abort();",
+    ] {
+        assert!(
+            cancel.contains(required),
+            "cancelDraftOpen() must invalidate and abort the previous selection: {required}"
+        );
+    }
+    let read = function_body(source, "draftDetailGet");
+    let guard = read
+        .find("if (draftOpenOwner !== owner || owner.ticket !== draftOpenTicket || overlayStack.indexOf(\"drafts-modal\") === -1) return;")
+        .expect("every draft read must belong to the current selection and visible picker");
+    assert!(
+        guard < read.find("callback(payload)").expect("the detail callback"),
+        "stale or dismissed selections must be rejected before delivering a reply"
+    );
+
+    let body = function_body(source, "openCatalogDraft");
+    for required in [
+        "cancelDraftOpen();",
+        "evictDraftWindow();",
+        "ticket: draftOpenTicket, project: entry.project.id, id: entry.draft.story.id",
+        "var base = repoApiBase(owner.project);",
+        "var fresh = payload.story;",
+        "if (!fresh || !fresh.story || !fresh.story.draft)",
+        "openCreateModal(fresh, project, metadata.meta);",
     ] {
         assert!(
             body.contains(required),
@@ -2010,6 +2032,14 @@ fn opening_a_global_draft_is_ticketed_and_revalidated() {
              (SH-442). Body: {body}"
         );
     }
+    let metadata = body
+        .find("draftDetailGet(owner, base + \"/board?options=\"")
+        .expect("opening reads the selected project's metadata");
+    let detail = body
+        .find("draftDetailGet(owner, base + \"/story/\" + encodeURIComponent(owner.id)")
+        .expect("opening reads only the selected draft's full detail");
+    assert!(metadata < detail, "metadata must arrive before full detail");
+    assert!(body.contains("JSON.stringify({limit: 0})"));
 }
 
 /// The dashboard's `<script>` block, so a text-literal assertion below
@@ -2067,7 +2097,9 @@ fn every_loading_line_comes_from_the_one_generator() {
             .expect("readinessNote's closing brace")
         + close.len();
 
-    for needle in ["Loading", "Couldn't load"] {
+    // Match sentence literals, not identifiers such as boardMetadataLoading.
+    // Both quote styles remain covered; each generated sentence starts here.
+    for needle in ["\"Loading", "'Loading", "\"Couldn't load", "'Couldn't load"] {
         for (at, _) in script.match_indices(needle) {
             let line_start = script[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
             let line = script[line_start..].lines().next().unwrap_or("");
@@ -3521,7 +3553,7 @@ fn sh_614_mobile_list_has_semantic_markup_and_shared_controls() {
 
     let source = script(&body);
     for function in [
-        "sortedListStories",
+        "boardOptions",
         "renderDesktopList",
         "renderMobileList",
         "syncListPresentation",
@@ -3532,6 +3564,25 @@ fn sh_614_mobile_list_has_semantic_markup_and_shared_controls() {
             "missing SH-614 shared list function `{function}`"
         );
     }
+    let options = function_body(source, "boardOptions");
+    assert!(
+        options.contains("column === null ? state.sort")
+            && options.contains("sort: names[key] || key, dir: sort.dir"),
+        "List sort controls must feed the server page ordering"
+    );
+    let render = function_body(source, "renderList");
+    assert!(
+        render.contains("var sorted = stories.slice();") && !render.contains(".sort("),
+        "both List presentations must retain the server's page order"
+    );
+    assert!(
+        render.contains("if (compactHeaderQuery.matches) {")
+            && render.contains("clear($(\"list-body\"));")
+            && render.contains("renderMobileList(sorted, anims);")
+            && render.contains("clear($(\"mobile-list-body\"));")
+            && render.contains("renderDesktopList(sorted, anims);"),
+        "only the current responsive presentation may retain story DOM"
+    );
     assert!(
         source.contains("state.sort.col = this.value;")
             && source.contains("state.sort.dir = Number(this.value);"),
@@ -4354,11 +4405,9 @@ fn web_dashboard_js_reads_the_wire_key_next_ids_actually_serializes_to() {
     );
 }
 
-/// SH-197's context menu "Copy Description" reads straight off the summary
-/// record `/data` already returns -- no separate detail fetch -- so this
-/// pins that `description` really is there rather than something only the
-/// single-story `GET .../story/<id>` (`openDrawer`'s own follow-up call)
-/// carries.
+/// Legacy `/data` callers retain full descriptions. The progressive board
+/// omits them and retrieves single-story detail for Copy Description, but
+/// that transport change must not break the existing full-data contract.
 #[test]
 fn web_serve_api_data_carries_story_descriptions() {
     let fixture = served();
@@ -7503,9 +7552,9 @@ fn web_serve_repos_list_reports_available_repo_with_summary() {
     assert_eq!(repos[0]["summary"]["total_open"], 1);
 }
 
-/// SH-442: the catalog is the dashboard-wide Drafts source, while `/data`
-/// remains the board-scoped source. Both routes use the same server helper so
-/// they expose exactly the same unpublished, non-deleted views.
+/// SH-442: legacy catalog and `/data` callers retain the same unpublished,
+/// non-deleted full draft views. The dashboard opts into the lightweight
+/// `/api/repos?board=1` catalog and fetches draft pages on demand.
 #[test]
 fn web_serve_repos_list_carries_each_projects_visible_drafts() {
     let fixture = served();

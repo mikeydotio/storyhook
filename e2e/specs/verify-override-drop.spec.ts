@@ -1,3 +1,4 @@
+import { installBoardFixture } from "../board-fixture";
 import { test, expect } from "./support";
 import { withDrainedRoutes } from "../route-lifetime";
 import { focusMenuItemByLabel, holdKey, openProject, projectSlug, seedToken } from "./support";
@@ -11,8 +12,8 @@ import { focusMenuItemByLabel, holdKey, openProject, projectSlug, seedToken } fr
  * the card in Verifying with no request made. The drawer's state select
  * and the board/list Set Status menus (SH-782) reach the same prompt.
  *
- * The verifying card is injected through the `/data` route, as
- * `verification-status.spec.ts` does: a real story parked in `verifying`
+ * The verifying card is injected into scoped summary pages, with its own
+ * detail response, as `verification-status.spec.ts` does: a real story parked in `verifying`
  * would be picked up by the daemon's own verifier within the second. The
  * `/move` route is fulfilled here too, so the spec asserts the request the
  * page sends rather than a daemon reply about a story that does not exist.
@@ -34,32 +35,26 @@ type View = "board" | "list";
 type Selection = "pointer" | "keyboard";
 
 async function injectVerifyingCard(page: Page, slug: string): Promise<void> {
-  await page.route(
-    (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`,
-    async (route) => {
-      const response = await route.fetch();
-      const data: { stories?: Array<Record<string, unknown>> } = await response.json();
-      const template = (data.stories ?? [])[0];
-      if (!template) throw new Error("override fixture has no story to clone");
-      const clone = JSON.parse(JSON.stringify(template)) as {
-        story: Record<string, unknown>;
-        display_state?: string | null;
-        is_ready?: boolean;
-        is_blocked?: boolean;
-        verification?: unknown;
-      };
-      clone.story.id = ID;
-      clone.story.title = TITLE;
-      clone.story.state = "verifying";
-      clone.story.superstate = "OPEN";
-      clone.display_state = null;
-      clone.is_ready = false;
-      clone.is_blocked = false;
-      clone.verification = { status: "running", elapsed_seconds: 42 };
-      (data.stories ??= []).push(clone);
-      await route.fulfill({ response, json: data });
-    },
-  );
+  await installBoardFixture(page, slug, async (data) => {
+    const template = (data.stories ?? [])[0];
+    if (!template) throw new Error("override fixture has no story to clone");
+    const clone = JSON.parse(JSON.stringify(template)) as {
+      story: Record<string, unknown>;
+      display_state?: string | null;
+      is_ready?: boolean;
+      is_blocked?: boolean;
+      verification?: unknown;
+    };
+    clone.story.id = ID;
+    clone.story.title = TITLE;
+    clone.story.state = "verifying";
+    clone.story.superstate = "OPEN";
+    clone.display_state = null;
+    clone.is_ready = false;
+    clone.is_blocked = false;
+    clone.verification = { status: "running", elapsed_seconds: 42 };
+    (data.stories ??= []).push(clone);
+  });
 }
 
 /** Records every `/move` the page sends for the injected card and answers

@@ -1,3 +1,4 @@
+import { installBoardFixture } from "../board-fixture";
 import type { Page } from "@playwright/test";
 import { test, expect } from "./support";
 import { withDrainedRoutes } from "../route-lifetime";
@@ -60,111 +61,105 @@ type Verification =
     };
 
 async function injectVerificationCards(page: Page, slug: string): Promise<void> {
-  await page.route(
-    (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`,
-    async (route) => {
-      const response = await route.fetch();
-      const data: { stories?: Array<Record<string, unknown>> } = await response.json();
-      const template = (data.stories ?? [])[0];
-      if (!template) throw new Error("verification status fixture has no story to clone");
+  await installBoardFixture(page, slug, async (data) => {
+    const template = (data.stories ?? [])[0];
+    if (!template) throw new Error("verification status fixture has no story to clone");
 
-      const cards: Array<{
-        id: string;
-        title: string;
-        priority: string;
-        state?: string;
-        verification: Verification;
-      }> = [
-        { id: "SH-94907", title: "SH-656 held", priority: "high", verification: { status: "held", blockers: ["SH-11", "SH-12"] } },
-        { id: "SH-94908", title: "SH-656 landing pending", priority: "high", verification: { status: "landingpending" } },
-        {
-          id: "SH-94906",
-          title: RESUBMITTED_TITLE,
-          priority: "high",
-          verification: {
-            status: "superseding",
-            generation: 123,
-            superseded_generation: 120,
-            wait_seconds: 30,
-            active_elapsed_seconds: 420,
-          },
+    const cards: Array<{
+      id: string;
+      title: string;
+      priority: string;
+      state?: string;
+      verification: Verification;
+    }> = [
+      { id: "SH-94907", title: "SH-656 held", priority: "high", verification: { status: "held", blockers: ["SH-11", "SH-12"] } },
+      { id: "SH-94908", title: "SH-656 landing pending", priority: "high", verification: { status: "landingpending" } },
+      {
+        id: "SH-94906",
+        title: RESUBMITTED_TITLE,
+        priority: "high",
+        verification: {
+          status: "superseding",
+          generation: 123,
+          superseded_generation: 120,
+          wait_seconds: 30,
+          active_elapsed_seconds: 420,
         },
-        {
-          id: "SH-94901",
-          title: RUNNING_TITLE,
-          priority: "low",
-          verification: {
-            status: "running",
-            elapsed_seconds: 724,
-            current_step: { label: "rust-suite", elapsed_seconds: 182 },
-            tests: { completed: 2234, total: 2250 },
-          },
+      },
+      {
+        id: "SH-94901",
+        title: RUNNING_TITLE,
+        priority: "low",
+        verification: {
+          status: "running",
+          elapsed_seconds: 724,
+          current_step: { label: "rust-suite", elapsed_seconds: 182 },
+          tests: { completed: 2234, total: 2250 },
         },
-        {
-          id: "SH-94905",
-          title: ACTIVITY_TITLE,
-          priority: "low",
-          verification: {
-            status: "running",
-            elapsed_seconds: 1204,
-            current_step: { label: "waiting for gate lock", elapsed_seconds: 496 },
-          },
+      },
+      {
+        id: "SH-94905",
+        title: ACTIVITY_TITLE,
+        priority: "low",
+        verification: {
+          status: "running",
+          elapsed_seconds: 1204,
+          current_step: { label: "waiting for gate lock", elapsed_seconds: 496 },
         },
-        {
-          id: "SH-94902",
-          title: QUEUED_TITLE,
-          priority: "high",
-          verification: { status: "queued", wait_seconds: 3840, position: 1 },
+      },
+      {
+        id: "SH-94902",
+        title: QUEUED_TITLE,
+        priority: "high",
+        verification: { status: "queued", wait_seconds: 3840, position: 1 },
+      },
+      {
+        id: "SH-94903",
+        title: STARTING_TITLE,
+        priority: "medium",
+        verification: { status: "running", elapsed_seconds: 3 },
+      },
+      {
+        id: "SH-94909",
+        title: BATCHED_TITLE,
+        priority: "medium",
+        verification: {
+          status: "running",
+          elapsed_seconds: 30,
+          batch: "0123456789ab",
+          head: "SH-94901",
+          phase: "gating",
         },
-        {
-          id: "SH-94903",
-          title: STARTING_TITLE,
-          priority: "medium",
-          verification: { status: "running", elapsed_seconds: 3 },
-        },
-        {
-          id: "SH-94909",
-          title: BATCHED_TITLE,
-          priority: "medium",
-          verification: {
-            status: "running",
-            elapsed_seconds: 30,
-            batch: "0123456789ab",
-            head: "SH-94901",
-            phase: "gating",
-          },
-        },
-        {
-          id: "SH-94904",
-          title: MOVED_TITLE,
-          priority: "medium",
-          state: "todo",
-          verification: { status: "queued", wait_seconds: 10, position: 2 },
-        },
-      ];
+      },
+      {
+        id: "SH-94904",
+        title: MOVED_TITLE,
+        priority: "medium",
+        state: "todo",
+        verification: { status: "queued", wait_seconds: 10, position: 2 },
+      },
+    ];
 
-      for (const candidate of cards) {
-        const clone = JSON.parse(JSON.stringify(template)) as {
-          story: Record<string, unknown>;
-          display_state?: string | null;
-          is_ready?: boolean;
-          is_blocked?: boolean;
-          verification?: Verification;
-        };
-        clone.story.id = candidate.id;
-        clone.story.title = candidate.title;
-        clone.story.state = candidate.state ?? "verifying";
-        clone.story.superstate = "OPEN";
-        clone.story.priority = candidate.priority;
-        clone.display_state = null;
-        clone.is_ready = false;
-        clone.is_blocked = false;
-        clone.verification = candidate.verification;
-        (data.stories ??= []).push(clone);
-      }
-      await route.fulfill({ response, json: data });
-    },
-  );
+    for (const candidate of cards) {
+      const clone = JSON.parse(JSON.stringify(template)) as {
+        story: Record<string, unknown>;
+        display_state?: string | null;
+        is_ready?: boolean;
+        is_blocked?: boolean;
+        verification?: Verification;
+      };
+      clone.story.id = candidate.id;
+      clone.story.title = candidate.title;
+      clone.story.state = candidate.state ?? "verifying";
+      clone.story.superstate = "OPEN";
+      clone.story.priority = candidate.priority;
+      clone.display_state = null;
+      clone.is_ready = false;
+      clone.is_blocked = false;
+      clone.verification = candidate.verification;
+      (data.stories ??= []).push(clone);
+    }
+  });
 }
 
 function card(page: Page, title: string) {

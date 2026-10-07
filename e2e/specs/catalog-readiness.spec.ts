@@ -1,3 +1,4 @@
+import { isCatalog } from "./board-network";
 import { test, expect } from "./support";
 import {
   cleanUpCreatedStories,
@@ -49,7 +50,7 @@ test("the catalog names its failure instead of reporting an empty store", async 
   // is what this spec needs to catch in flight.
   const repos = await holdUntilRefused(
     page,
-    (url) => url.pathname === "/api/repos",
+    isCatalog,
   );
   await seedToken(page);
   await page.goto(`/?catalogFetchTimeoutMs=${heldReadDeadlineMs()}`);
@@ -110,7 +111,7 @@ test("a catalog that answers after a failure drops the error where it stands", a
 }) => {
   const repos = await holdUntilRefused(
     page,
-    (url) => url.pathname === "/api/repos",
+    isCatalog,
   );
   await seedToken(page);
   await page.goto(`/?catalogFetchTimeoutMs=${heldReadDeadlineMs()}`);
@@ -151,7 +152,7 @@ test("an empty store still offers to add a project", async ({ page }) => {
   // under every other spec in this file -- a catalog that has genuinely
   // answered with nothing.
   await page.route(
-    (url) => url.pathname === "/api/repos",
+    isCatalog,
     async (route) => {
       if (route.request().method() !== "GET") {
         await route.continue();
@@ -193,7 +194,8 @@ test("a partial catalog keeps known drafts visible without claiming a complete c
   );
   if (!created.ok()) throw new Error(`draft seed answered ${created.status()}`);
 
-  await page.route("**/api/repos", async (route) => {
+  await page.route(isCatalog, async (route) => {
+    if (route.request().method() !== "GET") { await route.continue(); return; }
     const response = await route.fetch({
       headers: {
         ...route.request().headers(),
@@ -204,6 +206,7 @@ test("a partial catalog keeps known drafts visible without claiming a complete c
     const failed = repos.find((repo) => repo.name === "Beta Project");
     if (failed) {
       delete failed.drafts;
+      delete failed.draft_count;
       failed.error = "simulated unreadable project";
       failed.available = false;
     }

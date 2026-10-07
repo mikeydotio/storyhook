@@ -1,3 +1,5 @@
+import { isBoardMetadata } from "./board-network";
+import { installBoardFixture } from "../board-fixture";
 import type { Locator } from "@playwright/test";
 import { withDrainedRoutes } from "../route-lifetime";
 import {
@@ -75,35 +77,29 @@ test("verification text stays inside cards on initial render, refresh, and timer
 
   // Clone the daemon's real wire shape, replacing data only. The dashboard's
   // render/reconcile and elapsed-label timer execute unchanged.
-  await page.route(
-    (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`,
-    async (route) => {
-      const response = await route.fetch();
-      const data = await response.json();
-      const template = data.stories?.[0];
-      if (!template) throw new Error("verification layout fixture has no story to clone");
-      const view = JSON.parse(JSON.stringify(template));
-      view.story.id = "SH-9611";
-      view.story.title = "SH-611 verification layout fixture";
-      view.story.state = "verifying";
-      view.story.superstate = "OPEN";
-      view.story.story_type = "bug";
-      view.story.labels = [];
-      view.story.relationships = [];
-      view.story.awaiting = null;
-      view.display_state = null;
-      view.is_ready = false;
-      view.is_blocked = false;
-      view.open_prs = [];
-      const elapsed = Math.floor(((await page.evaluate(() => Date.now())) - sampleStarted) / 1000);
-      view.verification = stalled
-        ? { status: "stalled", attempts: 3, detail: label, halted: true }
-        : { status: "running", elapsed_seconds: 144 + elapsed,
-            current_step: { label, elapsed_seconds: 18 + elapsed } };
-      data.stories.push(view);
-      await route.fulfill({ response, json: data });
-    },
-  );
+  await installBoardFixture(page, slug, async (data) => {
+    const template = data.stories?.[0];
+    if (!template) throw new Error("verification layout fixture has no story to clone");
+    const view = JSON.parse(JSON.stringify(template));
+    view.story.id = "SH-9611";
+    view.story.title = "SH-611 verification layout fixture";
+    view.story.state = "verifying";
+    view.story.superstate = "OPEN";
+    view.story.story_type = "bug";
+    view.story.labels = [];
+    view.story.relationships = [];
+    view.story.awaiting = null;
+    view.display_state = null;
+    view.is_ready = false;
+    view.is_blocked = false;
+    view.open_prs = [];
+    const elapsed = Math.floor(((await page.evaluate(() => Date.now())) - sampleStarted) / 1000);
+    view.verification = stalled
+      ? { status: "stalled", attempts: 3, detail: label, halted: true }
+      : { status: "running", elapsed_seconds: 144 + elapsed,
+          current_step: { label, elapsed_seconds: 18 + elapsed } };
+    data.stories.push(view);
+  });
 
   for (const width of isMobile ? [320, 375, 390] : [1280]) {
     await page.setViewportSize({ width, height: 844 });
@@ -154,7 +150,7 @@ test("verifier recovery banner remains actionable at desktop and phone widths", 
   await seedToken(page);
   await page.goto("/");
   const slug = await projectSlug(request, "Alpha Project");
-  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async (route) => {
+  await page.route((url) => isBoardMetadata(url, slug), async (route) => {
     const response = await route.fetch();
     const data = await response.json();
     data.verification_incident = null;

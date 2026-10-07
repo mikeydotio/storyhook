@@ -510,8 +510,17 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// The whole project in the shape `story report` and the web dashboard
     /// both consume: the rollup, every view, and the ready/blocked id sets.
     pub fn report_data(&self) -> Result<ReportData, AppError> {
+        self.report_from_views(self.story_views(false)?)
+    }
+
+    /// Lightweight board graph: the same scheduling semantics, without histories.
+    pub fn board_data(&self) -> Result<ReportData, AppError> {
+        let rows = self.tx.board_stories(self.project)?;
+        self.report_from_views(story_views_from_rows(self.tx, self.project, false, rows)?)
+    }
+
+    fn report_from_views(&self, views: Vec<StoryView>) -> Result<ReportData, AppError> {
         let reserved = self.reset_ids()?;
-        let views = self.story_views(false)?;
         let stories = view_map(&views);
         let mut summary = rollup(&views, &stories);
 
@@ -1092,8 +1101,25 @@ pub fn story_views(
     project: ProjectId,
     include_derived: bool,
 ) -> Result<Vec<StoryView>, AppError> {
+    story_views_from_rows(
+        tx,
+        project,
+        include_derived,
+        tx.stories(project, &StoryQuery::all())?,
+    )
+}
+
+fn story_views_from_rows(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    include_derived: bool,
+    rows: Vec<StoryRow>,
+) -> Result<Vec<StoryView>, AppError> {
     let continuations = tx.continuations(project)?;
-    let rows = story_rows(tx, project)?;
+    let rows: BTreeMap<String, StoryRow> = rows
+        .into_iter()
+        .map(|row| (row.snapshot.id.clone(), row))
+        .collect();
     // `head_global_seq` (SH-336) travels alongside `stories` rather than
     // through it — `stories` is the snapshot map every function below already
     // expects, and widening its value type would touch every one of them for

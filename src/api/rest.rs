@@ -51,6 +51,9 @@ use crate::service::{
 };
 use crate::store::{ProjectId, ReadOps, Store};
 
+#[path = "board.rs"]
+mod board;
+
 const DASHBOARD_HTML: &str = include_str!("../web_dashboard.html");
 const DASHBOARD_VERSION_PLACEHOLDER: &str = "__STORYHOOK_VERSION__";
 
@@ -281,6 +284,7 @@ fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
         ProjectRoute::Automations => "automations",
         ProjectRoute::DispatchPolicy | ProjectRoute::PolicyResolve { .. } => "dispatch-policy",
         ProjectRoute::Data => "data",
+        ProjectRoute::Board => "board",
         ProjectRoute::Visibility => "visibility",
         ProjectRoute::VerificationAck => "verification-ack",
         ProjectRoute::VerificationControl => "verification-control",
@@ -378,7 +382,7 @@ pub fn route_with_activity<S: Store>(
         body,
         token_context,
     } = request;
-    let route = classify(&path_segments(path), method);
+    let route = classify(&path_segments(crate::api::http::request_path(path)), method);
     if matches!(body, RouteBody::Binary(_))
         && !matches!(
             route,
@@ -426,10 +430,18 @@ pub fn route_with_activity<S: Store>(
                     }
                 },
             };
-            Routed::quiet(match repos_json(store, env, &hidden) {
-                Ok(json) => json_reply(200, json).no_store(),
-                Err(e) => error_reply(&e),
-            })
+            Routed::quiet(
+                match repos_json(
+                    store,
+                    env,
+                    &hidden,
+                    path.split_once('?')
+                        .is_some_and(|(_, query)| query.split('&').any(|pair| pair == "board=1")),
+                ) {
+                    Ok(json) => json_reply(200, json).no_store(),
+                    Err(e) => error_reply(&e),
+                },
+            )
         }
         Route::ReposCreate => Routed::changing(
             method,
@@ -480,7 +492,7 @@ pub fn route_with_activity<S: Store>(
                     .with_verification_activity(Some(verification_activity));
                 let reply = route_project(
                     &ctx,
-                    method,
+                    (method, path),
                     verification_activity,
                     route,
                     headers,
@@ -535,13 +547,14 @@ fn attachment_reply<S: Store>(ctx: &Ctx<'_, S>, id: &str, raw_id: &str) -> Resul
 /// without an answer here.
 fn route_project<S: Store>(
     ctx: &Ctx<'_, S>,
-    method: &Method,
+    target: (&Method, &str),
     verification_activity: &VerificationActivity,
     route: ProjectRoute<'_>,
     headers: &[Header],
     body: RouteBody<'_>,
     trusted_hosts: &TrustedHosts,
 ) -> Reply {
+    let (method, path) = target;
     let body = match body {
         RouteBody::Text(text) => text,
         RouteBody::Binary(bytes) => {
@@ -602,6 +615,7 @@ fn route_project<S: Store>(
                 crate::api::upload::reply(ctx, id, headers, body.as_bytes())
             })
         }
+        ProjectRoute::Board => board::reply(ctx, verification_activity, path),
         ProjectRoute::Data => match project_data_json(ctx, verification_activity) {
             Ok(json) => json_reply(200, json).no_cache(),
             Err(e) => error_reply(&e),
@@ -638,9 +652,7 @@ fn route_project<S: Store>(
         ProjectRoute::StoryCreate => {
             guarded(headers, trusted_hosts, body, |b| route_create_story(ctx, b))
         }
-        ProjectRoute::StoryShow { id } => {
-            reply_with(ctx, 200, Invocation::Show { id: id.to_string() })
-        }
+        ProjectRoute::StoryShow { id } => board::detail_reply(ctx, id),
         ProjectRoute::StoryAttachment { id, attachment_id } => {
             match attachment_reply(ctx, id, attachment_id) {
                 Ok(reply) => reply,
@@ -910,6 +922,7 @@ fn repos_json<S: Store>(
     store: &S,
     env: &Environment,
     hidden: &BTreeSet<String>,
+    board: bool,
 ) -> Result<String, AppError> {
     let entries = CatalogService::new(store).all()?;
     let now = env.now();
@@ -919,9 +932,13 @@ fn repos_json<S: Store>(
             let summary = store
                 .read(|tx| {
                     let automated = tx.automations_enabled(entry.project)?;
-                    Ok(QueryService::new(tx, entry.project, &now)
-                        .report_data()
-                        .map(|data| (data, automated)))
+                    let query = QueryService::new(tx, entry.project, &now);
+                    Ok((if board {
+                        query.board_data()
+                    } else {
+                        query.report_data()
+                    })
+                    .map(|data| (data, automated)))
                 })
                 .map_err(AppError::from)
                 .and_then(|inner| inner);
@@ -929,7 +946,11 @@ fn repos_json<S: Store>(
             match summary {
                 Ok((data, automated)) => {
                     let read_only = entry.path.is_none() && automated;
-                    let drafts = dashboard_drafts_json(&data);
+                    let drafts = if board {
+                        Vec::new()
+                    } else {
+                        dashboard_drafts_json(&data)
+                    };
                     serde_json::json!({
                         "id": entry.id,
                         "visible": visible,
@@ -941,6 +962,7 @@ fn repos_json<S: Store>(
                         "reason": read_only.then_some(NO_CHECKOUT),
                         "summary": data.summary,
                         "drafts": drafts,
+                        "draft_count": data.stories.iter().filter(|v| v.story.draft).count(),
                     })
                 }
                 Err(e) => serde_json::json!({
