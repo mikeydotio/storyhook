@@ -3693,7 +3693,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (!page || page.loading) return;
     var epoch = boardEpoch;
     page.loading = true;
-    page.error = null;
+    // Keep a failed page's recovery control through a background retry.
+    // Only a successful response establishes that the failure is resolved.
     // Navigating discards the old page immediately; polling the same page
     // keeps its visible cards and scroll position until the refresh arrives.
     if (cursor !== page.cursor) {
@@ -3832,41 +3833,46 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function renderPageControls(mount, key) {
     var page = boardPages[key];
-    if (!page) {
-      clear(mount);
-      delete mount.dataset.pageControls;
-      return;
-    }
-    var label = page.error || (page.loading ? readinessNote("stories", false) :
-      (page.total === 0 ? "No matching stories" : "Showing " + page.rows.length + " of " + page.total));
-    // Independent column arrivals must not replace an unchanged Retry or
-    // paging button while it is being focused or clicked. Handlers read the
-    // current page, so a preserved node never owns an obsolete cursor.
-    var fingerprint = JSON.stringify([key, label, !!page.error, !!page.loading, page.history.length, !!page.nextCursor]);
-    if (mount.dataset.pageControls === fingerprint && mount.childElementCount) return;
-    clear(mount);
-    mount.dataset.pageControls = fingerprint;
+    if (!page) { clear(mount); return; }
     mount.setAttribute("role", "status");
     mount.dataset.pageKey = key;
-    mount.appendChild(el("span", {}, [label]));
-    if (page.error) {
-      mount.appendChild(el("button", { type: "button", class: "btn btn-ghost board-page-retry", onClick: function() {
-        var current = boardPages[key];
-        if (current) { loadBoardPage(key, current.cursor, current.history); renderView(); }
-      } }, ["Retry"]));
+    var label = page.error || (page.loading ? readinessNote("stories", false) :
+      (page.total === 0 ? "No matching stories" : "Showing " + page.rows.length + " of " + page.total));
+    if (page.error && page.loading) label += " " + readinessNote("stories", false);
+    var note = mount.querySelector("span");
+    if (!note) { note = el("span", {}, []); mount.insertBefore(note, mount.firstChild); }
+    if (note.textContent !== label) note.textContent = label;
+    // Keep controls themselves through independent arrivals and repeated
+    // failed background reads. Updating a label or disabled state must not
+    // discard the user's focus or the node a click is about to target.
+    var wanted = [note], cursor = note.nextSibling;
+    function button(className, title, disabled, onClick) {
+      var control = mount.querySelector("." + className);
+      if (!control) control = el("button", { type: "button", class: "btn btn-ghost " + className, onClick: onClick }, [title]);
+      control.disabled = disabled;
+      if (control === cursor) cursor = cursor.nextSibling;
+      else mount.insertBefore(control, cursor);
+      wanted.push(control);
     }
-    if (page.history.length) mount.appendChild(el("button", { type: "button", class: "btn btn-ghost board-page-previous", disabled: !!page.loading, onClick: function() {
+    if (page.error) button("board-page-retry", "Retry", !!page.loading, function() {
+      var current = boardPages[key];
+      if (current) { loadBoardPage(key, current.cursor, current.history); renderView(); }
+    });
+    if (page.history.length) button("board-page-previous", "Previous", !!page.loading, function() {
       var current = boardPages[key];
       if (!current || !current.history.length) return;
       var previous = current.history.slice();
       var cursor = previous.pop();
       loadBoardPage(key, cursor, previous); renderView();
-    } }, ["Previous"]));
-    if (page.nextCursor) mount.appendChild(el("button", { type: "button", class: "btn btn-ghost board-page-next", disabled: !!page.loading, onClick: function() {
+    });
+    if (page.nextCursor) button("board-page-next", "Next", !!page.loading, function() {
       var current = boardPages[key];
       if (!current || !current.nextCursor) return;
       loadBoardPage(key, current.nextCursor, current.history.concat([current.cursor])); renderView();
-    } }, ["Next"]));
+    });
+    Array.prototype.slice.call(mount.children).forEach(function(child) {
+      if (wanted.indexOf(child) === -1) detach(child);
+    });
   }
 
   /** Records that a `/data` round trip for `askedFor` has completed, which is
