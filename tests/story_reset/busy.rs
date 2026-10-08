@@ -65,6 +65,20 @@ impl Store for ContendedWrites {
         }
         self.inner.write(f)
     }
+    fn try_write<T>(
+        &self,
+        f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        if self.armed.load(Ordering::SeqCst)
+            && self.calls.fetch_add(1, Ordering::SeqCst).is_multiple_of(2)
+        {
+            self.refused.fetch_add(1, Ordering::SeqCst);
+            return Err(StoreError::Busy(
+                "timed out waiting for the project write lock (beginning a write)".into(),
+            ));
+        }
+        self.inner.try_write(f)
+    }
     fn migrate(&self) -> Result<storyhook::store::MigrationReport, StoreError> {
         self.inner.migrate()
     }

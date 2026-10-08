@@ -110,7 +110,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             .canonicalize()
             .map_err(|e| AppError::Storage(format!("resolving reset caller directory: {e}")))?;
         let now = self.ctx.now();
-        let finished = self.ctx.store().write(|tx| {
+        let finished = self.control_write(|tx| {
             let project = self.ctx.project();
             let slug = project_slug(tx, project)?;
             let mut run = run_for_project(tx, &slug, run_id)?;
