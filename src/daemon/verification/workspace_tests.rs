@@ -517,7 +517,7 @@ PY
 
 #[test]
 fn sh846_default_control_inherits_patience_but_explicit_deadlines_remain_literal() {
-    let root = tempfile::tempdir().unwrap();
+    let root = storyhook_test_support::scratch_dir();
     let env = Environment::at(root.path()).with_subprocess_patience_under(2.0);
     // The declaration stores max(real contention, 2.0) once. Verify that both
     // constructors preserve that exact policy, without resampling or assuming idle.
