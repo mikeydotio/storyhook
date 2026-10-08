@@ -2441,7 +2441,7 @@ where
     A: VerificationActuator,
     W: FnMut(&VerificationCandidate) -> Result<ReconcileWait, AppError>,
 {
-    let queue = VerificationQueue::new(store);
+    let queue = VerificationQueue::new(store).with_environment(env.clone());
     if store
         .read(|tx| tx.verification_incident(project))?
         .is_some()

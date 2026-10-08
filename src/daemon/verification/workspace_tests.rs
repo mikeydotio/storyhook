@@ -113,7 +113,7 @@ fn sh870_recorded_repair_delivery_reuses_verifier_lock_without_interrupting_agen
     let fixture = ServiceFixture::new();
     let store = SqliteStore::open(fixture.store().path()).unwrap();
     let project = ProjectId::new(fixture.project().get());
-    let env = Environment::at(fixture.cwd());
+    let env = Environment::at(fixture.cwd()).with_subprocess_patience();
     let mut candidate = candidate(&store, &env, project);
     candidate.checkout = fixture.cwd().to_path_buf();
     git(&candidate.checkout, &["init", "-q"], None).unwrap();
@@ -184,7 +184,7 @@ fn notification_without_verifier_ownership_acquires_its_own_lock() {
     let fixture = ServiceFixture::new();
     let store = SqliteStore::open(fixture.store().path()).unwrap();
     let project = ProjectId::new(fixture.project().get());
-    let env = Environment::at(fixture.cwd());
+    let env = Environment::at(fixture.cwd()).with_subprocess_patience();
     let mut candidate = candidate(&store, &env, project);
     candidate.checkout = fixture.cwd().to_path_buf();
     git(fixture.cwd(), &["init", "-q"], None).unwrap();
@@ -206,7 +206,7 @@ fn control_runner_replaces_stale_markers_only_with_current_ownership() {
     let fixture = ServiceFixture::new();
     let store = SqliteStore::open(fixture.store().path()).unwrap();
     let project = ProjectId::new(fixture.project().get());
-    let env = Environment::at(fixture.cwd());
+    let env = Environment::at(fixture.cwd()).with_subprocess_patience();
     let mut candidate = candidate(&store, &env, project);
     candidate.checkout = fixture.cwd().to_path_buf();
     git(fixture.cwd(), &["init", "-q"], None).unwrap();
@@ -304,7 +304,9 @@ fn control_runner_keeps_ownership_through_timeout_and_cancellation_cleanup() {
         let fixture = ServiceFixture::new();
         let store = SqliteStore::open(fixture.store().path()).unwrap();
         let project = ProjectId::new(fixture.project().get());
-        let env = Environment::at(fixture.cwd());
+        // Git/setup waits need an answer; the timeout and cleanup bounds being
+        // exercised below remain explicit two-second actuator overrides.
+        let env = Environment::at(fixture.cwd()).with_subprocess_patience();
         let mut candidate = candidate(&store, &env, project);
         candidate.checkout = fixture.cwd().to_path_buf();
         git(fixture.cwd(), &["init", "-q"], None).unwrap();
@@ -395,7 +397,7 @@ fn recovery_notification_uses_target_workspace_and_ignores_other_verifier_cancel
     let fixture = ServiceFixture::new();
     let store = SqliteStore::open(fixture.store().path()).unwrap();
     let project = ProjectId::new(fixture.project().get());
-    let env = Environment::at(fixture.cwd());
+    let env = Environment::at(fixture.cwd()).with_subprocess_patience();
     let mut original = candidate(&store, &env, project);
     original.checkout = fixture.cwd().to_path_buf();
     git(&original.checkout, &["init", "-q"], None).unwrap();
@@ -452,7 +454,7 @@ fn recovery_dispatch_retains_target_lock_and_uses_explicit_fresh_or_resume_mode(
     let fixture = ServiceFixture::new();
     let store = SqliteStore::open(fixture.store().path()).unwrap();
     let project = ProjectId::new(fixture.project().get());
-    let env = Environment::at(fixture.cwd());
+    let env = Environment::at(fixture.cwd()).with_subprocess_patience();
     let mut original = candidate(&store, &env, project);
     original.checkout = fixture.cwd().to_path_buf();
     git(fixture.cwd(), &["init", "-q"], None).unwrap();

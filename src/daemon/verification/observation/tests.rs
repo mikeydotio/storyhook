@@ -18,7 +18,7 @@ impl Fixture {
         // Test-support links another crate instance; reopen the real seed
         // with this unit-test crate's types, as the control tests do.
         let store = crate::store::SqliteStore::open(seed.store().path()).unwrap();
-        let env = Environment::at(seed.cwd());
+        let env = Environment::at(seed.cwd()).with_subprocess_patience();
         let project = ProjectId::new(seed.project().get());
         Self {
             _seed: seed,
@@ -57,7 +57,11 @@ fn candidate(f: &Fixture) -> VerificationCandidate {
     StoryService::new(&f.ctx())
         .set_state(&id, "verifying", None, None, None)
         .unwrap();
-    VerificationQueue::new(f.store()).next().unwrap().unwrap()
+    VerificationQueue::new(f.store())
+        .with_environment(f.env.clone())
+        .next()
+        .unwrap()
+        .unwrap()
 }
 
 #[test]
@@ -101,7 +105,11 @@ fn human_only_removed_between_reads_still_revokes_the_old_attempt() {
         .set_labels(&c.story_id, &[], &["human-only".into()])
         .unwrap();
     assert!(!current(f.store(), &c).unwrap());
-    let fresh = VerificationQueue::new(f.store()).next().unwrap().unwrap();
+    let fresh = VerificationQueue::new(f.store())
+        .with_environment(f.env.clone())
+        .next()
+        .unwrap()
+        .unwrap();
     assert!(current(f.store(), &fresh).unwrap());
 }
 
@@ -117,7 +125,11 @@ fn a_block_cleared_between_observer_reads_still_withdraws_the_attempt() {
         !current(f.store(), &c).unwrap(),
         "the pre-block attempt retained authority"
     );
-    let next = VerificationQueue::new(f.store()).next().unwrap().unwrap();
+    let next = VerificationQueue::new(f.store())
+        .with_environment(f.env.clone())
+        .next()
+        .unwrap()
+        .unwrap();
     assert!(
         current(f.store(), &next).unwrap(),
         "a fresh admission after unblock is valid"
@@ -369,7 +381,7 @@ fn revoked_candidates_cannot_write_verdicts_progress_or_remediation() {
         let f = Fixture::new();
         let c = candidate(&f);
         let ctx = f.ctx();
-        let queue = VerificationQueue::new(f.store());
+        let queue = VerificationQueue::new(f.store()).with_environment(f.env.clone());
         StoryService::new(&ctx)
             .set_labels(&c.story_id, &["human-only".into()], &[])
             .unwrap();
@@ -510,7 +522,7 @@ fn landing_completion_requires_the_admitted_human_revision() {
     let f = Fixture::new();
     let c = candidate(&f);
     let ctx = f.ctx();
-    let queue = VerificationQueue::new(f.store());
+    let queue = VerificationQueue::new(f.store()).with_environment(f.env.clone());
     let certificate = VerifiedSubmission {
         head: "a".repeat(40),
         tree: "b".repeat(40),
@@ -566,7 +578,7 @@ fn landing_completion_resumes_the_dependents_it_unblocks() {
     RelationService::new(&ctx)
         .relate(&dependent, "blocked-by", &c.story_id, false)
         .unwrap();
-    let queue = VerificationQueue::new(f.store());
+    let queue = VerificationQueue::new(f.store()).with_environment(f.env.clone());
     let fresh = queue.ordered_for(f.project).unwrap().remove(0);
     let certificate = VerifiedSubmission {
         head: "a".repeat(40),

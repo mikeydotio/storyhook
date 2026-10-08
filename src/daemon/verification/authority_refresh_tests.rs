@@ -24,7 +24,7 @@ impl Board {
         let checkout = fixture.github_checkout("https://github.com/acme/widgets");
         // Unit tests and test-support link separate crate instances.
         let store = SqliteStore::open(fixture.store().path()).unwrap();
-        let env = Environment::at(fixture.cwd());
+        let env = Environment::at(fixture.cwd()).with_subprocess_patience();
         let project = ProjectId::new(fixture.project().get());
         let ctx = Ctx::new(&store, project, checkout.clone(), env.clone()).no_hooks(true);
         let story = StoryService::new(&ctx)
@@ -63,7 +63,11 @@ impl Board {
     }
 
     fn candidate(&self) -> VerificationCandidate {
-        VerificationQueue::new(&self.store).next().unwrap().unwrap()
+        VerificationQueue::new(&self.store)
+            .with_environment(self.env.clone())
+            .next()
+            .unwrap()
+            .unwrap()
     }
 }
 
@@ -124,7 +128,7 @@ fn same_pr_relink_preserves_attempt_output_and_journal_without_supersession() {
     assert!(matches!(
         refresh_authority(
             &board.store,
-            &VerificationQueue::new(&board.store),
+            &VerificationQueue::new(&board.store).with_environment(board.env.clone()),
             &mut guard,
             &entry,
             &board.env,
@@ -181,13 +185,17 @@ fn different_pr_number_and_new_generation_still_replace_the_attempt() {
                 .unwrap();
         }
         assert!(matches!(
-            candidate_authority(&VerificationQueue::new(&board.store), &candidate).unwrap(),
+            candidate_authority(
+                &VerificationQueue::new(&board.store).with_environment(board.env.clone()),
+                &candidate
+            )
+            .unwrap(),
             CandidateAuthority::Superseded(Some(_))
         ));
         assert!(matches!(
             refresh_authority(
                 &board.store,
-                &VerificationQueue::new(&board.store),
+                &VerificationQueue::new(&board.store).with_environment(board.env.clone()),
                 &mut guard,
                 &entry,
                 &board.env,
@@ -209,7 +217,7 @@ fn different_pr_number_and_new_generation_still_replace_the_attempt() {
 fn repository_identity_and_invalid_link_transitions_remain_authority_changes() {
     let board = Board::new();
     let original = board.candidate();
-    let queue = VerificationQueue::new(&board.store);
+    let queue = VerificationQueue::new(&board.store).with_environment(board.env.clone());
     for owner_changes in [false, true] {
         let mut stale = original.clone();
         let link = stale.pull_request.as_mut().unwrap();
@@ -290,7 +298,7 @@ fn different_pr_host_or_port_replaces_attempt_after_origin_and_link_change() {
         assert!(matches!(
             refresh_authority(
                 &board.store,
-                &VerificationQueue::new(&board.store),
+                &VerificationQueue::new(&board.store).with_environment(board.env.clone()),
                 &mut guard,
                 &entry,
                 &board.env,
@@ -326,7 +334,7 @@ fn normalized_same_pr_url_spelling_keeps_the_admitted_attempt() {
         assert!(matches!(
             refresh_authority(
                 &board.store,
-                &VerificationQueue::new(&board.store),
+                &VerificationQueue::new(&board.store).with_environment(board.env.clone()),
                 &mut guard,
                 &entry,
                 &board.env,
@@ -353,5 +361,32 @@ fn malformed_pr_urls_never_supply_equal_authority() {
         assert!(!same_pull_request_authority(&valid, &malformed));
         assert!(!same_pull_request_authority(&malformed, &valid));
         assert!(!same_pull_request_authority(&malformed, &malformed));
+    }
+}
+
+/// Origin validation must keep the caller's declaration when it builds its
+/// per-project context, including when the queue runs on a worker thread.
+#[test]
+fn queue_origin_validation_requires_and_carries_explicit_subprocess_policy() {
+    let board = Board::new();
+    let undeclared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        VerificationQueue::new(&board.store).ordered().unwrap()
+    }));
+    let message = undeclared.expect_err("the default queue must not invent a test policy");
+    assert!(
+        message
+            .downcast_ref::<String>()
+            .is_some_and(|message| message.contains("neither patience nor proof"))
+    );
+    for env in [
+        board.env.clone().with_subprocess_proof(),
+        board.env.clone().with_subprocess_patience_under(2.0),
+    ] {
+        let queue = VerificationQueue::new(&board.store).with_environment(env);
+        std::thread::scope(|scope| {
+            let candidates = scope.spawn(|| queue.ordered()).join().unwrap().unwrap();
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates[0].pull_request.as_ref().unwrap().url, PR);
+        });
     }
 }

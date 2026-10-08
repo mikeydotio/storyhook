@@ -920,7 +920,7 @@ mod tests {
         let fixture = ServiceFixture::new();
         let store = crate::store::SqliteStore::open(fixture.store().path()).unwrap();
         let project = ProjectId::new(fixture.project().get());
-        let env = Environment::at(fixture.cwd());
+        let env = Environment::at(fixture.cwd()).with_subprocess_patience();
         let mut candidate = candidate(&store, &env, project);
         candidate.checkout = fixture.cwd().to_path_buf();
         for args in [

@@ -101,11 +101,12 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
         &store,
         project,
         fixture.cwd(),
-        Environment::at(fixture.cwd()),
+        Environment::at(fixture.cwd()).with_subprocess_patience(),
     )
     .no_hooks(true);
     let held = submitted(&ctx, "reserved", Priority::Low, HELD_PR);
     let reserved = VerificationQueue::new(&store)
+        .with_environment(ctx.env().clone())
         .ordered_for(project)
         .unwrap()
         .into_iter()
@@ -257,7 +258,7 @@ fn the_store_only_generation_read_agrees_with_the_validated_queue() {
         &store,
         project,
         fixture.cwd(),
-        Environment::at(fixture.cwd()),
+        Environment::at(fixture.cwd()).with_subprocess_patience(),
     )
     .no_hooks(true);
     let verifying = submitted(&ctx, "verifying", Priority::High, HELD_PR);
@@ -271,7 +272,7 @@ fn the_store_only_generation_read_agrees_with_the_validated_queue() {
         .unwrap();
     let unknown = format!("{}-999", verifying.split('-').next().unwrap());
 
-    let queue = VerificationQueue::new(&store);
+    let queue = VerificationQueue::new(&store).with_environment(ctx.env().clone());
     let ordered = queue.ordered_for(project).unwrap();
     let template = ordered
         .iter()
