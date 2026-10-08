@@ -4,7 +4,8 @@ use crate::store::{GateAttempt, GateExecutionPurpose};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, path::PathBuf};
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in super::super) struct Archive {
     path: PathBuf,
     pub(super) digest: String,

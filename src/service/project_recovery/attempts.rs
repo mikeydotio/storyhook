@@ -136,6 +136,12 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
             .store()
             .write(|tx| {
                 let (story, generation) = current(tx, candidate)?;
+                if super::shared::blocks_admission(tx, candidate.project, Some(story))? {
+                    return Err(StoreError::Validation(
+                        "another active shared fault withholds this gate admission".into(),
+                    ));
+                }
+                super::shared::readmit::check_input(tx, candidate, &input.head)?;
                 let Some(mut view) = owner(tx, candidate.project, story)? else {
                     return Ok(RepairAdmission::Proceed { recovery_id: None });
                 };
@@ -197,7 +203,17 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                     .map(|a| &a.input.head_tree)
                     .collect::<std::collections::BTreeSet<_>>();
                 let mut unchanged = completed.contains(&input.head_tree);
-                for observation in &view.observations {
+                if let Some(shared) = &view.state.shared {
+                    // Native proof pins the failing control; it does not invent a
+                    // source head-tree receipt from the candidate merge tree.
+                    unchanged |= input.head == shared.fault.base
+                        || input.head_tree == shared.fault.control_tree;
+                }
+                for observation in view
+                    .observations
+                    .iter()
+                    .filter(|_| view.state.shared.is_none())
+                {
                     let evidence: FaultObservation =
                         serde_json::from_value(observation.evidence.clone()).map_err(|error| {
                             StoreError::Corrupt(format!("repair baseline evidence: {error}"))

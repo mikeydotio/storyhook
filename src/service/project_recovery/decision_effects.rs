@@ -68,7 +68,9 @@ pub(super) fn apply<S: Store>(
     let project = view.record.project;
     let prefix = project_prefix(tx, project)?;
     for subject in &view.state.subjects {
-        if !subject_is_current(tx, project, subject)? {
+        if !(subject_is_current(tx, project, subject)?
+            || super::shared::retained_current(tx, view, subject)?)
+        {
             receipt.skipped_subjects.push(subject.story);
             continue;
         }

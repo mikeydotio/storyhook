@@ -1608,7 +1608,16 @@ fn queue_hold(
             .is_some_and(|reset| !reset.completed)
     {
         Some(QueueHold::Reset)
-    } else if generation.is_some_and(|generation| observed.contains(&(row.story_no, generation))) {
+    } else if match super::project_recovery::shared_blocks_admission(
+        tx,
+        project,
+        Some(row.story_no),
+    ) {
+        Err(StoreError::Corrupt(_)) if purpose == QueuePurpose::Status => false,
+        result => result?,
+    } || generation
+        .is_some_and(|generation| observed.contains(&(row.story_no, generation)))
+    {
         Some(QueueHold::ProjectRecovery)
     } else if super::attribution::holds::held(tx, project, &row.snapshot.id, generation)? {
         Some(QueueHold::Attribution)

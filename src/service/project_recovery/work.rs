@@ -312,6 +312,12 @@ pub(super) fn permitted(
     view: &RecoveryView,
     work: &WorkDelivery,
 ) -> Result<Option<AssessmentHold>, StoreError> {
+    if super::shared::blocks_admission(tx, view.record.project, Some(work.story))? {
+        return Ok(Some(AssessmentHold::ResourceOrDependency));
+    }
+    if view.record.active && !super::shared::evidence_current(tx, view)? {
+        return Ok(Some(AssessmentHold::AuthorityChanged));
+    }
     if let Some(reason) = policy(tx, view, work)? {
         return Ok(Some(reason));
     }

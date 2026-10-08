@@ -107,6 +107,9 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                     };
                 }
                 validate_authority(tx, &view, input, &now)?;
+                if view.state.shared.is_some() && input.scope == RepairScope::SameStory {
+                    return Err(StoreError::Validation("a proved shared fault requires a separate repair or explicit prerequisite; the retained submission is not its repair owner".into()));
+                }
                 let repair_story = match input.scope {
                     RepairScope::SameStory => Some(view.state.assessment.story),
                     RepairScope::SeparateStory => Some(super::decision_effects::create_repair(

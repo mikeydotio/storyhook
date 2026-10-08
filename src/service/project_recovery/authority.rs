@@ -73,6 +73,10 @@ pub(super) fn assessment_hold(
     if let Some(reason) = policy_hold(tx, project, &row.snapshot)? {
         return Ok(Some(reason));
     }
+    if view.state.shared.is_some() {
+        return Ok((!super::shared::retained_current(tx, view, subject)?)
+            .then_some(AssessmentHold::AuthorityChanged));
+    }
     // Pending legacy charters and raw fault text cannot acquire new repair
     // authority. Already accepted lineages remain governed by their work receipts.
     if view.state.decision.is_none() {

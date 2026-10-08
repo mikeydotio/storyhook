@@ -21,6 +21,7 @@ mod refusal;
 mod repair_return;
 mod resolution;
 mod resume;
+mod shared;
 mod status;
 mod test_return;
 mod work;
@@ -50,6 +51,8 @@ pub use prerequisite::{PrerequisiteInput, PrerequisiteReceipt};
 pub(crate) use references::naming;
 pub use refusal::RepairRefusalDisposition;
 pub(crate) use resume::owns_resume;
+pub(crate) use shared::blocks_admission as shared_blocks_admission;
+pub use shared::{SharedFaultIdentity, SharedReadmission, SharedRecovery};
 pub use status::RecoveryStatus;
 pub(crate) use status::snapshot as status_snapshot;
 pub use work::{WorkDelivery, WorkKind, WorkStatus};
@@ -126,6 +129,12 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
                     return Err(StoreError::Validation("repair fault does not match a completed admitted attempt in its lineage".into()));
                 }
             }
+            // The admitted judgment already retains a shared repair's structural
+            // failure. Keep that lineage held; a raw project fault cannot append a
+            // different observation schema or assign a second repair owner.
+            if let Some(owner) = &repair_owner && owner.state.shared.is_some() {
+                return Ok(Some(owner.clone()));
+            }
             // A recurrence after a release opens a new record that names the
             // retired one, so a repeat is visible and countable (SH-849).
             let supersedes = records.iter().rev().find(|r| !r.active && r.code == code && r.locus == locus).map(|r| r.id.clone());
@@ -134,7 +143,7 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
                 read_view(tx, record)?
             } else {
                 let state = RecoveryState {
-                    version: 1, created_at: now.clone(), updated_at: now.clone(), subjects: Vec::new(), decision: None, holds: Vec::new(), work: Vec::new(), attempts: Vec::new(), refusals: Vec::new(), landing: None, legacy_incidents: Vec::new(), prerequisite: None, supersedes,
+                    version: 1, created_at: now.clone(), updated_at: now.clone(), subjects: Vec::new(), decision: None, holds: Vec::new(), work: Vec::new(), attempts: Vec::new(), refusals: Vec::new(), landing: None, legacy_incidents: Vec::new(), prerequisite: None, supersedes, shared: None,
                     assessment: Assessment {
                         dispatch_identity: uuid::Uuid::new_v4().to_string(), story, generation,
                         status: AssessmentStatus::Held,
@@ -350,5 +359,8 @@ pub(crate) fn requires_certification(
     project: crate::store::ProjectId,
     story: crate::store::StoryNo,
 ) -> Result<bool, StoreError> {
-    Ok(attempts::owner(tx, project, story)?.is_some())
+    let generation = crate::service::verification::verifying_entry(tx, project, story)?
+        .map(|(_, generation)| generation);
+    Ok(attempts::owner(tx, project, story)?.is_some()
+        || shared::readmit::expected_head(tx, project, story, generation)?.is_some())
 }

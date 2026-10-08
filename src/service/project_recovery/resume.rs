@@ -17,6 +17,12 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
         let now = self.ctx.now();
         self.ctx.write_stories(|tx| {
             let mut view = persistence::find(tx, self.ctx.project(), id)?;
+            if view.state.shared.is_some() {
+                if super::shared::readmit::reconcile(tx, self.ctx, &mut view, &now)? {
+                    persistence::save(tx, &mut view, &now)?;
+                }
+                return Ok(view);
+            }
             let Some(release) = super::resolution::release(&view.state) else { return Ok(view); };
             let cause = release.cause.clause();
             let holds = view.state.decision.as_ref().map(|d| d.dependency_holds.clone()).unwrap_or_default();

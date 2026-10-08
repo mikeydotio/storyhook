@@ -178,6 +178,9 @@ pub struct RecoveryState {
     /// this one opened, so a recurrence after a release is visible (SH-849).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supersedes: Option<String>,
+    /// Native shared-fault ownership; absent legacy rows keep their original authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared: Option<super::shared::SharedRecovery>,
 }
 
 /// Exact structured evidence originally produced by the verifier.

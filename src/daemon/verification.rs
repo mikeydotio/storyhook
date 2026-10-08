@@ -3169,7 +3169,7 @@ where
                         } => {
                             queue.upsert_generation_comment(&ctx, &candidate,
                                 "CENTRAL VERIFICATION ATTRIBUTION HELD",
-                                &format!("CENTRAL VERIFICATION ATTRIBUTION HELD — evidence {evidence}. Gate {gate}; tree {tree}; log {log}. No repair is assigned. Inspect `story verifier evidence {} --json`.\n\n{}\n\n{}\n\n{}",
+                                &format!("CENTRAL VERIFICATION ATTRIBUTION HELD — evidence {evidence}. Gate {gate}; tree {tree}; log {log}. No implementer repair is assigned by this held result. Inspect `story verifier evidence {} --json`.\n\n{}\n\n{}\n\n{}",
                                     candidate.story_id, crate::text_lint::quote_evidence(&detail), crate::text_lint::quote_evidence(&diagnostic), found_by.as_deref().unwrap_or_default()), None)?;
                             return Ok(TickResult::Returned);
                         }
