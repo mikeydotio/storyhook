@@ -15,6 +15,7 @@ mod observation;
 pub use observation::OriginObservation;
 mod release;
 mod transport;
+pub(crate) mod private_fetch;
 pub use local::run_local;
 #[cfg(feature = "test-seam")]
 pub use local::run_local_for_fixture;

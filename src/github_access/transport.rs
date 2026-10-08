@@ -48,7 +48,7 @@ use crate::process::run_captured_private;
 impl Repository {
     /// Runs clone, fetch, push or ls-remote for origin with gh's credential helper.
     pub fn git(&self, arguments: &[String]) -> Result<Vec<u8>, AppError> {
-        self.git_with_control(arguments, None, None)
+        self.git_with_control(arguments, None, None, None)
     }
 
     /// Resolve a publication origin using the same absolute, quiescent lifetime.
@@ -93,6 +93,27 @@ impl Repository {
                 cancelled,
             }),
             objects,
+            None,
+        )
+    }
+
+    pub(super) fn git_private_fetch(
+        &self,
+        target: &super::private_fetch::PrivateFetch,
+        oids: &[&str],
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, AppError> {
+        target.validate()?;
+        let arguments = super::private_fetch::arguments(oids)?;
+        self.git_with_control(
+            &arguments,
+            Some(PublicationControl {
+                deadline,
+                cancelled,
+            }),
+            None,
+            Some(target),
         )
     }
 
@@ -101,6 +122,7 @@ impl Repository {
         arguments: &[String],
         control: Option<PublicationControl<'_>>,
         objects: Option<&Path>,
+        private_fetch: Option<&super::private_fetch::PrivateFetch>,
     ) -> Result<Vec<u8>, AppError> {
         let read = |_: Duration, path: &Path, args: &[&str]| match control {
             Some(control) => control.read(path, args),
@@ -155,6 +177,7 @@ impl Repository {
                     && operation == "push"
                     && matches!(arg.as_str(), "--no-follow-tags" | "--recurse-submodules=no"))
                 && !(operation == "fetch" && arg == "--no-write-fetch-head")
+                && !(private_fetch.is_some() && super::private_fetch::FLAGS.contains(&arg.as_str()))
         }) {
             return Err(refuse("unsupported transport option"));
         }
@@ -322,6 +345,23 @@ impl Repository {
                 return Err(refuse("invalid native private object directory"));
             }
             command.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", objects);
+        }
+        if let Some(target) = private_fetch {
+            if operation != "fetch" || objects.is_some() || control.is_none() {
+                return Err(refuse("invalid private fetch capability"));
+            }
+            // Refuse auxiliary bundle transfer/config writes. Recheck immediately
+            // before the command; do not override the user's source configuration.
+            target.prepare_source(self, control.expect("checked above"))?;
+            if Self::resolve_reading(&self.checkout, self.bounds, |path, args| {
+                read(self.bounds.read, path, args)
+            })?
+            .identity
+                != self.identity
+            {
+                return Err(refuse("origin changed during private fetch preparation"));
+            }
+            target.configure(&mut command)?;
         }
         let output = capture(command, self.bounds.operation).map_err(|error| {
             AppError::GithubApi(format!(
