@@ -313,9 +313,26 @@ fn view(record: &HostRecovery, state: &State) -> HostRecoveryView {
     }
 }
 
+/// Identity of a validated pressure episode, not restoration authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostFaultStatus {
+    /// Diagnostic kind; only native pressure episodes are supported here.
+    pub kind: String,
+    /// Digest binding authority, host, boot, policy and native fault sequence.
+    pub key: String,
+    /// Exact causal episode sequence, not a count of retries or attempts.
+    pub sequence: u64,
+}
+
 /// Status evidence never grants native restoration or gate certification.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostRecoveryStatus {
+    /// Validated fault identity, unavailable for corrupt or legacy status payloads.
+    #[serde(default)]
+    pub fault: Option<HostFaultStatus>,
+    /// Selected-project original generations and their retained admission history.
+    #[serde(default)]
+    pub retained_submissions: Vec<crate::service::gate_cost::view::RetainedSubmissionStatus>,
     /// Native episode owner identity.
     pub id: String,
     /// Waiting, restored, or invalid retained evidence.
@@ -337,15 +354,22 @@ pub(crate) fn status_snapshot(
     project: crate::store::ProjectId,
 ) -> Result<Vec<HostRecoveryStatus>, StoreError> {
     let mut result = Vec::new();
+    let metadata = tx
+        .project(project)?
+        .ok_or_else(|| invalid("status project missing"))?;
+    let attempts = tx.gate_attempts(project);
     for record in tx.host_recoveries()? {
         let state = match decode(&record) {
             Ok(state) => state,
             Err(error) => {
-                result.push(HostRecoveryStatus { id: record.id, phase: "invalid".into(), started_at: None, elapsed_milliseconds: None, submissions: Vec::new(), pauses_admission: true, next_action: format!("Native host owner evidence is invalid; admission remains closed until custody is reconciled: {error}") });
+                result.push(HostRecoveryStatus { fault: None, retained_submissions: Vec::new(), id: record.id, phase: "invalid".into(), started_at: None, elapsed_milliseconds: None, submissions: Vec::new(), pauses_admission: true, next_action: format!("Native host owner evidence is invalid; admission remains closed until custody is reconciled: {error}") });
                 continue;
             }
         };
         let mut submissions = Vec::new();
+        let mut retained_submissions: Vec<
+            crate::service::gate_cost::view::RetainedSubmissionStatus,
+        > = Vec::new();
         for member in state
             .members
             .iter()
@@ -365,7 +389,23 @@ pub(crate) fn status_snapshot(
                     .map(|(_, generation)| generation)
                     == candidate.verifying_generation
             {
-                submissions.push(candidate.story_id.clone());
+                if !submissions.contains(&candidate.story_id) {
+                    submissions.push(candidate.story_id.clone());
+                }
+                let original = &member.subject.attribution.submission;
+                if !retained_submissions
+                    .iter()
+                    .any(|s| s.submission.same_generation(original))
+                {
+                    retained_submissions.push(
+                        crate::service::gate_cost::view::RetainedSubmissionStatus::from_history(
+                            original,
+                            &metadata.slug,
+                            &metadata.prefix,
+                            &attempts,
+                        ),
+                    );
+                }
             }
         }
         if !record.active && submissions.is_empty() {
@@ -373,7 +413,7 @@ pub(crate) fn status_snapshot(
         }
         let started = chrono::DateTime::parse_from_rfc3339(&state.started_at)
             .map_err(|e| StoreError::Corrupt(e.to_string()))?;
-        result.push(HostRecoveryStatus { id: record.id, phase: if record.active { "waiting-native-restoration" } else { "restored-requires-fresh-gate" }.into(), elapsed_milliseconds: Some((chrono::Utc::now()-started.with_timezone(&chrono::Utc)).num_milliseconds().max(0) as u64), started_at: Some(state.started_at), submissions, pauses_admission: record.active, next_action: if record.active { "Wait for fresh native pressure restoration, completed hysteresis and all affected execution custody; JSON status or a later green sample cannot release this hold." } else { "Each retained subject still needs its own fresh restoration proof and an exact-original-head central gate. Manual stops and independent holds remain authoritative." }.into() });
+        result.push(HostRecoveryStatus { fault: Some(HostFaultStatus { kind: "native-host-pressure".into(), key: record.fault_key.clone(), sequence: state.fault.sequence }), retained_submissions, id: record.id, phase: if record.active { "waiting-native-restoration" } else { "restored-requires-fresh-gate" }.into(), elapsed_milliseconds: Some((chrono::Utc::now()-started.with_timezone(&chrono::Utc)).num_milliseconds().max(0) as u64), started_at: Some(state.started_at), submissions, pauses_admission: record.active, next_action: if record.active { "Wait for fresh native pressure restoration, completed hysteresis and all affected execution custody; JSON status or a later green sample cannot release this hold." } else { "Each retained subject still needs its own fresh restoration proof and an exact-original-head central gate. Manual stops and independent holds remain authoritative." }.into() });
     }
     Ok(result)
 }

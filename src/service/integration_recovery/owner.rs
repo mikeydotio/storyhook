@@ -588,6 +588,9 @@ fn invalid(detail: &str) -> StoreError {
 /// Read-only original-submission ownership; no serialized phase grants effects.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntegrationRecoveryStatus {
+    /// Exact original-generation admissions/costs, never the effect ordinal.
+    #[serde(default)]
+    pub retained_submission: Option<crate::service::gate_cost::view::RetainedSubmissionStatus>,
     /// Durable single-submission coordinator identity.
     pub id: String,
     /// Original submitted story.
@@ -614,13 +617,17 @@ pub(crate) fn status_snapshot(
     tx: &impl ReadOps,
     project: crate::store::ProjectId,
 ) -> Result<Vec<IntegrationRecoveryStatus>, StoreError> {
-    let prefix = crate::service::project_prefix(tx, project)?;
+    let metadata = tx
+        .project(project)?
+        .ok_or_else(|| invalid("status project missing"))?;
+    let prefix = &metadata.prefix;
+    let attempts = tx.gate_attempts(project);
     let mut result = Vec::new();
     for record in tx.integration_recoveries(project)? {
         let state = match decode(&record) {
             Ok(state) => state,
             Err(error) => {
-                result.push(IntegrationRecoveryStatus { id: record.id, story: record.story.to_id(&prefix), phase: "invalid".into(), started_at: None, elapsed_milliseconds: None, original_head: None, assembled_tree: None, effect_epoch: None, retained_branch: None, next_action: format!("Retained integration ownership is invalid; reconcile it without replaying effects: {error}") });
+                result.push(IntegrationRecoveryStatus { retained_submission: None, id: record.id, story: record.story.to_id(&prefix), phase: "invalid".into(), started_at: None, elapsed_milliseconds: None, original_head: None, assembled_tree: None, effect_epoch: None, retained_branch: None, next_action: format!("Retained integration ownership is invalid; reconcile it without replaying effects: {error}") });
                 continue;
             }
         };
@@ -680,6 +687,14 @@ pub(crate) fn status_snapshot(
             chrono::Utc::now()
         };
         result.push(IntegrationRecoveryStatus {
+            retained_submission: Some(
+                crate::service::gate_cost::view::RetainedSubmissionStatus::from_history(
+                    &state.attribution.submission,
+                    &metadata.slug,
+                    prefix,
+                    &attempts,
+                ),
+            ),
             id: record.id,
             story: state.candidate.story_id,
             phase: phase.into(),

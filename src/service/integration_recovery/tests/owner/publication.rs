@@ -1561,3 +1561,61 @@ fn retained_branch_diagnostic_cannot_replace_owner_custody_or_claim_landing() {
     assert_eq!(status[0].retained_branch, Some(observed));
     proof.settle().unwrap();
 }
+
+#[test]
+fn integration_recovery_status_distinguishes_admissions_from_effect_epochs() {
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let record = f.reserve(&proof);
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let original = service.show(&record.id).unwrap().1.attribution.submission;
+    f.store
+        .write(|tx| {
+            tx.insert_gate_attempt(&GateAttempt::new(
+                "status-original-retry".into(),
+                original.clone(),
+                AT,
+            ))?;
+            let mut newer = original.clone();
+            newer.generation = Some(crate::store::GlobalSeq::new(
+                original.generation.unwrap().get() + 1,
+            ));
+            tx.insert_gate_attempt(&GateAttempt::new("status-new-generation".into(), newer, AT))?;
+            Ok(())
+        })
+        .unwrap();
+    let status = || {
+        f.store
+            .read(|tx| {
+                crate::service::integration_recovery::status_snapshot(tx, f.candidate.project)
+            })
+            .unwrap()
+            .remove(0)
+    };
+    let before = status();
+    assert_eq!(before.effect_epoch, Some(0));
+    assert_eq!(
+        before.retained_submission.as_ref().unwrap().admission_count,
+        Some(2)
+    );
+    let claim = service
+        .claim_assembly(&record.id, record.revision, &proof)
+        .unwrap()
+        .unwrap();
+    let after = status();
+    assert_eq!(after.effect_epoch, Some(1));
+    assert_eq!(after.retained_submission, before.retained_submission);
+    assert_eq!(after.started_at, before.started_at);
+    let reopened = SqliteStore::open(f.store.path()).unwrap();
+    let restarted = reopened
+        .read(|tx| crate::service::integration_recovery::status_snapshot(tx, f.candidate.project))
+        .unwrap();
+    assert_eq!(restarted[0].retained_submission, after.retained_submission);
+    assert_eq!(
+        restarted[0].phase, "assembling",
+        "read-only projection adopted interrupted effects"
+    );
+    drop(claim);
+    proof.settle().unwrap();
+}
