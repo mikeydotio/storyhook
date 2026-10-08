@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# SH-891: isolate the real reset helper from all daemon and resource effects.
-# No test daemon, tmux server, build artifact, or production state is needed.
+# SH-891: exercise the real reset helper with a recorded native preview reply.
+# Keep the suite's shared isolation and cleanup even though this command's
+# native call is replaced below and no reset or resource mutation is performed.
+source "$(dirname "$0")/lib.sh"
 set -euo pipefail
-plugin_root="$(cd "$(dirname "$0")/.." && pwd)"
 fixture="$(mktemp -d "${TMPDIR:-/tmp}/storyhook-reset-preview.XXXXXX")"
-trap 'rm -rf "$fixture"' EXIT
+_TMP_REPOS+=("$fixture")
 # Load only the real command function; sourcing story.sh would dispatch argv.
-eval "$(sed -n '/^cmd_reset() {/,/^}/p' "${RESET_PREVIEW_HELPER:-$plugin_root/bin/story.sh}")"
+eval "$(sed -n '/^cmd_reset() {/,/^}/p' "${RESET_PREVIEW_HELPER:-$SCRIPT}")"
 RESET_USAGE=unused
 DRY_RUN=true
 REL_FORCE=true
