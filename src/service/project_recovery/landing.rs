@@ -24,6 +24,7 @@ pub(crate) fn record_landing(
     intent: &LandingIntent,
     now: &str,
 ) -> Result<(), StoreError> {
+    intent.require_ordinary_controller()?;
     let Some(mut view) = attempts::owner(tx, intent.project, intent.story)? else {
         return Ok(());
     };
@@ -62,7 +63,8 @@ pub(crate) fn record_landing(
 }
 
 fn matches_intent(attempt: &RepairAttempt, intent: &LandingIntent) -> bool {
-    intent.certification.certified().is_some()
+    intent.certification.integration().is_none()
+        && intent.certification.certified().is_some()
         && attempt.story == intent.story
         && attempt.generation == intent.generation
         && attempt.completion == Some(RepairCompletion::Certified)

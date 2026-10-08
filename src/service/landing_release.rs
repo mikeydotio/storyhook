@@ -58,6 +58,7 @@ impl<S: Store> VerificationQueue<'_, S> {
             })
             .map(|row| row.story_id.clone())
             .collect();
+        intent.require_ordinary_controller()?;
         let (state, head) = observe(intent)?;
         if !matches!(state.as_str(), "OPEN" | "CLOSED") || head != intent.certification.head() {
             return Err(AppError::Validation(format!(
@@ -86,6 +87,7 @@ impl<S: Store> VerificationQueue<'_, S> {
         detail: &str,
         observed: Option<&[LandingIntent]>,
     ) -> Result<bool, AppError> {
+        intent.require_ordinary_controller()?;
         if ctx.project() != intent.project {
             return Err(AppError::Validation(
                 "landing context belongs to another project".into(),

@@ -3,7 +3,10 @@
 use serde::{Deserialize, Serialize};
 
 mod authority;
-pub use authority::{LandingAuthority, SkippedPolicy, SkippedSubmission, VerificationMode};
+pub use authority::{
+    IntegrationAuthority, IntegrationLanding, LandingAuthority, SkippedPolicy, SkippedSubmission,
+    VerificationMode,
+};
 
 /// Observed Git ancestry, independent of release-gate certification.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

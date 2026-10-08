@@ -96,6 +96,11 @@ pub(super) fn admission(
             match intent.certification {
                 LandingAuthority::Certified(_) => VerificationMode::Gated,
                 LandingAuthority::Skipped(_) => VerificationMode::VerificationSkipped,
+                LandingAuthority::Integration(_) => {
+                    return Err(StoreError::Validation(
+                        "integration landing requires its dedicated owner controller".into(),
+                    ));
+                }
             }
         } else if tx.verification_enabled(candidate.project)? {
             VerificationMode::Gated

@@ -39,6 +39,11 @@ impl<S: Store> VerificationQueue<'_, S> {
         certification: &LandingAuthority,
     ) -> Result<LandingAdmission, AppError> {
         certification.validate()?;
+        if certification.integration().is_some() {
+            return Err(AppError::Validation(
+                "integration landing requires its dedicated owner controller".into(),
+            ));
+        }
         if ctx.project() != candidate.project {
             return Err(AppError::Validation(
                 "landing context belongs to another project".into(),
@@ -116,6 +121,7 @@ impl<S: Store> VerificationQueue<'_, S> {
         detail: &str,
         candidate: Option<&VerificationCandidate>,
     ) -> Result<bool, AppError> {
+        intent.require_ordinary_controller()?;
         if ctx.project() != intent.project {
             return Err(AppError::Validation(
                 "landing context belongs to another project".into(),
@@ -141,6 +147,9 @@ impl<S: Store> VerificationQueue<'_, S> {
                         prepared.head, prepared.tree, prepared.attempt,
                         crate::text_lint::quote_evidence(detail)
                     ),
+                    LandingAuthority::Integration(_) => return Err(StoreError::Validation(
+                        "integration landing requires its dedicated owner controller".into(),
+                    )),
                 };
                 complete_story(tx, ctx, intent, comment)?;
                 Ok(true)
@@ -231,6 +240,7 @@ pub(super) fn completable(
     intent: &LandingIntent,
     candidate: Option<&VerificationCandidate>,
 ) -> Result<bool, StoreError> {
+    intent.require_ordinary_controller()?;
     if let Some(candidate) = candidate
         && !super::verification::human::permits(tx, candidate)?
     {
@@ -257,6 +267,7 @@ pub(super) fn complete_story<S: Store>(
     intent: &LandingIntent,
     comment: String,
 ) -> Result<(), StoreError> {
+    intent.require_ordinary_controller()?;
     use crate::domain::{StoryEvent, completion_state};
     let prefix = super::project_prefix(tx, intent.project)?;
     let row = tx
@@ -320,6 +331,7 @@ pub(crate) fn supersede_for_reset(
     intent: &LandingIntent,
     now: &str,
 ) -> Result<String, StoreError> {
+    intent.require_ordinary_controller()?;
     let mut batch_note = String::new();
     if let Some(binding) = &intent.batch
         && let Some(record) = tx
@@ -358,5 +370,6 @@ pub(super) fn release_intent(
     tx: &mut impl WriteOps,
     intent: &LandingIntent,
 ) -> Result<bool, StoreError> {
+    intent.require_ordinary_controller()?;
     tx.remove_landing_intent(intent)
 }

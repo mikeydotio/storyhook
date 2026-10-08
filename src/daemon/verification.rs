@@ -1041,6 +1041,11 @@ impl ShellVerificationActuator {
         intent: &crate::store::LandingIntent,
         recover: bool,
     ) -> LandingOutcome {
+        if let Err(error) = intent.require_ordinary_controller() {
+            return LandingOutcome::Uncertain {
+                detail: error.to_string(),
+            };
+        }
         let _log = self.log_scope(candidate);
         let run = || -> Result<LandingOutcome, AppError> {
             let link = candidate
