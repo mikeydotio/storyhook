@@ -112,7 +112,7 @@ impl Dropped {
     }
 
     fn with_merge(merged: bool) -> Self {
-        let fixture = ServiceFixture::new();
+        let fixture = ServiceFixture::new().with_subprocess_patience();
         let id = StoryService::new(&fixture.ctx())
             .create(&NewStoryInput {
                 title: "Abandoned work".into(),

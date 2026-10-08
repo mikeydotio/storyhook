@@ -244,7 +244,8 @@ impl<S: Store, D: Dispatcher> EngineService<'_, S, D> {
 /// This runs only in the background, after the daemon can answer provider hooks.
 pub(crate) fn reconcile_manual<S: Store>(store: &S, env: &Environment) -> Result<(), AppError> {
     reconcile_manual_with(store, env, |checkout| {
-        super::super::workspace_lock::git(
+        super::super::workspace_lock::git_with_bound(
+            env.subprocess_bound(std::time::Duration::from_secs(30)),
             checkout,
             &["worktree", "list", "--porcelain", "-z"],
             None,
@@ -282,7 +283,10 @@ fn reconcile_manual_with<S: Store>(
             .split('\0')
             .filter_map(|field| field.strip_prefix("worktree "))
         {
-            let lease = match super::super::cleanup_lease::marker_at_registered(Path::new(path)) {
+            let lease = match super::super::cleanup_lease::marker_at_registered(
+                env.subprocess_bound(std::time::Duration::from_secs(60)),
+                Path::new(path),
+            ) {
                 Ok(Some(lease)) => lease,
                 Ok(None) => continue,
                 Err(error) => {

@@ -195,7 +195,8 @@ pub(super) fn authorize(
             residue.leave(worktree_resource(target), reason);
         }
     }
-    let common = match git::text(
+    let common = match git::text_with_bound(
+        env.subprocess_bound(std::time::Duration::from_secs(60)),
         repository,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     ) {
@@ -214,7 +215,10 @@ pub(super) fn authorize(
         }
         return authority;
     }
-    let records = match git::inventory(repository) {
+    let records = match git::inventory_with_bound(
+        env.subprocess_bound(std::time::Duration::from_secs(60)),
+        repository,
+    ) {
         Ok(records) => records,
         Err(error) => {
             leave_git(report, residue, error.to_string());
@@ -233,13 +237,13 @@ pub(super) fn authorize(
         }
     }
     if let Some(name) = &report.branch
-        && let Some(reason) = protected_branch(repository, &records, name)
+        && let Some(reason) = protected_branch(env, repository, &records, name)
     {
         residue.leave(branch_resource(name), reason);
         branch = false;
     }
     if let Some(target) = &report.worktree {
-        match worktree_authority(report, target, repository, &records, caller) {
+        match worktree_authority(env, report, target, repository, &records, caller) {
             WorktreeAuthority::Remove => {}
             WorktreeAuthority::OrphanDirectory => {
                 worktree = false;
@@ -278,7 +282,15 @@ pub(super) fn authorize(
         }
     }
     if let Some(force) = origin.legacy_force {
-        legacy_authority(report, &records, force, &mut worktree, &mut branch, residue);
+        legacy_authority(
+            env,
+            report,
+            &records,
+            force,
+            &mut worktree,
+            &mut branch,
+            residue,
+        );
     }
     authority.worktree = worktree;
     authority.branch = branch;
@@ -289,6 +301,7 @@ pub(super) fn authorize(
 /// authorized: its branch is kept, and a dirty or locked worktree is
 /// discarded only when that request was forced (council C1, guardrail 2).
 fn legacy_authority(
+    env: &crate::env::Environment,
     report: &ResourceReport,
     records: &[git::WorktreeRecord],
     force: bool,
@@ -314,7 +327,8 @@ fn legacy_authority(
         .iter()
         .any(|record| &record.path == target && record.locked);
     // Unreadable status counts as dirty: authority is never inferred.
-    let dirty = git::text(
+    let dirty = git::text_with_bound(
+        env.subprocess_bound(std::time::Duration::from_secs(60)),
         target,
         &[
             "--no-optional-locks",
@@ -339,6 +353,7 @@ enum WorktreeAuthority {
 }
 
 fn worktree_authority(
+    env: &crate::env::Environment,
     report: &ResourceReport,
     worktree: &Path,
     repository: &Path,
@@ -392,9 +407,16 @@ fn worktree_authority(
             .find(|candidate| candidate.worktree.as_deref() == Some(worktree))
             .and_then(|candidate| candidate.lease.as_ref());
         if let Some(lease) = expected {
-            let unchanged = crate::service::resources::validate_lease(lease).is_ok()
-                && super::super::cleanup_lease::marker_at_registered(worktree)
-                    .is_ok_and(|marker| marker.as_ref() == Some(lease));
+            let unchanged = crate::service::resources::validate_lease_with_bound(
+                env.subprocess_bound(std::time::Duration::from_secs(60)),
+                lease,
+            )
+            .is_ok()
+                && super::super::cleanup_lease::marker_at_registered(
+                    env.subprocess_bound(std::time::Duration::from_secs(60)),
+                    worktree,
+                )
+                .is_ok_and(|marker| marker.as_ref() == Some(lease));
             if !unchanged {
                 return withhold("its cleanup lease marker changed after reset began", true);
             }
@@ -405,26 +427,34 @@ fn worktree_authority(
 
 /// The reason a branch must survive, when it is protected.
 fn protected_branch(
+    env: &crate::env::Environment,
     repository: &Path,
     records: &[git::WorktreeRecord],
     branch: &str,
 ) -> Option<String> {
-    if !git::branch_exists(repository, branch).unwrap_or(true) {
+    if !git::branch_exists_with_bound(
+        env.subprocess_bound(std::time::Duration::from_secs(60)),
+        repository,
+        branch,
+    )
+    .unwrap_or(true)
+    {
         return None;
     }
     if matches!(branch, "main" | "master") || records[0].branch.as_deref() == Some(branch) {
         return Some(format!("{branch} is a protected branch"));
     }
     // The cached origin default only: reset never waits on the network.
-    match local_origin_default(repository) {
+    match local_origin_default(env, repository) {
         Some(default) if default == branch => Some(format!("{branch} is origin's default branch")),
         _ => None,
     }
 }
 
 /// Origin's default branch as last fetched, read without a network call.
-fn local_origin_default(repository: &Path) -> Option<String> {
-    git::text(
+fn local_origin_default(env: &crate::env::Environment, repository: &Path) -> Option<String> {
+    git::text_with_bound(
+        env.subprocess_bound(std::time::Duration::from_secs(60)),
         repository,
         &[
             "symbolic-ref",
@@ -474,11 +504,16 @@ fn installed_artifact_guard(
 /// Counts what removal will discard, before anything is removed.
 /// Status cannot refresh the index or start a configured filesystem monitor:
 /// this same observation is used by the read-only reset preview.
-pub(super) fn recovery(report: &ResourceReport, authority: &Authority) -> ResetRecovery {
+pub(super) fn recovery(
+    env: &crate::env::Environment,
+    report: &ResourceReport,
+    authority: &Authority,
+) -> ResetRecovery {
     let mut record = ResetRecovery::default();
     if let (true, Some(worktree)) = (authority.worktree, &report.worktree)
         && matches!(worktree.try_exists(), Ok(true))
-        && let Ok(status) = git::text(
+        && let Ok(status) = git::text_with_bound(
+            env.subprocess_bound(std::time::Duration::from_secs(60)),
             worktree,
             &[
                 "--no-optional-locks",
@@ -497,7 +532,8 @@ pub(super) fn recovery(report: &ResourceReport, authority: &Authority) -> ResetR
     }
     if let (true, Some(repository), Some(branch)) =
         (authority.branch, &authority.repository, &report.branch)
-        && let Ok(tip) = git::text(
+        && let Ok(tip) = git::text_with_bound(
+            env.subprocess_bound(std::time::Duration::from_secs(60)),
             repository,
             &[
                 "rev-parse",
@@ -508,7 +544,8 @@ pub(super) fn recovery(report: &ResourceReport, authority: &Authority) -> ResetR
         )
     {
         let tip = tip.trim().to_string();
-        record.unpushed = git::text(
+        record.unpushed = git::text_with_bound(
+            env.subprocess_bound(std::time::Duration::from_secs(60)),
             repository,
             &[
                 "rev-list",
@@ -575,11 +612,15 @@ pub(super) fn remove(
                 .iter()
                 .any(|identity| &identity.path == worktree && identity.removable);
             let removed = attempt(|| {
-                let registered = git::inventory(repository)?
-                    .iter()
-                    .any(|record| &record.path == worktree);
+                let registered = git::inventory_with_bound(
+                    env.subprocess_bound(std::time::Duration::from_secs(60)),
+                    repository,
+                )?
+                .iter()
+                .any(|record| &record.path == worktree);
                 if registered {
-                    workspace_lock::git(
+                    workspace_lock::git_with_bound(
+                        env.subprocess_bound(std::time::Duration::from_secs(30)),
                         repository,
                         &["worktree", "remove", "--force", "--force", "--", &path],
                         workspace,
@@ -606,8 +647,17 @@ pub(super) fn remove(
         && unchanged()
     {
         let deleted = attempt(|| {
-            if git::branch_exists(repository, branch)? {
-                workspace_lock::git(repository, &["branch", "-D", "--", branch], workspace)?;
+            if git::branch_exists_with_bound(
+                env.subprocess_bound(std::time::Duration::from_secs(60)),
+                repository,
+                branch,
+            )? {
+                workspace_lock::git_with_bound(
+                    env.subprocess_bound(std::time::Duration::from_secs(30)),
+                    repository,
+                    &["branch", "-D", "--", branch],
+                    workspace,
+                )?;
             }
             Ok(())
         });
@@ -784,9 +834,12 @@ fn overlap(
     if !(planned && (authority.worktree || authority.orphan_directory))
         && let Some(worktree) = &report.worktree
     {
-        let registered = git::inventory(repository)
-            .map(|records| records.iter().any(|record| &record.path == worktree))
-            .unwrap_or(true);
+        let registered = git::inventory_with_bound(
+            env.subprocess_bound(std::time::Duration::from_secs(60)),
+            repository,
+        )
+        .map(|records| records.iter().any(|record| &record.path == worktree))
+        .unwrap_or(true);
         if registered || std::fs::symlink_metadata(worktree).is_ok() {
             residue.blocks_dispatch(worktree_resource(worktree), "the worktree is still present");
         }
@@ -794,31 +847,54 @@ fn overlap(
     let Some(branch) = &report.branch else {
         return;
     };
-    if !(planned && authority.branch) && git::branch_exists(repository, branch).unwrap_or(true) {
+    if !(planned && authority.branch)
+        && git::branch_exists_with_bound(
+            env.subprocess_bound(std::time::Duration::from_secs(60)),
+            repository,
+            branch,
+        )
+        .unwrap_or(true)
+    {
         residue.blocks_dispatch(branch_resource(branch), "the local branch still exists");
     }
-    if let Some(reason) = unmerged_origin_branch(repository, branch) {
+    if let Some(reason) = unmerged_origin_branch(env, repository, branch) {
         residue.blocks_dispatch(format!("remote branch origin/{branch}"), reason);
     }
 }
 
 /// Why a surviving `origin/<branch>` would reject the next dispatch's push.
-fn unmerged_origin_branch(repository: &Path, branch: &str) -> Option<String> {
+fn unmerged_origin_branch(
+    env: &crate::env::Environment,
+    repository: &Path,
+    branch: &str,
+) -> Option<String> {
     let remote = format!("refs/remotes/origin/{branch}");
-    git::text(repository, &["rev-parse", "--verify", "--quiet", &remote]).ok()?;
-    let mut bases: Vec<String> = local_origin_default(repository)
+    git::text_with_bound(
+        env.subprocess_bound(std::time::Duration::from_secs(60)),
+        repository,
+        &["rev-parse", "--verify", "--quiet", &remote],
+    )
+    .ok()?;
+    let mut bases: Vec<String> = local_origin_default(env, repository)
         .map(|default| format!("refs/remotes/origin/{default}"))
         .into_iter()
         .collect();
-    if let Ok(records) = git::inventory(repository)
-        && let Some(primary) = &records[0].branch
+    if let Ok(records) = git::inventory_with_bound(
+        env.subprocess_bound(std::time::Duration::from_secs(60)),
+        repository,
+    ) && let Some(primary) = &records[0].branch
     {
         bases.push(format!("refs/remotes/origin/{primary}"));
         bases.push(format!("refs/heads/{primary}"));
     }
-    let merged = bases
-        .iter()
-        .any(|base| git::text(repository, &["merge-base", "--is-ancestor", &remote, base]).is_ok());
+    let merged = bases.iter().any(|base| {
+        git::text_with_bound(
+            env.subprocess_bound(std::time::Duration::from_secs(60)),
+            repository,
+            &["merge-base", "--is-ancestor", &remote, base],
+        )
+        .is_ok()
+    });
     (!merged).then(|| {
         format!(
             "origin/{branch} holds commits the default branch does not contain; a fresh \

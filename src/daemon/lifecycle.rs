@@ -3779,9 +3779,10 @@ mod tests {
             .env(CHILD, dir.path());
         let mut child = storyhook_test_support::ChildGuard::spawn(&mut command)
             .expect("starting the orderly-exit child");
-        let status = child.wait_within(FORCE_GRACE + SPAWN_DEADLINE, || {
-            "the child must finish its controlled clear-to-exit interval".to_string()
-        });
+        let status = child.wait_within(
+            storyhook_test_support::load_grace::graced_now(FORCE_GRACE + SPAWN_DEADLINE),
+            || "the child must finish its controlled clear-to-exit interval".to_string(),
+        );
         assert!(status.success(), "orderly-exit child failed: {status}");
         assert!(
             !env.daemon_file().exists(),
@@ -3878,9 +3879,10 @@ mod tests {
         unsafe {
             libc::kill(-(pid as i32), libc::SIGKILL);
         }
-        let _ = child.wait_within(FORCE_DEADLINE, || {
-            "the owned process leader did not exit after SIGKILL".to_string()
-        });
+        let _ = child.wait_within(
+            storyhook_test_support::load_grace::graced_now(FORCE_DEADLINE),
+            || "the owned process leader did not exit after SIGKILL".to_string(),
+        );
     }
 
     #[cfg(unix)]
@@ -3910,9 +3912,10 @@ mod tests {
         unsafe {
             libc::kill(-(pid as i32), libc::SIGKILL);
         }
-        let _ = child.wait_within(FORCE_DEADLINE, || {
-            "the identity-mismatch fixture did not exit during cleanup".to_string()
-        });
+        let _ = child.wait_within(
+            storyhook_test_support::load_grace::graced_now(FORCE_DEADLINE),
+            || "the identity-mismatch fixture did not exit during cleanup".to_string(),
+        );
     }
 
     #[test]
@@ -5030,7 +5033,8 @@ mod tests {
         std::thread::scope(|scope| {
             let (released, release_seen) = mpsc::channel();
             scope.spawn(move || {
-                let deadline = Instant::now() + FORCE_DEADLINE;
+                let deadline =
+                    Instant::now() + storyhook_test_support::load_grace::graced_now(FORCE_DEADLINE);
                 let mut socket = loop {
                     match listener.accept() {
                         Ok((socket, _)) => break socket,
@@ -5041,7 +5045,11 @@ mod tests {
                         Err(error) => panic!("accepting shutdown request: {error}"),
                     }
                 };
-                socket.set_read_timeout(Some(FORCE_DEADLINE)).unwrap();
+                socket
+                    .set_read_timeout(Some(storyhook_test_support::load_grace::graced_now(
+                        FORCE_DEADLINE,
+                    )))
+                    .unwrap();
                 let mut request = BufReader::new(&socket);
                 let mut line = String::new();
                 loop {
@@ -5060,7 +5068,11 @@ mod tests {
             let (stopped, stop_seen) = mpsc::channel();
             let env = &env;
             scope.spawn(move || stopped.send(stop(env, StopMode::Force)).unwrap());
-            release_seen.recv_timeout(FORCE_DEADLINE).unwrap();
+            release_seen
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    FORCE_DEADLINE,
+                ))
+                .unwrap();
             assert!(!is_live(env), "the controlled exit released its lock");
             assert!(process_identity_is_live(
                 identity.pid,
@@ -5090,7 +5102,12 @@ mod tests {
                 matches!(zombie_early, Err(mpsc::RecvTimeoutError::Timeout)),
                 "force-stop returned while the daemon PID was unreaped: {zombie_early:?}"
             );
-            let result = stop_seen.recv_timeout(FORCE_DEADLINE).unwrap().unwrap();
+            let result = stop_seen
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    FORCE_DEADLINE,
+                ))
+                .unwrap()
+                .unwrap();
             assert_eq!(result.unwrap().pid, identity.pid);
             assert!(!process_identity_is_live(
                 identity.pid,

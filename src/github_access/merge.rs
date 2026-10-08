@@ -16,7 +16,7 @@ impl Repository {
         if number == 0 || head.len() != 40 || !head.bytes().all(|c| c.is_ascii_hexdigit()) {
             return Err(AppError::Validation("invalid merge number or head".into()));
         }
-        let current = Self::resolve(&self.checkout)?;
+        let current = Self::resolve_with_bounds(&self.checkout, self.bounds)?;
         if current.identity != self.identity {
             return Err(AppError::Validation(
                 "GitHub origin changed before merge".into(),
@@ -30,7 +30,8 @@ impl Repository {
             "--match-head-commit".into(),
             head.into(),
         ];
-        let output = super::command::capture(&self.identity, &self.checkout, &args)?;
+        let output =
+            super::command::capture(self.bounds.operation, &self.identity, &self.checkout, &args)?;
         if output.status.success() {
             // Includes accepted queue requests. The caller must still observe
             // MERGED and prove the exact landed tree before completing anything.

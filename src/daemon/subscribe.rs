@@ -500,7 +500,9 @@ mod tests {
             );
         });
         let (port, token) = rx
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                Duration::from_secs(10),
+            ))
             .expect("the test server never became ready");
         (port, token, env, store, dir)
     }
@@ -541,15 +543,16 @@ mod tests {
             })
             .expect("writing a project");
 
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now()
+            + storyhook_test_support::load_grace::graced_now(Duration::from_secs(10));
         loop {
+            if subscriber.poll(Duration::from_millis(500)).is_some() {
+                return;
+            }
             assert!(
                 Instant::now() < deadline,
                 "no change was reported within the deadline"
             );
-            if subscriber.poll(Duration::from_millis(500)).is_some() {
-                return;
-            }
         }
     }
 
@@ -606,32 +609,38 @@ mod tests {
             line: String::new(),
             state: ChunkState::Size,
         };
-        read_head(&mut conn.reader, Duration::from_secs(5)).expect("reading the response head");
+        read_head(
+            &mut conn.reader,
+            storyhook_test_support::load_grace::graced_now(Duration::from_secs(5)),
+        )
+        .expect("reading the response head");
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline =
+            Instant::now() + storyhook_test_support::load_grace::graced_now(Duration::from_secs(5));
         loop {
+            match conn.advance() {
+                Ok(Some(_)) => break, // the `: connected` sentinel
+                Ok(None) => {}
+                Err(e) => panic!("unexpected error awaiting the sentinel: {e}"),
+            }
             assert!(
                 Instant::now() < deadline,
                 "the connected sentinel never arrived"
             );
-            match conn.advance() {
-                Ok(Some(_)) => break, // the `: connected` sentinel
-                Ok(None) => continue,
-                Err(e) => panic!("unexpected error awaiting the sentinel: {e}"),
-            }
         }
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline =
+            Instant::now() + storyhook_test_support::load_grace::graced_now(Duration::from_secs(5));
         loop {
+            match conn.advance() {
+                Ok(Some(_)) => panic!("no further frame should arrive from a closed peer"),
+                Ok(None) => {}
+                Err(_) => return, // the assertion: a closed peer surfaces as `Err`
+            }
             assert!(
                 Instant::now() < deadline,
                 "a closed connection was never reported as an error"
             );
-            match conn.advance() {
-                Ok(Some(_)) => panic!("no further frame should arrive from a closed peer"),
-                Ok(None) => continue,
-                Err(_) => return, // the assertion: a closed peer surfaces as `Err`
-            }
         }
     }
 }

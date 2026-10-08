@@ -40,10 +40,16 @@ pub(super) fn same_pane(
 }
 
 /// Treats either a registered worktree or a filesystem object as remaining work.
-pub(super) fn worktree_present(lease: &StoryCleanupLease) -> Result<bool, AppError> {
-    let registered = git::inventory(&lease.repository_path)?
-        .iter()
-        .any(|r| r.path == lease.worktree_path);
+pub(super) fn worktree_present(
+    env: &Environment,
+    lease: &StoryCleanupLease,
+) -> Result<bool, AppError> {
+    let registered = git::inventory_with_bound(
+        env.subprocess_bound(std::time::Duration::from_secs(60)),
+        &lease.repository_path,
+    )?
+    .iter()
+    .any(|r| r.path == lease.worktree_path);
     let present = match std::fs::symlink_metadata(&lease.worktree_path) {
         Ok(_) => true,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
@@ -74,8 +80,18 @@ pub(super) fn validate<S: Store>(
             "lease does not name the registered checkout".into(),
         ));
     }
-    crate::service::resources::validate_lease(lease).map_err(probe)?;
-    let records = git::inventory(repository).map_err(probe)?;
+    crate::service::resources::validate_lease_with_bound(
+        ctx.env()
+            .subprocess_bound(std::time::Duration::from_secs(60)),
+        lease,
+    )
+    .map_err(probe)?;
+    let records = git::inventory_with_bound(
+        ctx.env()
+            .subprocess_bound(std::time::Duration::from_secs(60)),
+        repository,
+    )
+    .map_err(probe)?;
     if records.first().map(|r| r.path.as_path()) != Some(repository) {
         return Err(refuse(
             "repository-mismatch",
@@ -98,7 +114,9 @@ pub(super) fn validate<S: Store>(
     {
         return Err(refuse("protected-worktree", worktree.display().to_string()));
     }
-    let common = git::text(
+    let common = git::text_with_bound(
+        ctx.env()
+            .subprocess_bound(std::time::Duration::from_secs(60)),
         repository,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     )
@@ -145,9 +163,13 @@ pub(super) fn validate<S: Store>(
                 "worktree is not its original canonical registration".into(),
             ));
         }
-        if crate::service::cleanup_lease::marker_at_registered(worktree)
-            .map_err(probe)?
-            .as_ref()
+        if crate::service::cleanup_lease::marker_at_registered(
+            ctx.env()
+                .subprocess_bound(std::time::Duration::from_secs(60)),
+            worktree,
+        )
+        .map_err(probe)?
+        .as_ref()
             != Some(lease)
         {
             return Err(refuse(
@@ -156,7 +178,9 @@ pub(super) fn validate<S: Store>(
             ));
         }
         if require_clean
-            && !git::text(
+            && !git::text_with_bound(
+                ctx.env()
+                    .subprocess_bound(std::time::Duration::from_secs(60)),
                 worktree,
                 &["status", "--porcelain", "--untracked-files=all"],
             )
@@ -165,8 +189,16 @@ pub(super) fn validate<S: Store>(
         {
             return Err(refuse("dirty-worktree", worktree.display().to_string()));
         }
-        let head = git::text(worktree, &["rev-parse", "HEAD"]).map_err(probe)?;
-        let branch = git::text(
+        let head = git::text_with_bound(
+            ctx.env()
+                .subprocess_bound(std::time::Duration::from_secs(60)),
+            worktree,
+            &["rev-parse", "HEAD"],
+        )
+        .map_err(probe)?;
+        let branch = git::text_with_bound(
+            ctx.env()
+                .subprocess_bound(std::time::Duration::from_secs(60)),
             repository,
             &["rev-parse", &format!("refs/heads/{}", lease.branch)],
         )

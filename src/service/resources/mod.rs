@@ -115,6 +115,11 @@ impl<'a, S: Store> ResourceService<'a, S> {
 
     /// Resolves a story using store evidence and checked external observations.
     pub fn resolve(&self, id: &str, options: &ResourceOptions) -> Result<ResourceReport, AppError> {
+        let git_bound = || {
+            self.ctx
+                .env()
+                .subprocess_bound(std::time::Duration::from_secs(60))
+        };
         let evidence = self.ctx.store().read(|tx| {
             let project = tx
                 .project(self.ctx.project())?
@@ -175,7 +180,9 @@ impl<'a, S: Store> ResourceService<'a, S> {
             .unwrap_or(false);
         if let Some(checkout) = checkout.as_deref() {
             let root = if needs_inventory {
-                git::inventory(checkout)?[0].path.clone()
+                git::inventory_with_bound(git_bound(), checkout)?[0]
+                    .path
+                    .clone()
             } else {
                 checkout.to_path_buf()
             };
@@ -217,7 +224,8 @@ impl<'a, S: Store> ResourceService<'a, S> {
                     git::canonical(path).ok().as_ref() == Some(&lease.repository_path)
                 }) => {}
                 None => {
-                    let origin = git::text(
+                    let origin = git::text_with_bound(
+                        git_bound(),
                         &lease.repository_path,
                         &["config", "--get", "remote.origin.url"],
                     )?;
@@ -278,6 +286,14 @@ fn apply_recorded_provider(report: &mut ResourceReport, providers: &[(StoryClean
 
 /// Proves exact repository/worktree/branch identity without requiring clean work.
 pub fn validate_lease(lease: &StoryCleanupLease) -> Result<(), AppError> {
+    validate_lease_with_bound(std::time::Duration::from_secs(60), lease)
+}
+
+/// Revalidates identity using the operation's explicit Git allowance.
+pub(crate) fn validate_lease_with_bound(
+    git_bound: std::time::Duration,
+    lease: &StoryCleanupLease,
+) -> Result<(), AppError> {
     if lease.version != CLEANUP_LEASE_VERSION
         || !lease.repository_path.is_absolute()
         || !lease.worktree_path.is_absolute()
@@ -287,7 +303,7 @@ pub fn validate_lease(lease: &StoryCleanupLease) -> Result<(), AppError> {
             "malformed or unsupported cleanup lease".into(),
         ));
     }
-    let records = git::inventory(&lease.repository_path)?;
+    let records = git::inventory_with_bound(git_bound, &lease.repository_path)?;
     let repository = git::canonical(&records[0].path)?;
     if repository != lease.repository_path || repository == lease.worktree_path {
         return Err(AppError::Validation(format!(
@@ -296,7 +312,8 @@ pub fn validate_lease(lease: &StoryCleanupLease) -> Result<(), AppError> {
             lease.worktree_path.display()
         )));
     }
-    git::text(
+    git::text_with_bound(
+        git_bound,
         &repository,
         &["check-ref-format", "--branch", &lease.branch],
     )?;
@@ -345,11 +362,13 @@ pub fn validate_lease(lease: &StoryCleanupLease) -> Result<(), AppError> {
         )));
     }
     if target.exists() {
-        let actual = git::text(
+        let actual = git::text_with_bound(
+            git_bound,
             &target,
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
         )?;
-        let expected = git::text(
+        let expected = git::text_with_bound(
+            git_bound,
             &repository,
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
         )?;
@@ -374,6 +393,7 @@ fn resolve(
     explicit: Option<&StoryCleanupLease>,
     options: &ResourceOptions,
 ) -> Result<ResourceReport, AppError> {
+    let git_bound = || env.subprocess_bound(std::time::Duration::from_secs(60));
     let mut names = BTreeSet::from([id.to_string()]);
     if let Some(name) = &options.window_name {
         if name.is_empty() || name.contains(['/', '\n', '\t']) {
@@ -425,7 +445,7 @@ fn resolve(
     // Terminal evidence still applies when no Git repository was discovered.
     let mut candidates = BTreeMap::<(PathBuf, Option<PathBuf>, String), ResourceCandidate>::new();
     for repository in repositories {
-        let records = match git::inventory(&repository) {
+        let records = match git::inventory_with_bound(git_bound(), &repository) {
             Ok(records) => records,
             Err(e) => {
                 report.status = "unavailable".into();
@@ -454,7 +474,7 @@ fn resolve(
             .filter(|l| l.repository_path == repository)
             .cloned()
             .collect();
-        let checked = match registration::inspect(&repository, &records) {
+        let checked = match registration::inspect(git_bound(), &repository, &records) {
             Ok(checked) => checked,
             Err(error) => {
                 report.status = "unavailable".into();
@@ -518,7 +538,11 @@ fn resolve(
                                 lease.worktree_path.display()
                             ))
                         })?
-                        && !git::branch_exists(&repository, &lease.branch)?))
+                        && !git::branch_exists_with_bound(
+                            git_bound(),
+                            &repository,
+                            &lease.branch,
+                        )?))
                 && tmux::panes(env, &lease.tmux.socket_path, &lease_names(&lease, &names))?
                     .is_empty()
             {
@@ -599,7 +623,7 @@ fn resolve(
             }
         }
         for lease in &repo_leases {
-            if let Err(e) = validate_lease(lease) {
+            if let Err(e) = validate_lease_with_bound(git_bound(), lease) {
                 report.status = "invalid".into();
                 report.diagnostics.push(e.to_string());
                 continue;
@@ -635,7 +659,7 @@ fn resolve(
             }
         }
         for branch in &branches {
-            if git::branch_exists(&repository, branch)?
+            if git::branch_exists_with_bound(git_bound(), &repository, branch)?
                 && !candidates
                     .values()
                     .any(|c| c.repository == repository && c.branch == *branch)

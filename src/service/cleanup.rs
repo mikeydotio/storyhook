@@ -282,7 +282,8 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
             }
         }
         if let Some(repository) = &repository {
-            discover_worktree_markers(
+            discover_worktree_markers_with_bound(
+                self.ctx.env().subprocess_bound(Duration::from_secs(60)),
                 repository,
                 &project.slug,
                 &mut leases,
@@ -450,6 +451,7 @@ fn insert_lease(
     leases.insert(lease.story_id.clone(), lease);
 }
 
+#[cfg(test)]
 fn discover_worktree_markers(
     repository: &Path,
     project: &str,
@@ -457,7 +459,25 @@ fn discover_worktree_markers(
     conflicts: &mut BTreeSet<String>,
     skipped: &mut Vec<CleanupSkip>,
 ) {
-    let records = match super::resources::git::inventory(repository) {
+    discover_worktree_markers_with_bound(
+        Duration::from_secs(60),
+        repository,
+        project,
+        leases,
+        conflicts,
+        skipped,
+    );
+}
+
+fn discover_worktree_markers_with_bound(
+    git_bound: Duration,
+    repository: &Path,
+    project: &str,
+    leases: &mut BTreeMap<String, StoryCleanupLease>,
+    conflicts: &mut BTreeSet<String>,
+    skipped: &mut Vec<CleanupSkip>,
+) {
+    let records = match super::resources::git::inventory_with_bound(git_bound, repository) {
         Ok(records) => records,
         Err(error) => {
             skipped.push(CleanupSkip {
@@ -478,7 +498,7 @@ fn discover_worktree_markers(
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        match super::cleanup_lease::marker_at_registered(&path) {
+        match super::cleanup_lease::marker_at_registered(git_bound, &path) {
             Ok(Some(lease)) => insert_lease(project, lease, leases, conflicts, skipped),
             Ok(None) => skipped.push(CleanupSkip {
                 story_id,
@@ -516,6 +536,8 @@ fn clean_candidate_owned(
     dry_run: bool,
     lock: Option<&super::workspace_lock::WorkspaceLock>,
 ) -> Result<CleanupRemoval, CleanupSkip> {
+    let git_bound = env.subprocess_bound(Duration::from_secs(60));
+    let workspace_bound = env.subprocess_bound(Duration::from_secs(30));
     let refuse = |reason: &str, detail: String| CleanupSkip {
         story_id: lease.story_id.clone(),
         reason: reason.into(),
@@ -543,8 +565,9 @@ fn clean_candidate_owned(
                 format!("non-canonical path {}", lease.worktree_path.display()),
             ));
         }
-        let status = git_text(&lease.worktree_path, &["status", "--porcelain"])
-            .map_err(|detail| refuse("worktree-unverifiable", detail))?;
+        let status =
+            git_text_with_bound(git_bound, &lease.worktree_path, &["status", "--porcelain"])
+                .map_err(|detail| refuse("worktree-unverifiable", detail))?;
         if !status.is_empty() {
             return Err(refuse(
                 "dirty-worktree",
@@ -552,7 +575,7 @@ fn clean_candidate_owned(
             ));
         }
     }
-    let records = super::resources::git::inventory(repository)
+    let records = super::resources::git::inventory_with_bound(git_bound, repository)
         .map_err(|error| refuse("worktree-unverifiable", error.to_string()))?;
     let record = records
         .iter()
@@ -586,7 +609,7 @@ fn clean_candidate_owned(
     if !dry_run {
         ensure_window_absent(env, lease).map_err(|detail| refuse("tmux-window-open", detail))?;
     }
-    let observation = crate::github_access::OriginObservation::resolve(repository)
+    let observation = crate::github_access::OriginObservation::resolve_with_env(repository, env)
         .map_err(|error| refuse("default-branch-unverifiable", error.to_string()))?;
     let default_branch = observed_default_branch(&observation)
         .map_err(|detail| refuse("default-branch-unverifiable", detail))?;
@@ -594,7 +617,7 @@ fn clean_candidate_owned(
     if matches!(lease.branch.as_str(), "main" | "master") || lease.branch == default_branch {
         return Err(refuse("protected-branch", lease.branch.clone()));
     }
-    super::resources::validate_lease(lease)
+    super::resources::validate_lease_with_bound(git_bound, lease)
         .map_err(|error| refuse("worktree-mismatch", error.to_string()))?;
     let default_spec = format!("+refs/heads/{default_branch}:refs/remotes/origin/{default_branch}");
     observation
@@ -615,13 +638,13 @@ fn clean_candidate_owned(
     let mut tips = BTreeSet::new();
     if worktree_exists {
         tips.insert(
-            git_text(&lease.worktree_path, &["rev-parse", "HEAD"])
+            git_text_with_bound(git_bound, &lease.worktree_path, &["rev-parse", "HEAD"])
                 .map_err(|detail| refuse("worktree-unverifiable", detail))?,
         );
     }
-    let branch_tip = if ref_exists(repository, &local_ref) {
+    let branch_tip = if ref_exists_with_bound(git_bound, repository, &local_ref) {
         Some(
-            git_text(repository, &["rev-parse", &local_ref])
+            git_text_with_bound(git_bound, repository, &["rev-parse", &local_ref])
                 .map_err(|detail| refuse("branch-unverifiable", detail))?,
         )
     } else {
@@ -631,7 +654,8 @@ fn clean_candidate_owned(
         tips.insert(tip.clone());
     }
     for tip in tips {
-        let answer = git(
+        let answer = git_with_bound(
+            git_bound,
             repository,
             &["merge-base", "--is-ancestor", &tip, &base_ref],
         )
@@ -664,7 +688,8 @@ fn clean_candidate_owned(
         });
     }
     if removed_worktree {
-        super::workspace_lock::git(
+        super::workspace_lock::git_with_bound(
+            workspace_bound,
             repository,
             &[
                 "worktree",
@@ -678,18 +703,22 @@ fn clean_candidate_owned(
     }
     if let Some(tip) = &branch_tip {
         // The probe authorizes exactly this OID, never a later writer's ref.
-        super::workspace_lock::git(
+        super::workspace_lock::git_with_bound(
+            workspace_bound,
             repository,
             &["update-ref", "--no-deref", "-d", &local_ref, tip.trim()],
             lock,
         )
         .map_err(|error| refuse("delete-local-branch-failed", error.to_string()))?;
     }
-    let registration_remains = super::resources::git::inventory(repository)
+    let registration_remains = super::resources::git::inventory_with_bound(git_bound, repository)
         .map_err(|error| refuse("postcondition-unverifiable", error.to_string()))?
         .iter()
         .any(|record| record.path == lease.worktree_path);
-    if registration_remains || lease.worktree_path.exists() || ref_exists(repository, &local_ref) {
+    if registration_remains
+        || lease.worktree_path.exists()
+        || ref_exists_with_bound(git_bound, repository, &local_ref)
+    {
         return Err(refuse(
             "postcondition-failed",
             "worktree path or local branch remains".into(),
@@ -725,14 +754,32 @@ fn canonical(path: &Path) -> Result<PathBuf, String> {
     path.canonicalize()
         .map_err(|error| format!("cannot resolve {}: {error}", path.display()))
 }
+#[cfg(test)]
 fn git(cwd: &Path, args: &[&str]) -> Result<Captured, String> {
+    git_with_bound(
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(60)),
+        cwd,
+        args,
+    )
+}
+
+fn git_with_bound(bound: Duration, cwd: &Path, args: &[&str]) -> Result<Captured, String> {
     let mut command = crate::env::git_env::command(cwd);
     command.args(args);
-    run_captured(command, Duration::from_secs(60))
+    run_captured(command, bound)
         .map_err(|error| format!("git {} failed: {}", args.join(" "), error.detail()))
 }
+#[cfg(test)]
 fn git_text(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let output = git(cwd, args)?;
+    git_text_with_bound(
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(60)),
+        cwd,
+        args,
+    )
+}
+
+fn git_text_with_bound(bound: Duration, cwd: &Path, args: &[&str]) -> Result<String, String> {
+    let output = git_with_bound(bound, cwd, args)?;
     if !output.status.success() {
         return Err(stderr(&output));
     }
@@ -779,8 +826,9 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<(), String> {
         Err(stderr(&output))
     }
 }
-fn ref_exists(cwd: &Path, reference: &str) -> bool {
-    git(cwd, &["show-ref", "--verify", "--quiet", reference]).is_ok_and(|out| out.status.success())
+fn ref_exists_with_bound(bound: Duration, cwd: &Path, reference: &str) -> bool {
+    git_with_bound(bound, cwd, &["show-ref", "--verify", "--quiet", reference])
+        .is_ok_and(|out| out.status.success())
 }
 fn stderr(output: &Captured) -> String {
     let text = String::from_utf8_lossy(&output.stderr).trim().to_string();

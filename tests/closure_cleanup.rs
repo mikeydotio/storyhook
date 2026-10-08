@@ -16,7 +16,7 @@ fn request(f: &ServiceFixture) -> Option<serde_json::Value> {
 }
 
 fn fixture() -> ServiceFixture {
-    let f = ServiceFixture::new();
+    let f = ServiceFixture::new().with_subprocess_patience();
     StoryService::new(&f.ctx())
         .create(&NewStoryInput {
             title: "Close from any door".into(),
@@ -313,7 +313,7 @@ fn a_closed_story_without_local_resources_completes_without_a_checkout() {
 
 #[test]
 fn computed_epic_closure_enqueues_parent_and_child() {
-    let f = ServiceFixture::new();
+    let f = ServiceFixture::new().with_subprocess_patience();
     let ctx = f.ctx();
     storyhook::service::ConfigService::new(&ctx)
         .add_type("epic", None, None)

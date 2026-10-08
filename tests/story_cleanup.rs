@@ -32,7 +32,7 @@ impl Leased {
     /// the workspace merged into the default branch — the state every green
     /// verification leaves behind before its reap.
     fn new() -> Self {
-        let fixture = ServiceFixture::new();
+        let fixture = ServiceFixture::new().with_subprocess_patience();
         let ctx = fixture.ctx();
         let id = StoryService::new(&ctx)
             .create(&NewStoryInput {
@@ -120,7 +120,7 @@ fn an_open_story_is_refused_before_any_git_work() {
     // The lease names a repository that does not exist. Ungated, cleanup's
     // first act on the candidate is to resolve it and report
     // `repository-unavailable`; the gate must answer first, from the store.
-    let fixture = ServiceFixture::new();
+    let fixture = ServiceFixture::new().with_subprocess_patience();
     let ctx = fixture.ctx();
     let id = StoryService::new(&ctx)
         .create(&NewStoryInput {

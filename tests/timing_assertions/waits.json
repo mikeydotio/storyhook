@@ -107,6 +107,418 @@
       "reason": "The child, pipe-drain and bounded-command timeout regressions inject a 300 ms deadline and assert enforcement within that deadline times seven. No contention multiplier may weaken these tests."
     }
   },
+  "src/api/engine.rs": {
+    ".recv(std::time::Duration::ZERO": {
+      "count": 3,
+      "kind": "fixture",
+      "reason": "Nonblocking inspection of an already-published or empty event queue; the zero-duration receive does not wait."
+    }
+  },
+  "src/api/engine/contention_tests.rs": {
+    ".busy_timeout(Duration::from_millis(10)": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "SH-889 deliberately configures short SQLite busy handling so the held writer outlasts it; changing this input would change the contention case."
+    },
+    ".busy_timeout(configured": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "SH-889 injects long and short SQLite connection settings and reads the actual PRAGMA back to prove capping only for engine controllers."
+    },
+    ".recv_timeout(Duration::from_millis(150)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Negative observation while the real writer remains held: a patient control must not return Busy after the shorter SQLite busy limit. Preserve this proof window."
+    },
+    ".recv_timeout(storyhook_test_support::load_grace::PATIENCE_CEILING": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Completion after writer release uses the shared maximum harness patience; do not apply grace twice."
+    },
+    "Instant::now()<observed": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The admission-attempt observer uses the shared load-graced five-second deadline created immediately above; it does not hold the write gate while observing."
+    }
+  },
+  "src/daemon/activity/hygiene_tests.rs": {
+    "Instant::now()+FIRST_SWEEP_PATIENCE": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The first sweep must occur before half of the production SWEEP_INTERVAL. Gracing this would allow a bug that waits a full interval before its first sweep."
+    },
+    "Instant::now()<deadline": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "This compares the first-sweep observation with half the production SWEEP_INTERVAL, proving the sweep starts immediately rather than at the first periodic wake."
+    }
+  },
+  "src/daemon/activity/window_tests.rs": {
+    ".recv_timeout(VIEW_RECONCILE_TIMEOUT/3": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Cancellation must answer before the actual 45-second view deadline; extending this 15-second proof could accept waiting out that deadline."
+    },
+    ".recv_timeout(patience": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "The local patience value was computed with load_grace::graced_now by this caller; receiving or reaping must not scale it a second time."
+    }
+  },
+  "src/daemon/bus.rs": {
+    ".recv(Duration::from_millis(10)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "An empty subscription must return None after this deliberately short negative observation; successful delivery cases use the zero-duration INSTANT fixture."
+    },
+    ".recv(INSTANT": {
+      "count": 11,
+      "kind": "fixture",
+      "reason": "Nonblocking inspection of an already-published or empty event queue; the zero-duration receive does not wait."
+    }
+  },
+  "src/daemon/engine/wait_tests.rs": {
+    ".recv(Duration::ZERO": {
+      "count": 3,
+      "kind": "fixture",
+      "reason": "Nonblocking inspection of an already-published or empty event queue; the zero-duration receive does not wait."
+    },
+    ".recv_timeout(Duration::from_millis(10)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The noise producer uses this fixed cadence until cancellation; it is stimulus, not patience for a positive result."
+    },
+    "Instant::now()+Duration::from_millis(20)": {
+      "count": 4,
+      "kind": "proof",
+      "reason": "Ping, resync and reload must wait through the injected fallback; this is the deadline being exercised."
+    },
+    "Instant::now()+Duration::from_secs(1)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The stop/drain case injects a fallback then checks the interrupted wait result; the deadline is the production function input under test."
+    },
+    "Instant::now()+Duration::from_secs(5)": {
+      "count": 2,
+      "kind": "proof",
+      "reason": "Queued project/catalog work and dropped-control recovery must beat their deliberately supplied fallback deadline; scaling only the observation would weaken the no-fallback proof."
+    },
+    "Instant::now()<deadline": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The queued project/catalog result must precede its supplied fallback deadline."
+    },
+    "Instant::now()<recovery_deadline": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Dropped control recovery must precede its supplied fallback deadline."
+    },
+    "Instant::now()>=deadline": {
+      "count": 5,
+      "kind": "proof",
+      "reason": "The fallback must actually have elapsed; no early pass from noise is allowed."
+    }
+  },
+  "src/daemon/http1/conn.rs": {
+    "started.elapsed()<Duration::from_millis(400)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Dribbled bytes must not renew the injected 150 ms request-head deadline; the 400 ms disproof window stays literal."
+    }
+  },
+  "src/daemon/lifecycle.rs": {
+    ".recv(": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "The server intentionally supplies no response until the bounded client returns; the release channel is fixture ordering, not a timed positive wait."
+    },
+    ".recv_timeout(FORCE_GRACE": {
+      "count": 3,
+      "kind": "proof",
+      "reason": "Negative observation: publication cannot finish during clear-to-exit, and force-stop cannot return while the identified daemon or unreaped PID remains alive. These windows exercise ordering against the production grace."
+    },
+    "Instant::now()<deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "This readiness loop uses a deadline constructed from load_grace::graced_now in the same test; the raw comparison consumes that existing allowance without renewing it."
+    },
+    "started.elapsed()<Duration::from_millis(100)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "An uncontended spawn lock must not pay the production polling interval; the 100 ms proof remains unscaled."
+    }
+  },
+  "src/daemon/serve.rs": {
+    "started.elapsed()<Duration::from_millis(50)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "A pre-stopped chopped sleep must skip sleeping, rather than consume a production chop interval."
+    },
+    "started.elapsed()>=Duration::from_millis(20)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "An uninterrupted chopped sleep must spend its entire injected duration; this is a lower-bound proof."
+    }
+  },
+  "src/daemon/subscribe.rs": {
+    ".set_read_timeout(Some(Duration::from_millis(200))": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The 200 ms socket timeout is one polling quantum; expected sentinel/disconnection is awaited across repeated calls with a separately graced overall deadline."
+    },
+    "Instant::now()<deadline": {
+      "count": 3,
+      "kind": "delegated",
+      "reason": "This readiness loop uses a deadline constructed from load_grace::graced_now in the same test; the raw comparison consumes that existing allowance without renewing it."
+    }
+  },
+  "src/daemon/verification/batch/tests.rs": {
+    "Instant::now()<deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "This readiness loop uses a deadline constructed from load_grace::graced_now in the same test; the raw comparison consumes that existing allowance without renewing it."
+    }
+  },
+  "src/daemon/verification/control.rs": {
+    ".recv(Duration::ZERO": {
+      "count": 4,
+      "kind": "fixture",
+      "reason": "Nonblocking inspection of an already-published or empty event queue; the zero-duration receive does not wait."
+    },
+    "Instant::now()<deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "This readiness loop uses a deadline constructed from load_grace::graced_now in the same test; the raw comparison consumes that existing allowance without renewing it."
+    }
+  },
+  "src/daemon/verification/cost/tests.rs": {
+    ".recv(Duration::ZERO": {
+      "count": 2,
+      "kind": "fixture",
+      "reason": "Nonblocking inspection of an already-published or empty event queue; the zero-duration receive does not wait."
+    }
+  },
+  "src/daemon/verification/observation/tests.rs": {
+    "Instant::now()<deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "This readiness loop uses a deadline constructed from load_grace::graced_now in the same test; the raw comparison consumes that existing allowance without renewing it."
+    },
+    "started.elapsed()<Duration::from_secs(2)": {
+      "count": 2,
+      "kind": "proof",
+      "reason": "Two fixed proofs: unrelated event floods must not renew the injected 80 ms recovery deadline, and overflow must recheck lost authority before the injected 30 s deadline. The two-second upper bounds remain unscaled."
+    }
+  },
+  "src/daemon/verification/reconcile_wait_tests.rs": {
+    ".recv_timeout(CONTROL_DEADLINE/10": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Queue arrivals and wakeups must not end the held reservation during this negative observation window; completion waits after cancel/resubmit are separately graced."
+    }
+  },
+  "src/daemon/verification/workspace_tests.rs": {
+    "Instant::now()<deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "This readiness loop uses a deadline constructed from load_grace::graced_now in the same test; the raw comparison consumes that existing allowance without renewing it."
+    },
+    "with_paths_and_timing[control](DISPATCH_TIMEOUT": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Deterministic SH-846 policy regression: explicit constructor durations must remain literal, including a control deadline numerically equal to the production default. No process is launched or elapsed time asserted."
+    },
+    "with_paths_and_timing[idle](DISPATCH_TIMEOUT": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Deterministic SH-846 policy regression: explicit constructor durations must remain literal, including a control deadline numerically equal to the production default. No process is launched or elapsed time asserted."
+    },
+    "with_paths_and_timing[termination](RECOVERY_WAKE": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Deterministic SH-846 policy regression: explicit constructor durations must remain literal, including a control deadline numerically equal to the production default. No process is launched or elapsed time asserted."
+    }
+  },
+  "src/daemon/watch.rs": {
+    ".recv(Duration::from_millis(200)": {
+      "count": 5,
+      "kind": "fixture",
+      "reason": "notice publishes synchronously before recv; the message is already queued and this nominal timeout is not spent."
+    },
+    ".recv(Duration::from_millis(50)": {
+      "count": 3,
+      "kind": "proof",
+      "reason": "Negative observation that an unchanged store or repeated notice publishes no extra event; this window stays literal."
+    }
+  },
+  "src/env/mod.rs": {
+    ".busy_timeout(Duration::from_millis(250)": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "Checks the Environment builder stores the supplied busy timeout; no database or timed wait is invoked."
+    }
+  },
+  "src/plugin/codex_cache/tests.rs": {
+    ".recv_timeout(bound": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "Both coalescing/readiness barriers use patience(), which obtains shared load grace for STORY_COMMAND_DEADLINE before starting the worker."
+    },
+    "Instant::now()+bound": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The cache coalescing observation deadline uses the same already-graced patience() allowance as its worker barriers."
+    },
+    "Instant::now()<deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The wait for the second cache caller observes against the preceding already-graced coalescing deadline."
+    }
+  },
+  "src/plugin/operation/tests.rs": {
+    ".wait_within(patience": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The local patience value was computed with load_grace::graced_now by this caller; receiving or reaping must not scale it a second time."
+    }
+  },
+  "src/process.rs": {
+    "Instant::now()+Duration::from_millis(100)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "After explicit child readiness, the test starts this driven timeout to prove process-group termination; startup has separate graced patience."
+    },
+    "Instant::now()+grace": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "This grace was computed with load_grace::graced_now for fixture startup and TERM-handler completion; no second scaling."
+    },
+    "Instant::now()<deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "This readiness loop uses a deadline constructed from load_grace::graced_now in the same test; the raw comparison consumes that existing allowance without renewing it."
+    },
+    "Instant::now()>=deadline": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "One deadline is graced orphan reaping patience; the other is the already-graced TERM-handler startup allowance. Both are checked after observing the condition."
+    }
+  },
+  "src/process/activity_tests.rs": {
+    "Instant::now()+allowance": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "allowance is load_grace::graced_now at the test entry and shared with TERM handling; no second grace."
+    },
+    "Instant::now()<deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "This readiness loop uses a deadline constructed from load_grace::graced_now in the same test; the raw comparison consumes that existing allowance without renewing it."
+    },
+    "started.elapsed()>idle": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Progress must outlive the original idle allowance, proving renewal rather than merely fast completion."
+    }
+  },
+  "src/process/cancellation.rs": {
+    "Instant::now()<deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "This readiness loop uses a deadline constructed from load_grace::graced_now in the same test; the raw comparison consumes that existing allowance without renewing it."
+    }
+  },
+  "src/service/attribution/native/tests.rs": {
+    "Instant::now()<deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "This readiness loop uses a deadline constructed from load_grace::graced_now in the same test; the raw comparison consumes that existing allowance without renewing it."
+    }
+  },
+  "src/service/attribution/trees.rs": {
+    "Instant::now()+std::time::Duration::from_millis(super::super::MAX_DIAGNOSIS_MS)": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "Already-cancelled authority must be rejected before nonexistent Git inputs are touched; the otherwise-future deadline is fixture input."
+    }
+  },
+  "src/service/automations.rs": {
+    "std::time::Instant::now()<deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "This readiness loop uses a deadline constructed from load_grace::graced_now in the same test; the raw comparison consumes that existing allowance without renewing it."
+    }
+  },
+  "src/service/batch_preview.rs": {
+    "Instant::now()+std::time::Duration::from_secs(600)": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "The preview tests inject synchronous in-memory preparation and merge answers; this future deadline is an unexpired fixture, not subprocess patience."
+    }
+  },
+  "src/service/engine/control_patience_tests.rs": {
+    ".busy_timeout(Duration::from_millis(100)": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "SQLite fixture input exceeds the driven sixty-millisecond admission deadline, exposing an admission wait that incorrectly blocks or executes."
+    },
+    ".recv(": {
+      "count": 2,
+      "kind": "fixture",
+      "reason": "Owned writer/admission release barriers unblock when their scoped sender is dropped, including failure cleanup. They establish ordering rather than an elapsed deadline."
+    },
+    ".recv_timeout(storyhook_test_support::load_grace::PATIENCE_CEILING": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "Readiness/admission receives use the shared maximum harness patience; actual deadline expiry is separately synchronized or driven, not widened here."
+    },
+    "Instant::now()+Duration::from_millis(60)": {
+      "count": 2,
+      "kind": "proof",
+      "reason": "These are the driven admission deadlines under test, for external-writer and local-writer exclusion; the expected Busy/no-write result requires expiry and stays literal."
+    },
+    "Instant::now()+Duration::from_secs(60)": {
+      "count": 3,
+      "kind": "fixture",
+      "reason": "Explicit transaction-admission policy input in no-replay/rollback/fault fixtures. These cases assert transaction count and durable results, not expiration; the dedicated sixty-millisecond tests prove deadline enforcement."
+    }
+  },
+  "src/service/tmux_target_tests.rs": {
+    "Instant::now()+self.env.subprocess_bound(crate::service::engine::TMUX_TIMEOUT)": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Environment::subprocess_bound reads the fixture declared patience or proof policy; the ownership bridge consumes its remaining shared budget."
+    }
+  },
+  "src/service/verification.rs": {
+    ".wait_with_output_within(storyhook_test_support::load_grace::PATIENCE_CEILING": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The complete receipt helper already uses the shared maximum patience ceiling after measured gate-load failures; applying grace again cannot extend that ceiling."
+    }
+  },
+  "src/tui/event.rs": {
+    ".recv_timeout(Duration::from_millis(250)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Negative observation: an unreachable daemon must not masquerade as a data-change event."
+    },
+    ".recv_timeout(Duration::from_millis(750)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Negative observation: an unchanged store must not emit a change."
+    },
+    ".recv_timeout(POLL_BUDGET*3": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Negative observation: writes predating subscription must not be replayed across three production polling cycles."
+    },
+    ".recv_timeout(TEST_WINDOW*20": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Continuous activity must yield repeated reloads instead of resetting the injected coalescing window indefinitely; this maximum-latency proof stays literal."
+    }
+  },
   "tests/activity_script.rs": {
     ".wait_with_output_within(deadline": {
       "count": 2,
@@ -217,9 +629,9 @@
   },
   "tests/e2e_browser_coverage.rs": {
     ".wait_with_output_within(budget": {
-      "count": 1,
+      "count": 2,
       "kind": "delegated",
-      "reason": "The reporter cleanup wrapper passes graced_now(UTILITY_DEADLINE * 6 * 3): six lifecycle scenarios, each with startup, exit and reap patience. ChildGuard consumes that single caller-supplied budget."
+      "reason": "The browser ownership and writer-drain regressions use their caller-computed shared load-graced fixture completion budget; process cleanup remains owned by the fixture."
     }
   },
   "tests/e2e_provider_doubles.rs": {
@@ -275,15 +687,15 @@
     }
   },
   "tests/machine_lock.rs": {
-    ".wait_within(poll_ceiling()": {
-      "count": 1,
-      "kind": "proof",
-      "reason": "The signal regression must reap the wrapper below the wrapped sleep of 60 seconds. Scaling poll_ceiling could let a deferred shell trap pass after the sleep finishes."
-    },
     ".wait_with_output_within(2*(5*patience+stopped_hold)": {
       "count": 1,
       "kind": "delegated",
       "reason": "The stopped-owner experiment derives its outer bound from both competitors: each receives five graced patience windows plus the deliberate stopped hold; this observes their complete supplied cleanup budgets."
+    },
+    ".wait_within(poll_ceiling()": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The signal regression must reap the wrapper below the wrapped sleep of 60 seconds. Scaling poll_ceiling could let a deferred shell trap pass after the sleep finishes."
     }
   },
   "tests/orphan_check.rs": {

@@ -118,7 +118,8 @@ fn a_reset_of_a_batch_member_ends_the_batch_not_the_heads_attempt() {
 
     std::thread::scope(|scope| {
         scope.spawn(|| {
-            let deadline = Instant::now() + PATIENCE;
+            let deadline =
+                Instant::now() + storyhook_test_support::load_grace::graced_now(PATIENCE);
             while !batch.is_cancelled() {
                 assert!(Instant::now() < deadline, "the batch was never cancelled");
                 std::thread::sleep(Duration::from_millis(10));
@@ -126,7 +127,11 @@ fn a_reset_of_a_batch_member_ends_the_batch_not_the_heads_attempt() {
             drop(membership);
         });
         activity
-            .cancel_story_and_wait(project, "SH-7", Instant::now() + PATIENCE)
+            .cancel_story_and_wait(
+                project,
+                "SH-7",
+                Instant::now() + storyhook_test_support::load_grace::graced_now(PATIENCE),
+            )
             .unwrap();
     });
 

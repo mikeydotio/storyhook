@@ -9,7 +9,7 @@ use storyhook::github_access::Repository;
 #[test]
 fn production_pr_observation_validates_identity_and_response_shape() {
     if let Ok(root) = std::env::var("SH734_GH_CLIENT_ROOT") {
-        let repository = Repository::resolve(std::path::Path::new(&root)).unwrap();
+        let repository = fixture_repository(std::path::Path::new(&root)).unwrap();
         let result = GithubClient::new(repository).get_pull_request(7);
         if std::env::var("SH734_GH_CLIENT_VALID").unwrap() == "true" {
             let status = result.unwrap();
@@ -96,4 +96,9 @@ fn production_pr_observation_validates_identity_and_response_shape() {
             );
         }
     }
+}
+
+fn fixture_repository(path: &std::path::Path) -> Result<Repository, storyhook::error::AppError> {
+    let env = storyhook_test_support::subprocess_patience(storyhook::env::Environment::at(path));
+    Repository::resolve_for_fixture(path, &env)
 }

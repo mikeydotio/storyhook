@@ -9,14 +9,19 @@ use std::time::Duration;
 impl Repository {
     /// Executes gh only against this repository, after revalidating its origin.
     pub fn gh(&self, arguments: &[String]) -> Result<Vec<u8>, AppError> {
-        let current = Self::resolve(&self.checkout)?;
+        let current = Self::resolve_with_bounds(&self.checkout, self.bounds)?;
         if current.identity != self.identity {
             return Err(AppError::Validation(
                 "GitHub origin changed during the operation; resolve it again before retrying"
                     .into(),
             ));
         }
-        execute(&self.identity, &self.checkout, arguments)
+        execute_with_bound(
+            self.bounds.operation,
+            &self.identity,
+            &self.checkout,
+            arguments,
+        )
     }
 }
 
@@ -26,7 +31,16 @@ pub(super) fn execute(
     checkout: &std::path::Path,
     arguments: &[String],
 ) -> Result<Vec<u8>, AppError> {
-    let output = capture(identity, checkout, arguments)?;
+    execute_with_bound(Duration::from_secs(120), identity, checkout, arguments)
+}
+
+fn execute_with_bound(
+    bound: Duration,
+    identity: &crate::domain::github_remote::GithubRepo,
+    checkout: &std::path::Path,
+    arguments: &[String],
+) -> Result<Vec<u8>, AppError> {
+    let output = capture(bound, identity, checkout, arguments)?;
     if !output.status.success() {
         let mut detail = String::from_utf8_lossy(&output.stderr).into_owned();
         for name in crate::env::spawn_env::GITHUB_CREDENTIAL_MAY_SEE {
@@ -158,6 +172,7 @@ fn qualified(identity: &crate::domain::github_remote::GithubRepo) -> String {
 
 /// Captures one routed command without discarding its refusal diagnostics.
 pub(super) fn capture(
+    bound: Duration,
     identity: &crate::domain::github_remote::GithubRepo,
     checkout: &std::path::Path,
     arguments: &[String],
@@ -175,7 +190,7 @@ pub(super) fn capture(
         .env("GH_NO_UPDATE_NOTIFIER", "1")
         .env("GH_NO_EXTENSION_UPDATE_NOTIFIER", "1")
         .env("GIT_TERMINAL_PROMPT", "0");
-    run_captured_private(command, Duration::from_secs(120)).map_err(|error| {
+    run_captured_private(command, bound).map_err(|error| {
         let detail = match error {
             CaptureError::Spawn(ref source) if source.kind() == std::io::ErrorKind::NotFound => {
                 "install gh and make it available on the StoryHook process PATH".to_owned()

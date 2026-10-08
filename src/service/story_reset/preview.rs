@@ -96,7 +96,7 @@ impl<S: Store> StoryResetService<'_, S> {
         {
             reset.paths.clone()
         } else {
-            match identity::capture(&report) {
+            match identity::capture(self.ctx.env(), &report) {
                 Ok(paths) => paths,
                 Err(error) => {
                     report.status = "unavailable".into();
@@ -131,7 +131,7 @@ impl<S: Store> StoryResetService<'_, S> {
                 None
             }
         };
-        let recovery = cleanup::recovery(&report, &authority);
+        let recovery = cleanup::recovery(self.ctx.env(), &report, &authority);
         cleanup::preview_overlap(
             &report,
             &authority,
@@ -150,7 +150,12 @@ impl<S: Store> StoryResetService<'_, S> {
                 Ok(_) => worktree = Some(path.clone()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     if let Some(repository) = &authority.repository {
-                        match crate::service::resources::git::inventory(repository) {
+                        match crate::service::resources::git::inventory_with_bound(
+                            self.ctx
+                                .env()
+                                .subprocess_bound(std::time::Duration::from_secs(60)),
+                            repository,
+                        ) {
                             Ok(records) if records.iter().any(|row| row.path == *path) => {
                                 worktree_registration = Some(path.clone());
                             }
@@ -172,7 +177,13 @@ impl<S: Store> StoryResetService<'_, S> {
         if authority.branch
             && let (Some(repository), Some(name)) = (&authority.repository, &report.branch)
         {
-            match crate::service::resources::git::branch_exists(repository, name) {
+            match crate::service::resources::git::branch_exists_with_bound(
+                self.ctx
+                    .env()
+                    .subprocess_bound(std::time::Duration::from_secs(60)),
+                repository,
+                name,
+            ) {
                 Ok(true) => branch = Some(name.clone()),
                 Ok(false) => {}
                 Err(error) => residue.blocks_dispatch(

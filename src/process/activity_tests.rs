@@ -57,9 +57,10 @@ fn both_deadline_modes_record_output_and_timeouts() {
             ])
             .env("STORYHOOK_ACTIVITY_TEST_CHILD", "1");
         let mut child = ChildGuard::spawn_with_output(&mut command).unwrap();
-        let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "activity/progress integration probe did not finish".into()
-        });
+        let output = child.wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "activity/progress integration probe did not finish".into(),
+        );
         assert!(output.status.success(), "{output:?}");
         assert!(
             String::from_utf8_lossy(&output.stdout).contains("1 passed"),
@@ -118,7 +119,9 @@ fn both_deadline_modes_record_output_and_timeouts() {
             // A regressed timeout must fail as cancellation instead of hanging
             // the harness; finite fake work can otherwise beat a late observer.
             if matches!(
-                receiver.recv_timeout(STORY_COMMAND_DEADLINE),
+                receiver.recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    STORY_COMMAND_DEADLINE
+                )),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout)
             ) {
                 watchdog_cancellation.cancel();

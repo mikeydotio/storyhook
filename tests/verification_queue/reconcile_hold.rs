@@ -95,7 +95,9 @@ fn the_shell_probe_reads_a_real_story_window() {
                 .output();
         }
     }
-    let actuator = ShellVerificationActuator::new(fixture.env().clone());
+    let actuator = ShellVerificationActuator::new(storyhook_test_support::subprocess_patience(
+        fixture.env().clone(),
+    ));
     let probe = || {
         actuator.probe_agent(
             &candidate,

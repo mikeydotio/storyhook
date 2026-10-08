@@ -3642,17 +3642,18 @@ pub(crate) fn run_shell_dispatch_cancellable(
         );
     }
 
+    let bound = env.subprocess_bound(DISPATCH_TIMEOUT);
     let captured = match cancellation {
         Some(cancellation) => crate::process::run_captured_cancellable(
             command,
-            DISPATCH_TIMEOUT,
+            bound,
             crate::process::TerminationPolicy::TerminateThenKill {
                 grace: Duration::from_secs(30),
             },
             cancellation,
             |_| Ok(()),
         ),
-        None => run_captured(command, DISPATCH_TIMEOUT),
+        None => run_captured(command, bound),
     }
     .map_err(|error| match error {
         CaptureError::Cancelled => {
@@ -3675,7 +3676,7 @@ pub(crate) fn run_shell_dispatch_cancellable(
         }
         CaptureError::Timeout(_) => AppError::Storage(format!(
             "dispatch did not finish within {}s and was terminated",
-            DISPATCH_TIMEOUT.as_secs()
+            bound.as_secs()
         )),
     })?;
     classify_dispatch_capture(&captured)
@@ -3711,7 +3712,8 @@ fn run_shell_unclaim(
         .env("STORY_TARGET_SESSION", project)
         .env("GIT_TERMINAL_PROMPT", "0");
 
-    let captured = run_captured(command, DISPATCH_TIMEOUT).map_err(|error| match error {
+    let bound = env.subprocess_bound(DISPATCH_TIMEOUT);
+    let captured = run_captured(command, bound).map_err(|error| match error {
         CaptureError::Cancelled => {
             AppError::Validation("the operator cancelled verification".into())
         }
@@ -3732,7 +3734,7 @@ fn run_shell_unclaim(
         }
         CaptureError::Timeout(_) => AppError::Storage(format!(
             "unclaim did not finish within {}s and was terminated",
-            DISPATCH_TIMEOUT.as_secs()
+            bound.as_secs()
         )),
     })?;
     let outcome = classify_dispatch_capture(&captured)?;

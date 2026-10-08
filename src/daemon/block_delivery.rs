@@ -163,7 +163,12 @@ fn recover_one(
         Ok((project, checkout))
     })?;
     let id = delivery.story.to_id(&project.prefix);
-    let Some(_workspace) = WorkspaceLock::try_acquire(&checkout, &id)? else {
+    let Some(_workspace) = WorkspaceLock::try_acquire_with_bound(
+        env.subprocess_bound(std::time::Duration::from_secs(30)),
+        &checkout,
+        &id,
+    )?
+    else {
         // An old helper may still hold an inherited descriptor after daemon death.
         return Ok(());
     };
@@ -250,7 +255,11 @@ fn process_candidate(
     let observed_id = observed_delivery.story.to_id(&observed_project.prefix);
     // Git discovery and the nonblocking OS lock occur before the SQL writer.
     let (workspace, lock_failure) = if let Some(checkout) = observed_checkout.as_deref() {
-        match WorkspaceLock::try_acquire(checkout, &observed_id) {
+        match WorkspaceLock::try_acquire_with_bound(
+            env.subprocess_bound(std::time::Duration::from_secs(30)),
+            checkout,
+            &observed_id,
+        ) {
             Ok(Some(lock)) => (Some(lock), None),
             Ok(None) => return Ok(false),
             Err(error) => (None, Some(error.to_string())),
@@ -414,7 +423,7 @@ fn process_candidate(
         .dispatch_command(&mut command);
     let result = run_captured_quiescent(
         command,
-        NOTIFY_TIMEOUT,
+        env.subprocess_bound(NOTIFY_TIMEOUT),
         TerminationPolicy::TerminateThenKill {
             grace: NOTIFY_TERM_GRACE,
         },
