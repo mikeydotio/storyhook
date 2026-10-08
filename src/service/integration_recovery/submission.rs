@@ -31,9 +31,21 @@ pub struct SubmissionObservation {
 pub struct BoundIntegrationProposal {
     pub(super) proposal: IntegrationProposal,
     pub(super) submission: SubmissionObservation,
+    pub(super) deadline: Instant,
+    pub(super) cancellation: Cancellation,
 }
 
 impl BoundIntegrationProposal {
+    /// An observation cannot outlive its original bounded native operation.
+    pub(super) fn check_live(&self) -> Result<(), AppError> {
+        if self.cancellation.is_cancelled() || Instant::now() >= self.deadline {
+            return Err(AppError::Validation(
+                "native integration proposal expired or its owner cancelled".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Exact source evidence to retain before a managed external effect.
     #[must_use]
     pub fn plan(&self) -> &IntegrationPlan {
@@ -170,13 +182,15 @@ pub fn inspect_submission(
         &submission.base,
         &submission.head,
         deadline,
-        cancellation,
+        cancellation.clone(),
     )? {
         Inspection::Clean { .. } => Ok(BoundInspection::Clean),
         Inspection::Held { reason } => Ok(BoundInspection::Held(reason)),
         Inspection::Proposed(proposal) => Ok(BoundInspection::Proposed(BoundIntegrationProposal {
             proposal,
             submission,
+            deadline,
+            cancellation,
         })),
     }
 }

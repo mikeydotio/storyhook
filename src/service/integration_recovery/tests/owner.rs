@@ -134,6 +134,8 @@ impl OwnedFixture {
         // the resolution capability comes from real private Git inspection.
         BoundIntegrationProposal {
             proposal,
+            deadline: Instant::now() + Duration::from_secs(30),
+            cancellation: Cancellation::default(),
             submission: SubmissionObservation {
                 checkout: self.candidate.checkout.clone(),
                 repository: "github.com/acme/widgets".into(),
@@ -379,4 +381,78 @@ fn integration_owner_retains_history_when_original_story_is_manually_closed() {
     assert_eq!(service.show(&record.id).unwrap().0, record);
     assert!(service.claim_assembly(&record.id, 0, &proof).is_err());
     proof.settle().unwrap();
+}
+
+#[test]
+fn integration_owner_rejects_another_pr_with_the_same_pinned_head() {
+    let f = OwnedFixture::new(true);
+    let mut proof = f.proof();
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    proof.submission.pull_request = "https://github.com/acme/widgets/pull/8".into();
+    assert!(
+        service
+            .reserve(&f.candidate, "original-attribution", "integration", &proof)
+            .is_err(),
+        "same-head PR B capability was used to reserve PR A"
+    );
+    proof.submission.pull_request = "https://github.com/acme/widgets/pull/7".into();
+    let record = f.reserve(&proof);
+    proof.submission.repository = "other.example/acme/widgets".into();
+    assert!(service.claim_assembly(&record.id, 0, &proof).is_err());
+    proof.settle().unwrap();
+}
+
+#[test]
+fn integration_claim_rejects_same_generation_cleanup_lease_replacement() {
+    let f = OwnedFixture::new(true);
+    let proof = f.proof();
+    let record = f.reserve(&proof);
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let claim = service
+        .claim_assembly(&record.id, 0, &proof)
+        .unwrap()
+        .unwrap();
+    f.fixture.append_cleanup_lease(&f.candidate.story_id, serde_json::from_value(serde_json::json!({
+        "version":1,"project_slug":f.candidate.project_slug,"story_id":f.candidate.story_id,
+        "repository_path":f.native.root.path(),"worktree_path":f.native.root.path().join("replacement"),
+        "branch":"replacement-work","tmux":{"socket_path":f.native.root.path().join("fixture-socket"),"revivify":null}
+    })).unwrap());
+    assert!(
+        service.assembly_permitted(&claim, &proof).is_err(),
+        "old claim adopted a same-generation replacement resource lease"
+    );
+    assert_eq!(
+        service.show(&record.id).unwrap().1.candidate.cleanup_lease,
+        None
+    );
+    proof.settle().unwrap();
+}
+
+#[test]
+fn integration_native_claim_cannot_outlive_proposal_deadline_or_cancellation() {
+    for cancelled in [false, true] {
+        let f = OwnedFixture::new(true);
+        let mut proof = f.proof();
+        let record = f.reserve(&proof);
+        let ctx = f.ctx();
+        let service = IntegrationOwnerService::new(&ctx);
+        let claim = service
+            .claim_assembly(&record.id, 0, &proof)
+            .unwrap()
+            .unwrap();
+        if cancelled {
+            proof.cancellation.cancel();
+        } else {
+            proof.deadline = Instant::now() - Duration::from_secs(1);
+        }
+        assert!(service.assembly_permitted(&claim, &proof).is_err());
+        assert_eq!(
+            service.show(&record.id).unwrap().1.effect_epoch,
+            1,
+            "freshness refusal reset uncertain effect custody"
+        );
+        proof.settle().unwrap();
+    }
 }

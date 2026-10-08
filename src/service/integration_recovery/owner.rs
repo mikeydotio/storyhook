@@ -135,6 +135,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
         component: &str,
         proof: &BoundIntegrationProposal,
     ) -> Result<IntegrationRecovery, AppError> {
+        proof.check_live()?;
         if candidate.project != self.ctx.project() {
             return Err(AppError::Validation(
                 "integration proposal belongs to another project".into(),
@@ -162,6 +163,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
                 || !retained.components.iter().any(|entry| entry.id == component && entry.observed_cause == FailureCause::Integration)
                 || proof.submission().head != proof.plan().head || proof.submission().base != proof.plan().base
                 || proof.submission().checkout != candidate.checkout
+                || !same_original_pr(candidate, proof.submission())
             { return Err(invalid("native proposal differs from retained submission, integration component, or settled diagnostic custody")); }
             let attempt = tx.gate_attempts(candidate.project)?.into_iter().find(|attempt| attempt.id == retained.attempt && attempt.submission == retained.submission)
                 .ok_or_else(|| invalid("original gate admission is unavailable"))?;
@@ -204,6 +206,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
         expected: i64,
         proof: &BoundIntegrationProposal,
     ) -> Result<Option<AssemblyClaim>, AppError> {
+        proof.check_live()?;
         let now = self.ctx.now();
         self.ctx
             .store()
@@ -240,6 +243,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
         claim: &AssemblyClaim,
         proof: &BoundIntegrationProposal,
     ) -> Result<bool, AppError> {
+        proof.check_live()?;
         if claim.record.project != self.ctx.project() {
             return Ok(false);
         }
@@ -318,6 +322,7 @@ pub(super) fn decode(record: &IntegrationRecovery) -> Result<IntegrationOwner, S
         || state.submission.head != state.plan.head
         || state.submission.base != state.plan.base
         || state.submission.checkout != state.candidate.checkout
+        || !same_original_pr(&state.candidate, &state.submission)
         || !state.workspace.is_absolute()
         || state.workspace.file_name().and_then(|name| name.to_str()) != Some(record.id.as_str())
         || state.branch != format!("storyhook/integration/{}", record.id)
@@ -331,6 +336,23 @@ pub(super) fn decode(record: &IntegrationRecovery) -> Result<IntegrationOwner, S
     }
     state.attribution.validate()?;
     Ok(state)
+}
+
+fn same_original_pr(candidate: &VerificationCandidate, submission: &SubmissionObservation) -> bool {
+    let Ok(link) = &candidate.pull_request else {
+        return false;
+    };
+    let Ok(expected) = crate::domain::pr_url::parse_pr_url(&link.url) else {
+        return false;
+    };
+    let Ok(observed) = crate::domain::pr_url::parse_pr_url(&submission.pull_request) else {
+        return false;
+    };
+    expected == observed
+        && submission.repository.eq_ignore_ascii_case(&format!(
+            "{}/{}/{}",
+            expected.host, expected.owner, expected.repo
+        ))
 }
 
 fn check_candidate(tx: &impl ReadOps, candidate: &VerificationCandidate) -> Result<(), StoreError> {
@@ -355,6 +377,7 @@ fn check_candidate(tx: &impl ReadOps, candidate: &VerificationCandidate) -> Resu
         )?
         || row.awaiting.is_some()
         || !crate::service::verification::candidate_is_current(tx, &row, candidate)?
+        || !crate::service::verification::submission_is_current(tx, &row, candidate)?
         || crate::service::project_recovery::recovery_resource_hold(tx, candidate.project, story)?
         || tx.checkout_path(candidate.project)?.as_ref() != Some(&candidate.checkout)
         || links.iter().filter(|link| link.close_on_merge).count() != 1
