@@ -138,6 +138,12 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
         Self { ctx }
     }
 
+    /// Owning environment carries declared subprocess policy into native
+    /// adapters; it grants no additional repository or effect authority.
+    pub fn environment(&self) -> &crate::env::Environment {
+        self.ctx.env()
+    }
+
     /// Reserve only a live native proposal matching immutable diagnostic head
     /// evidence. Serialized plan/advice cannot call this door with a capability.
     pub fn reserve(
