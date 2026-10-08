@@ -336,3 +336,20 @@ fn discovery_output_is_deterministic_versioned_and_raw_even_when_quiet() {
     assert_eq!(value["cli_contract"], "legacy-compatible");
     assert_eq!(value["visibility_is_authorization"], false);
 }
+
+#[test]
+fn helper_provider_domain_matches_the_local_launchers_actual_refusal() {
+    let run = entry(&["plugin", "run"]);
+    let syntax = serde_json::to_value(&run.arguments).unwrap().to_string();
+    assert!(syntax.contains("codex-launcher"));
+    assert!(!syntax.contains("claude"));
+    // This guard runs before HOME, provider discovery, or any helper launch.
+    let refusal = storyhook::plugin::run_helper("claude", &["context".into()]).unwrap_err();
+    assert_eq!(refusal.exit_code(), 2);
+    assert!(refusal.to_string().contains("only the Codex"));
+    let hook = entry(&["session-start"]);
+    assert!(storyhook::invoke::failure_is_silent(
+        &storyhook::cli::Invocation::SessionStart
+    ));
+    assert!(hook.output[0].errors.contains("warning on stderr"));
+}

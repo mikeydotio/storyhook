@@ -463,10 +463,13 @@ fn effects(path: &CommandPath) -> (Effects, &'static str) {
             "Reads or controls verification/recovery. Activation may launch tests/providers and merge remote work. Landing release reads GitHub state and releases a local intent; it does not merge or certify a gate."
         }
         C::Continuation | C::Internal | C::SessionStart => {
+            if path.command == C::SessionStart {
+                e.filesystem = Conditional;
+            }
             if !matches!(sub, "capabilities" | "status") {
                 e.store = Conditional;
             }
-            "Internal hook/session protocol; existing ownership, authorization and receipt checks still apply. No approval is granted by visibility."
+            "Internal hook/session protocol; existing ownership, authorization and receipt checks still apply. SessionStart may publish unavailable-context diagnostics. No approval is granted by visibility."
         }
         C::Doctor => {
             if sub == "install" || matches!(sub, "abandoned" | "crashes") {
@@ -655,11 +658,12 @@ fn outputs(path: &CommandPath) -> Vec<OutputContract> {
         )],
         C::SessionStart => {
             let mut o = raw(
-                "Hook context object; unavailable context returns {}",
+                "Hook context object, empty {} when there is nothing to report, or an unavailable-context annotation",
                 "Always raw hook JSON",
                 "Ignored for raw hook success.",
             );
-            o.errors = "Hook-facing failures use {} and the existing silent hook failure policy; do not infer a successful mutation from {}.";
+            o.errors = "Context-dispatch failures become unavailable hook output plus a warning on stderr; pre-dispatch failures retain normal error handling.";
+            o.exit_status = "Context failure fallback exits 0 with unavailable hook output and a warning; pre-dispatch errors retain their AppError status.";
             vec![o]
         }
         C::LaneBudget => vec![raw(
