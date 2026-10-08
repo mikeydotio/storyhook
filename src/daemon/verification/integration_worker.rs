@@ -38,7 +38,9 @@ pub(super) fn reconcile<S: Store>(
                 "verifier",
                 "event",
                 &format!("project={project} managed-owner={owner}"),
-                &format!("Managed landing remains held for native observation: {error}"),
+                &format!(
+                    "Managed landing observation or owned cleanup remains incomplete: {error}"
+                ),
             ),
         }
         // A still-open or uncertain managed PR cannot starve unrelated work.
@@ -90,8 +92,20 @@ pub(crate) fn reconcile_one_with<S: Store>(
     // Even revoked/expired proof still owns cleanup of its newly allocated
     // observation repo. Errors retain and name residue, never adopt old paths.
     let settled = native.settle();
-    let completed = completed?;
-    settled?;
+    let completed = match (completed, settled) {
+        (Ok(completed), Ok(())) => completed,
+        (Err(error), Ok(())) => return Err(error),
+        (Ok(completed), Err(cleanup)) => {
+            return Err(AppError::Storage(format!(
+                "managed completion recorded={completed}; {cleanup}"
+            )));
+        }
+        (Err(completion), Err(cleanup)) => {
+            return Err(AppError::Storage(format!(
+                "managed completion refused: {completion}; owned observation cleanup failed: {cleanup}"
+            )));
+        }
+    };
     cost::check(&active)?;
     Ok(if completed {
         TickResult::Completed

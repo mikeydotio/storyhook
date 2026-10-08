@@ -1361,3 +1361,76 @@ fn managed_restart_worker_cancellation_keeps_intent_and_settles_new_proof() {
     );
     proof.settle().unwrap();
 }
+
+#[test]
+fn managed_restart_worker_reports_refused_completion_and_exact_cleanup_residue() {
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let (id, earlier, _) = landed_proof(&f, &proof, |_| {});
+    let expected = earlier.evidence().clone();
+    earlier.settle().unwrap();
+    // The former central process has ended before this restart admission.
+    for mut admission in f
+        .store
+        .read(|tx| tx.gate_attempts(f.candidate.project))
+        .unwrap()
+    {
+        if admission.finished_at.is_none() {
+            let revision = admission.revision;
+            admission.finished_at = Some(AT.into());
+            admission.revision += 1;
+            assert!(
+                f.store
+                    .write(|tx| tx.update_gate_attempt(&admission, revision))
+                    .unwrap()
+            );
+        }
+    }
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let before = service.show(&id).unwrap();
+    let activity = crate::daemon::verification::VerificationActivity::new();
+    let inflight = crate::daemon::lifecycle::InFlight::new(ctx.env().clone());
+    let mut path = None;
+    let result = crate::daemon::verification::integration_worker::reconcile_one_with(
+        &f.store,
+        ctx.env(),
+        &activity,
+        &inflight,
+        f.candidate.project,
+        &id,
+        |_service, query, deadline, cancellation| {
+            let native = crate::service::integration_recovery::landed_observation::fixture_landed(
+                query,
+                expected,
+                deadline,
+                cancellation.clone(),
+            )?;
+            path = Some(native.observation_path().to_path_buf());
+            std::fs::create_dir(native.observation_path().join(".git")).unwrap();
+            cancellation.cancel();
+            Ok(native)
+        },
+    );
+    let error = result.unwrap_err().to_string();
+    let path = path.expect("native observation was not created");
+    assert!(
+        error.contains("managed completion refused")
+            && error.contains("cleanup failed")
+            && error.contains(path.to_str().unwrap()),
+        "{error}"
+    );
+    assert_eq!(service.show(&id).unwrap(), before);
+    assert_eq!(
+        f.store.read(|tx| tx.landing_intents()).unwrap(),
+        [before.1.landing.unwrap()]
+    );
+    assert!(activity.active_for(f.candidate.project).is_none());
+    assert!(
+        path.join(".git").exists(),
+        "uncertain cleanup removed unexpected custody"
+    );
+    // Only this fixture created every path here; production keeps the residue.
+    std::fs::remove_dir_all(&path).unwrap();
+    proof.settle().unwrap();
+}
