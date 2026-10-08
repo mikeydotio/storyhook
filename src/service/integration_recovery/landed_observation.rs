@@ -70,6 +70,30 @@ impl NativeIntegrationLanded {
     }
 }
 
+// Owner tests substitute the remote landed observation, not filesystem
+// ownership or its lifetime/settlement implementation. The empty private
+// namespace does not claim real fetched Git closure/ancestry test coverage.
+#[cfg(test)]
+pub(super) fn fixture_landed(
+    query: IntegrationLandingObservation,
+    evidence: IntegrationLandedEvidence,
+    deadline: Instant,
+    cancellation: Cancellation,
+) -> Result<NativeIntegrationLanded, AppError> {
+    let head = &query.publication().commit;
+    if !full_oid(head) {
+        return Err(refuse("fixture retained head is not a full object ID"));
+    }
+    let private = PrivateFetch::fixture(if head.len() == 64 { "sha256" } else { "sha1" })?;
+    Ok(NativeIntegrationLanded {
+        query,
+        evidence,
+        private,
+        deadline,
+        cancellation,
+    })
+}
+
 /// Observe once under independent bounded control lifetime. The previous merge
 /// operation is never repeated, renewed or inferred from its durable intent.
 pub fn observe_landed_owned<S: Store>(

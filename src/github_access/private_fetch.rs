@@ -50,6 +50,13 @@ impl PrivateFetch {
         Self::create_at(Path::new("/tmp"), format.trim())
     }
 
+    /// Owner transaction fixtures replace remote object observation only; keep
+    /// real, newly allocated native directory/stamp/config custody and cleanup.
+    #[cfg(test)]
+    pub(crate) fn fixture(format: &str) -> Result<Self, AppError> {
+        Self::create_at(Path::new("/tmp"), format)
+    }
+
     fn create_at(parent: &Path, format: &str) -> Result<Self, AppError> {
         if !matches!(format, "sha1" | "sha256") {
             return Err(refuse("unsupported source object format"));
