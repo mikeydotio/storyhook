@@ -349,22 +349,211 @@ fn {me}_meets_{other}() {{
     )
 }
 
-/// Each binary's `test … ok|FAILED` lines, keyed by the `Running` line they
-/// follow, in the order the `Running` lines appeared.
+/// Independently recognize normal Cargo Rust source headers, including
+/// unittest and custom source paths, without treating parenthesized prose as a target.
+fn source_header_target(line: &str) -> Option<String> {
+    let header = line.strip_prefix("     Running ")?.strip_suffix(')')?;
+    if header.starts_with('`') {
+        return None;
+    }
+    let (source, _) = header.rsplit_once(" (")?;
+    let source = source.strip_prefix("unittests ").unwrap_or(source);
+    let quoted;
+    let source = if source.starts_with(['\'', '"']) {
+        quoted = shell_words::split(source).ok()?;
+        if quoted.len() != 1 {
+            return None;
+        }
+        &quoted[0]
+    } else {
+        source
+    };
+    Path::new(source.strip_suffix(".rs")?)
+        .file_name()?
+        .to_str()
+        .map(str::to_owned)
+}
+
+/// Each binary's cases, in the order its recognized Running header appeared.
 fn blocks(output: &str) -> Vec<(String, Vec<String>)> {
     let mut blocks: Vec<(String, Vec<String>)> = Vec::new();
+    let mut current = false;
     for line in output.lines() {
-        if let Some(rest) = line.strip_prefix("     Running tests/") {
-            let name = rest.split(".rs").next().unwrap_or(rest).to_string();
+        let previous = current;
+        if line.starts_with("     Running ") {
+            current = false;
+        }
+        if let Some(name) = source_header_target(line) {
             blocks.push((name, Vec::new()));
-        } else if (line.starts_with("test ")
-            && (line.ends_with(" ok") || line.ends_with(" FAILED")))
+            current = true;
+        } else if let Some(command) = line
+            .strip_prefix("     Running `")
+            .and_then(|command| command.strip_suffix('`'))
+        {
+            let Ok(args) = shell_words::split(command) else {
+                continue;
+            };
+            let mut args = args.as_slice();
+            while args.first().is_some_and(|arg| {
+                arg.split_once('=').is_some_and(|(key, _)| {
+                    !key.is_empty()
+                        && key.bytes().enumerate().all(|(index, byte)| {
+                            byte == b'_'
+                                || byte.is_ascii_alphabetic()
+                                || index > 0 && byte.is_ascii_digit()
+                        })
+                })
+            }) {
+                args = &args[1..];
+            }
+            let program = args.first().and_then(|arg| Path::new(arg).file_name());
+            if program == Some(std::ffi::OsStr::new("rustc-slot.py")) {
+                if args.get(1).and_then(|arg| Path::new(arg).file_name())
+                    == Some(std::ffi::OsStr::new("rustc"))
+                {
+                    current = previous;
+                }
+                continue;
+            }
+            if program == Some(std::ffi::OsStr::new("host-admit.py")) {
+                let compiler = args
+                    .get(1..4)
+                    .is_some_and(|prefix| prefix == ["--entry", "rustc", "--"]);
+                let test = args
+                    .get(1..4)
+                    .is_some_and(|prefix| prefix == ["--entry", "cargo-test-binary", "--"]);
+                if !compiler && !test {
+                    continue;
+                }
+                args = &args[4..];
+                if compiler
+                    && args.first().and_then(|arg| Path::new(arg).file_name())
+                        != Some(std::ffi::OsStr::new("rustc"))
+                {
+                    continue;
+                }
+            }
+            let Some(executable) = args.first().map(Path::new) else {
+                continue;
+            };
+            if executable.file_name() == Some(std::ffi::OsStr::new("rustc"))
+                || (executable.file_name() == Some(std::ffi::OsStr::new("build-script-build"))
+                    && executable
+                        .parent()
+                        .and_then(Path::parent)
+                        .and_then(Path::file_name)
+                        == Some(std::ffi::OsStr::new("build")))
+            {
+                current = previous;
+                continue;
+            }
+            if executable.parent().and_then(Path::file_name) != Some(std::ffi::OsStr::new("deps")) {
+                continue;
+            }
+            let Some((name, hash)) = executable
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.rsplit_once('-'))
+            else {
+                continue;
+            };
+            if hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                blocks.push((name.to_owned(), Vec::new()));
+                current = true;
+            }
+        } else if current
+            && (line.starts_with("test ") && (line.ends_with(" ok") || line.ends_with(" FAILED")))
             && let Some((_, cases)) = blocks.last_mut()
         {
             cases.push(line.to_string());
         }
     }
     blocks
+}
+
+#[test]
+fn pooled_output_blocks_preserve_order_for_normal_and_verbose_cargo_headers() {
+    let expected: Vec<(String, Vec<String>)> = vec![
+        ("alpha".into(), vec!["test alpha_case ... ok".into()]),
+        ("beta".into(), vec!["test beta_case ... FAILED".into()]),
+    ];
+    for headers in [
+        [
+            "     Running tests/alpha.rs (target/debug/deps/alpha-0123456789abcdef)",
+            "     Running tests/beta.rs (target/debug/deps/beta-fedcba9876543210)",
+        ],
+        [
+            "     Running unittests 'custom source/alpha.rs' (target/debug/deps/alpha-0123456789abcdef)",
+            "     Running \"checks/path (nested)/beta.rs\" (target/debug/deps/beta-fedcba9876543210)",
+        ],
+        [
+            "     Running custom source/alpha.rs (target/debug/deps/alpha-0123456789abcdef)",
+            "     Running checks/path (nested)/beta.rs (target/debug/deps/beta-fedcba9876543210)",
+        ],
+        [
+            "     Running `'/tmp/path with spaces/target/debug/deps/alpha-0123456789abcdef' --test-threads=1`",
+            "     Running `/tmp/target/debug/deps/beta-fedcba9876543210 --exact beta_case`",
+        ],
+        [
+            "     Running `/checkout/scripts/host-admit.py --entry cargo-test-binary -- /tmp/target/debug/deps/alpha-0123456789abcdef --test-threads=1`",
+            "     Running `/checkout/scripts/host-admit.py --entry cargo-test-binary -- /tmp/target/debug/deps/beta-fedcba9876543210 --test-threads=1`",
+        ],
+        [
+            "     Running `CARGO_MANIFEST_DIR='/tmp/source dir' /tmp/target/debug/deps/alpha-0123456789abcdef --test-threads=1`",
+            "     Running `RUST_BACKTRACE=1 /checkout/scripts/host-admit.py --entry cargo-test-binary -- /tmp/target/debug/deps/beta-fedcba9876543210 --test-threads=1`",
+        ],
+    ] {
+        let output = format!(
+            "     Running `rustc --crate-name alpha tests/alpha.rs --out-dir /tmp/target/debug/deps`\n  Executable `/tmp/target/debug/deps/alpha-0123456789abcdef`\n{}\ntest alpha_case ... ok\n{}\ntest beta_case ... FAILED\n",
+            headers[0], headers[1]
+        );
+        assert_eq!(blocks(&output), expected, "{output}");
+        let reordered = format!(
+            "{}\ntest beta_case ... FAILED\n{}\ntest alpha_case ... ok\n",
+            headers[1], headers[0]
+        );
+        assert_ne!(blocks(&reordered), expected, "order must remain observable");
+        let crossed = format!(
+            "{}\ntest beta_case ... FAILED\n{}\ntest alpha_case ... ok\n",
+            headers[0], headers[1]
+        );
+        assert_ne!(
+            blocks(&crossed),
+            expected,
+            "crossed case blocks must remain observable"
+        );
+        for unknown in [
+            "     Running `/tmp/target/debug/deps/stray-0123456789abcdef",
+            "     Running tests/incomplete.rs",
+            "     Running unknown command (opaque detail)",
+            "     Running `/checkout/scripts/rustc-slot.py /tmp/target/debug/deps/stray-0123456789abcdef`",
+            "     Running `/checkout/scripts/host-admit.py --entry rustc -- /tmp/target/debug/deps/stray-0123456789abcdef`",
+        ] {
+            let interrupted = format!(
+                "{}\ntest alpha_case ... ok\n{unknown}\ntest orphan ... FAILED\n{}\ntest beta_case ... FAILED\n",
+                headers[0], headers[1]
+            );
+            assert_eq!(blocks(&interrupted), expected, "{interrupted}");
+        }
+        for compiler in [
+            "rustc --crate-name nested src/lib.rs --out-dir /tmp/nested/target/debug/deps",
+            "CARGO_MANIFEST_DIR='/tmp/nested crate' /toolchain/bin/rustc --crate-name nested src/lib.rs",
+            "/checkout/scripts/rustc-slot.py /toolchain/bin/rustc --crate-name nested src/lib.rs",
+            "RUST_BACKTRACE=1 /checkout/scripts/rustc-slot.py /toolchain/bin/rustc --crate-name nested src/lib.rs",
+            "/checkout/scripts/host-admit.py --entry rustc -- /toolchain/bin/rustc --crate-name nested src/lib.rs",
+            "CARGO_MANIFEST_DIR='/tmp/nested crate' /checkout/scripts/host-admit.py --entry rustc -- /toolchain/bin/rustc --crate-name nested src/lib.rs",
+        ] {
+            let nested = format!(
+                "{}\n     Running `{compiler}`\ntest alpha_case ... ok\n{}\n     Running `/tmp/target/debug/build/pkg-0123456789abcdef/build-script-build`\ntest beta_case ... FAILED\n",
+                headers[0], headers[1]
+            );
+            assert_eq!(
+                blocks(&nested),
+                expected,
+                "nested build must preserve its parent block: {compiler}"
+            );
+        }
+    }
 }
 
 /// SH-783: with a thread budget the battery's binaries run at the same time,

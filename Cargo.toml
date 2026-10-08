@@ -147,6 +147,7 @@ insta = { workspace = true }
 predicates = { workspace = true }
 proptest = { workspace = true }
 serde_json = { workspace = true }
+shell-words = "1.1"
 storyhook-test-support = { path = "crates/storyhook-test-support" }
 # `tempfile` is a runtime dependency since SH-141; tests inherit it and do not
 # list it again.
