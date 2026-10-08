@@ -43,8 +43,10 @@ pub use owner::IntegrationRecoveryStatus;
 pub use owner::gate::{
     CertifiedIntegration, IntegrationCertificationEvidence, IntegrationGateClaim,
 };
-pub(crate) use owner::landing::validate_intent as validate_landing_intent;
 pub use owner::landing::{IntegrationLandingClaim, IntegrationLandingObservation};
+pub(crate) use owner::landing::{
+    local_effect_unsettled, validate_intent as validate_landing_intent,
+};
 pub use owner::publication::{
     AssembledIntegration, PublicationClaim, PublicationEffect, PublishedIntegration,
 };

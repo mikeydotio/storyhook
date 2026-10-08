@@ -108,6 +108,9 @@ pub struct IntegrationOwner {
     /// A potentially sent merge request; no error may clear it for replay.
     #[serde(default)]
     pub landing_started: bool,
+    /// True only after the exact native merge operation proved local effect drain.
+    #[serde(default)]
+    pub landing_settled: bool,
     /// Retained actual remote landing evidence; JSON grants no completion capability.
     #[serde(default)]
     pub landed: Option<IntegrationLandedEvidence>,
@@ -260,7 +263,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
                 started_at: attempt.admitted_at, reserved_at: now.clone(), updated_at: now.clone(),
                 label_revision: crate::service::project_recovery::recovery_label_revision(tx, candidate.project, story)?,
                 control_revision, phase: IntegrationPhase::Reserved, effect_epoch: 0, effect_started_at: None, hold: None, retained_branch: None,
-                assembly: None, publication_effects: Vec::new(), publication: None, gate_attempt: None, gate_inputs: None, gate: None, landing: None, landing_started: false, landed: None,
+                assembly: None, publication_effects: Vec::new(), publication: None, gate_attempt: None, gate_inputs: None, gate: None, landing: None, landing_started: false, landing_settled: false, landed: None,
             };
             let record = IntegrationRecovery { id, project: candidate.project, story, generation: candidate.verifying_generation.ok_or_else(|| invalid("submission has no generation"))?, revision: 0, active: true, state: encode(&state)? };
             decode(&record)?;
@@ -659,7 +662,11 @@ pub(crate) fn status_snapshot(
             ),
             IntegrationPhase::Landing => (
                 "landing",
-                "Observe the exact managed merge intent after any uncertainty; never repeat a request or mark the original PR merged from ancestry alone.",
+                if state.landing_started && !state.landing_settled {
+                    "Local effect settlement is unproved; retain registry, central admission hold and private assembly. Remote merge evidence cannot release this custody."
+                } else {
+                    "Observe the exact managed merge intent after any uncertainty; never repeat a request or mark the original PR merged from ancestry alone."
+                },
             ),
             IntegrationPhase::Landed => (
                 "landed",

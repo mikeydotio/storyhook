@@ -268,6 +268,7 @@ impl OwnedProcesses {
             registry: self,
             process_group,
             start_time: entry.start_time,
+            retain_unsettled: false,
         })
     }
 
@@ -290,13 +291,25 @@ impl OwnedProcesses {
 
 /// RAII ownership of one durable daemon child-process record.
 pub struct OwnedProcessRegistration<'a> {
+    retain_unsettled: bool,
     registry: &'a OwnedProcesses,
     process_group: u32,
     start_time: Option<String>,
 }
 
+impl crate::process::OwnedCaptureRegistration for OwnedProcessRegistration<'_> {
+    fn retain_unsettled(mut self) {
+        // Keep the original incarnation-scoped row as unresolved evidence.
+        // Recovery must still establish fresh identity before any signal.
+        self.retain_unsettled = true;
+    }
+}
+
 impl Drop for OwnedProcessRegistration<'_> {
     fn drop(&mut self) {
+        if self.retain_unsettled {
+            return;
+        }
         self.registry
             .unregister(self.process_group, self.start_time.as_deref());
     }
@@ -3523,6 +3536,49 @@ pub fn describe_paths(env: &Environment) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sh871_unsettled_capture_preserves_actual_registry_row() {
+        use crate::process::{CaptureError, CaptureFailure, finish_owned_capture};
+        for unsettled in [true, false] {
+            let dir = scratch();
+            let env = Environment::at(dir.path());
+            std::fs::create_dir_all(env.daemon_state_dir()).unwrap();
+            let entry = OwnedProcess {
+                role: "verifier".into(),
+                pid: 12345,
+                process_group: 12345,
+                start_time: Some("fixture-incarnation".into()),
+                request_id: Some("owned-effect".into()),
+            };
+            // Synthetic retained identity, never a process or signal target.
+            write_owned_processes(&env, [&entry]).unwrap();
+            let registry = OwnedProcesses::new(env.clone());
+            let registration = OwnedProcessRegistration {
+                registry: &registry,
+                process_group: entry.process_group,
+                start_time: entry.start_time.clone(),
+                retain_unsettled: false,
+            };
+            let error = if unsettled {
+                CaptureError::Unsettled(
+                    "original deadline exhausted; group12345 remains unproved".into(),
+                )
+            } else {
+                CaptureError::Cancelled
+            };
+            let result = finish_owned_capture(Err(CaptureFailure::from(error)), Some(registration));
+            assert!(result.is_err());
+            let retained = read_owned_processes(&env);
+            assert_eq!(retained.len(), usize::from(unsettled));
+            if unsettled {
+                assert_eq!(retained[0].process_group, entry.process_group);
+                assert_eq!(retained[0].start_time, entry.start_time);
+                assert_eq!(retained[0].request_id, entry.request_id);
+                assert_eq!(OwnedProcesses::new(env).entries.lock().unwrap().len(), 1);
+            }
+        }
+    }
+
     use super::*;
     use crate::env::Environment;
 

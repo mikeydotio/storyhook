@@ -264,7 +264,10 @@ impl VerificationActivity {
             return Ok(None);
         }
         let mut slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
-        if managed && slots.contains_key(&candidate.project) {
+        if slots
+            .get(&candidate.project)
+            .is_some_and(|slot| managed || slot.local_effect_unsettled)
+        {
             return Ok(None);
         }
         let origin = Instant::now();
@@ -284,7 +287,10 @@ impl VerificationActivity {
                     .any(|intent| intent.project == candidate.project && intent.story == no);
             let managed_current = reservation != Some(ReservationReason::Integration)
                 || crate::service::integration_recovery::candidate_permitted(tx, candidate)?;
-            let allowed = managed_current
+            let allowed = !crate::service::integration_recovery::local_effect_unsettled(
+                tx,
+                candidate.project,
+            )? && managed_current
                 && (settling_owned_effect || !crate::service::host_recovery::blocks_admission(tx)?)
                 && crate::service::verification::human::permits(tx, candidate)?
                 && !tx.story_resets(candidate.project)?.contains_key(&no)

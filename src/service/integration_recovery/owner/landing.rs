@@ -208,6 +208,39 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
         }
     }
 
+    /// Record native local settlement independently of remote landing. This
+    /// cannot renew a request and remains recordable after cancellation.
+    pub(crate) fn record_landing_settlement(
+        &self,
+        claim: &mut IntegrationLandingClaim,
+        outcome: &crate::daemon::verification::ManagedLandingOutcome,
+    ) -> Result<bool, AppError> {
+        if !outcome.proves_settlement(claim) {
+            return Ok(false);
+        }
+        let changed = self.ctx.store().write(|tx| {
+            let (mut record, mut state) = find(tx, self.ctx.project(), claim.id())?;
+            if record != claim.record
+                || state != claim.owner
+                || state.phase != IntegrationPhase::Landing
+                || !state.landing_started
+                || !tx.landing_intents()?.contains(claim.intent())
+            {
+                return Ok(None);
+            }
+            state.landing_settled = true;
+            save(tx, &mut record, &state)?;
+            Ok(Some((record, state)))
+        })?;
+        if let Some((record, owner)) = changed {
+            claim.record = record;
+            claim.owner = owner;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     /// Before any new native merge effect, recheck the exact opaque/durable
     /// owner and original revocation fences. No JSON intent grants a retry.
     pub(crate) fn landing_permitted(
@@ -256,6 +289,7 @@ pub(super) fn validate_state(
             state.phase,
             IntegrationPhase::Landing | IntegrationPhase::Landed
         ) && state.landing_started)
+        || (state.landing_settled && !state.landing_started)
     {
         return Err(invalid(
             "integration landing phase has inconsistent intent custody",
@@ -299,8 +333,8 @@ pub(super) fn validate_state(
     }
     if let Some(evidence) = &state.landed {
         validate_landed(state, record, evidence)?;
-        if !state.landing_started {
-            return Err(invalid("landed owner never retained a merge intent"));
+        if !state.landing_started || !state.landing_settled {
+            return Err(invalid("landed owner lacks proven local effect settlement"));
         }
     }
     Ok(())
@@ -391,6 +425,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
         let (record, owner) = self.ctx.store().read(|tx| {
             observation_live(deadline, cancellation).map_err(StoreError::from)?;
             let (record, owner) = find(tx, self.ctx.project(), id)?;
+            if !owner.landing_settled { return Err(invalid("managed landing local effect settlement is unproved; retained owner blocks restart observation and completion")); }
             let intent = owner
                 .landing
                 .as_ref()
@@ -427,7 +462,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
                     return Ok(false);
                 }
                 let (record, state) = find(tx, self.ctx.project(), query.id())?;
-                if record != query.record || state != query.owner {
+                if record != query.record || state != query.owner || !state.landing_settled {
                     return Ok(false);
                 }
                 crate::store::landing::validate_intent(tx, query.intent())?;
@@ -513,7 +548,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
             native.validate_lifetime().map_err(StoreError::from)?;
             let (mut record,mut state)=find(tx,self.ctx.project(),query.id())?;
             if record!=query.record || state!=query.owner || !record.active
-                || state.phase!=IntegrationPhase::Landing || !state.landing_started {
+                || state.phase!=IntegrationPhase::Landing || !state.landing_started || !state.landing_settled {
                 return Ok(false);
             }
             crate::store::landing::validate_intent(tx,query.intent())?;
@@ -547,4 +582,25 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
             Ok(true)
         }).map_err(Into::into)
     }
+}
+
+/// Persisted local uncertainty fences every new central admission after restart.
+/// A remote merged fact alone can never clear this custody hold.
+pub(crate) fn local_effect_unsettled(
+    tx: &impl ReadOps,
+    project: crate::store::ProjectId,
+) -> Result<bool, StoreError> {
+    for record in tx.integration_recoveries(project)? {
+        if !record.active {
+            continue;
+        }
+        let state = decode(&record)?;
+        if state.phase == IntegrationPhase::Landing
+            && state.landing_started
+            && !state.landing_settled
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

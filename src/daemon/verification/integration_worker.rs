@@ -459,6 +459,18 @@ pub(crate) fn run_with_native<S: Store>(
             || service.landing_permitted(&landing),
             || actuator.land_integration(&landing),
         );
+        if !outcome.proves_settlement(&landing) {
+            active.retain_unsettled();
+            return Err(AppError::Storage(format!(
+                "managed landing local effect settlement is unproved; retained central slot, registry and assembly; observed {:?}",
+                outcome.outcome()
+            )));
+        }
+        if !service.record_landing_settlement(&mut landing, &outcome)? {
+            return Err(AppError::Storage(
+                "managed landing settlement receipt lost exact durable owner".into(),
+            ));
+        }
         // No helper JSON, including Merged, is completion authority. Only a
         // fresh actual remote/Git proof may complete the original submission.
         if !current? {

@@ -154,6 +154,7 @@ pub struct VerificationActivity {
 }
 
 struct VerificationSlot {
+    local_effect_unsettled: bool,
     candidate: VerificationCandidate,
     workspace: Option<Arc<crate::service::workspace_lock::WorkspaceLock>>,
     active: ActiveVerification,
@@ -349,6 +350,7 @@ impl VerificationActivity {
         slots.insert(
             candidate.project,
             VerificationSlot {
+                local_effect_unsettled: false,
                 candidate: candidate.clone(),
                 workspace: None,
                 active: active.clone(),
@@ -364,6 +366,7 @@ impl VerificationActivity {
             active,
             cancellation,
             recovery_request_id: None,
+            retain_unsettled: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -376,10 +379,17 @@ pub struct VerificationGuard {
     active: ActiveVerification,
     cancellation: Cancellation,
     recovery_request_id: Option<String>,
+    retain_unsettled: std::sync::atomic::AtomicBool,
 }
 
 impl Drop for VerificationGuard {
     fn drop(&mut self) {
+        if self
+            .retain_unsettled
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
         let mut slots = self
             .registry
             .active
@@ -393,6 +403,24 @@ impl Drop for VerificationGuard {
 }
 
 impl VerificationGuard {
+    /// Keep the exact central slot occupied when native effect drain is unknown.
+    pub(crate) fn retain_unsettled(&self) {
+        self.retain_unsettled
+            .store(true, std::sync::atomic::Ordering::Release);
+        let mut slots = self
+            .registry
+            .active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(slot) = slots
+            .get_mut(&self.active.project)
+            .filter(|slot| slot.active == self.active)
+        {
+            slot.local_effect_unsettled = true;
+        }
+        self.cancellation.cancel();
+    }
+
     /// Whether an operator has irreversibly cancelled this owned attempt.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
@@ -586,6 +614,52 @@ pub enum VerificationOutcome {
     },
 }
 
+/// Native local settlement accompanies the helper's remote observation. Neither
+/// helper JSON nor a saved receipt can construct this effect-drain authority.
+#[derive(Debug)]
+pub struct ManagedLandingOutcome {
+    outcome: LandingOutcome,
+    settled: bool,
+    owner: String,
+    intent: String,
+    epoch: u32,
+}
+impl ManagedLandingOutcome {
+    fn new(
+        claim: &crate::service::integration_recovery::IntegrationLandingClaim,
+        outcome: LandingOutcome,
+        settled: bool,
+    ) -> Self {
+        Self {
+            outcome,
+            settled,
+            owner: claim.id().into(),
+            intent: claim.intent().id.clone(),
+            epoch: claim.epoch(),
+        }
+    }
+    pub(crate) fn proves_settlement(
+        &self,
+        claim: &crate::service::integration_recovery::IntegrationLandingClaim,
+    ) -> bool {
+        self.settled
+            && self.owner == claim.id()
+            && self.intent == claim.intent().id
+            && self.epoch == claim.epoch()
+    }
+    #[cfg(test)]
+    pub(crate) fn fixture(
+        claim: &crate::service::integration_recovery::IntegrationLandingClaim,
+        outcome: LandingOutcome,
+        settled: bool,
+    ) -> Self {
+        Self::new(claim, outcome, settled)
+    }
+    pub(crate) fn outcome(&self) -> &LandingOutcome {
+        &self.outcome
+    }
+}
+
 /// External outcome of one durably admitted merge attempt.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case")]
@@ -767,11 +841,15 @@ pub trait VerificationActuator: Send + Sync {
     /// A separately owned, one-shot managed merge; ordinary adapters refuse.
     fn land_integration(
         &self,
-        _claim: &crate::service::integration_recovery::IntegrationLandingClaim,
-    ) -> LandingOutcome {
-        LandingOutcome::Uncertain {
-            detail: "this adapter cannot land managed integration authority".into(),
-        }
+        claim: &crate::service::integration_recovery::IntegrationLandingClaim,
+    ) -> ManagedLandingOutcome {
+        ManagedLandingOutcome::new(
+            claim,
+            LandingOutcome::Uncertain {
+                detail: "this adapter cannot land managed integration authority".into(),
+            },
+            true,
+        )
     }
     /// Observes an uncertain attempt without sending another merge request.
     fn recover_landing(
@@ -1068,7 +1146,7 @@ impl ShellVerificationActuator {
                 detail: error.to_string(),
             };
         }
-        self.run_landing_target(candidate, intent, recover, None)
+        self.run_landing_target(candidate, intent, recover, None).0
     }
 
     fn run_landing_target(
@@ -1077,7 +1155,8 @@ impl ShellVerificationActuator {
         intent: &crate::store::LandingIntent,
         recover: bool,
         managed_owner: Option<&managed_landing::Operation<'_>>,
-    ) -> LandingOutcome {
+    ) -> (LandingOutcome, bool) {
+        let settled = std::cell::Cell::new(true);
         let _log = self.log_scope(candidate);
         let run = || -> Result<LandingOutcome, AppError> {
             let link = candidate
@@ -1156,6 +1235,9 @@ impl ShellVerificationActuator {
                     },
                 )
                 .map_err(|error| {
+                    if matches!(&error, crate::process::CaptureError::Unsettled(_)) {
+                        settled.set(false);
+                    }
                     AppError::Storage(format!(
                         "managed landing did not conclusively settle: {}",
                         error.detail()
@@ -1211,9 +1293,10 @@ impl ShellVerificationActuator {
                 ))
             })
         };
-        run().unwrap_or_else(|error| LandingOutcome::Uncertain {
+        let outcome = run().unwrap_or_else(|error| LandingOutcome::Uncertain {
             detail: error.to_string(),
-        })
+        });
+        (outcome, settled.get())
     }
 
     fn helper_path(&self) -> Result<PathBuf, AppError> {
@@ -2028,15 +2111,19 @@ impl VerificationActuator for ShellVerificationActuator {
     fn land_integration(
         &self,
         claim: &crate::service::integration_recovery::IntegrationLandingClaim,
-    ) -> LandingOutcome {
-        match managed_landing::Operation::new(&self.activity, claim) {
+    ) -> ManagedLandingOutcome {
+        let (outcome, settled) = match managed_landing::Operation::new(&self.activity, claim) {
             Ok(owner) => {
                 self.run_landing_target(claim.candidate(), claim.intent(), false, Some(&owner))
             }
-            Err(error) => LandingOutcome::Uncertain {
-                detail: error.to_string(),
-            },
-        }
+            Err(error) => (
+                LandingOutcome::Uncertain {
+                    detail: error.to_string(),
+                },
+                true,
+            ),
+        };
+        ManagedLandingOutcome::new(claim, outcome, settled)
     }
 
     fn current_pr_head(&self, candidate: &VerificationCandidate) -> Result<String, AppError> {

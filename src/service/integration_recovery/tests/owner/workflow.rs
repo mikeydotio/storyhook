@@ -6,8 +6,8 @@ use crate::daemon::{
     bus::ChangeBus,
     lifecycle::InFlight,
     verification::{
-        self, LandingOutcome, NotifyDelivery, ResumePlan, SubmissionFailure, VerificationActivity,
-        VerificationActuator, VerificationOutcome, integration_worker,
+        self, LandingOutcome, ManagedLandingOutcome, NotifyDelivery, ResumePlan, SubmissionFailure,
+        VerificationActivity, VerificationActuator, VerificationOutcome, integration_worker,
     },
 };
 use crate::domain::landing::SubmissionOutcome;
@@ -28,11 +28,13 @@ enum Mode {
     ChangedInputs,
     CancelGate,
     MergeUncertain,
+    LocalUnsettled,
 }
 #[derive(Default)]
 struct Observed {
     gate_calls: usize,
     merge_calls: usize,
+    landed_reads: usize,
     input_reads: usize,
     merged: bool,
     roots: Vec<std::path::PathBuf>,
@@ -134,6 +136,7 @@ impl integration_worker::native::NativeOperations for Native<'_> {
         let mut state = self.state.lock().unwrap();
         assert!(self.activity.active_for(q.candidate().project).is_some());
         state.slots_during_effects += 1;
+        state.landed_reads += 1;
         if !state.merged {
             return Err(AppError::Validation(
                 "remote fixture has no native merged fact".into(),
@@ -371,7 +374,7 @@ assert mode!='fail','fixture requested a real failing gate'
             },
         }
     }
-    fn land_integration(&self, c: &IntegrationLandingClaim) -> LandingOutcome {
+    fn land_integration(&self, c: &IntegrationLandingClaim) -> ManagedLandingOutcome {
         assert!(self.activity.active_for(c.candidate().project).is_some());
         assert!(c.take_request().unwrap());
         assert!(!c.take_request().unwrap());
@@ -379,14 +382,22 @@ assert mode!='fail','fixture requested a real failing gate'
         state.merge_calls += 1;
         state.slots_during_effects += 1;
         if self.mode == Mode::MergeUncertain {
-            return LandingOutcome::Uncertain {
-                detail: "remote reply lost; no merged fact".into(),
-            };
+            return ManagedLandingOutcome::fixture(
+                c,
+                LandingOutcome::Uncertain {
+                    detail: "remote reply lost; no merged fact".into(),
+                },
+                true,
+            );
         }
         state.merged = true;
-        LandingOutcome::Merged {
-            detail: "fixture remote accepted managed PR".into(),
-        }
+        ManagedLandingOutcome::fixture(
+            c,
+            LandingOutcome::Merged {
+                detail: "fixture remote accepted managed PR".into(),
+            },
+            self.mode != Mode::LocalUnsettled,
+        )
     }
 }
 
@@ -431,10 +442,33 @@ fn run(
         &subject,
         &native,
     );
-    assert!(
-        activity.active_for(f.candidate.project).is_none(),
-        "central slot escaped worker return"
-    );
+    if mode == Mode::LocalUnsettled {
+        assert!(
+            activity.active_for(f.candidate.project).is_some(),
+            "unsettled effect lost exact central slot"
+        );
+        let retried = integration_worker::run_observed_fixture(
+            &f.store,
+            ctx.env(),
+            &ChangeBus::new(),
+            &actuator,
+            &activity,
+            &InFlight::new(ctx.env().clone()),
+            &subject,
+            &native,
+        )
+        .unwrap();
+        assert_eq!(
+            retried,
+            verification::TickResult::Stopped,
+            "unsettled effect admitted another worker"
+        );
+    } else {
+        assert!(
+            activity.active_for(f.candidate.project).is_none(),
+            "known-settled worker leaked central capacity"
+        );
+    }
     drop(native);
     drop(actuator);
     drop(ctx);
@@ -676,4 +710,53 @@ fn managed_worker_unknown_remote_effects_retain_identity_without_republication_o
             "cached original subject replayed a remote effect after restart"
         );
     }
+}
+
+#[test]
+fn managed_worker_unsettled_local_merge_retains_slot_intent_and_assembly_even_if_remote_merged() {
+    // No unresolved native child is spawned: only the typed local-drain result
+    // is substituted. Assembly, gate process/accounting and worker CAS are real.
+    let (f, result, state, _) = run(Mode::LocalUnsettled, Fault::None);
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("local effect settlement is unproved")
+    );
+    let state = state.lock().unwrap();
+    assert_eq!(state.gate_calls, 1);
+    assert_eq!(state.merge_calls, 1);
+    assert!(
+        state.merged,
+        "negative control never reached accepted remote merge"
+    );
+    assert_eq!(
+        state.landed_reads, 0,
+        "remote proof bypassed unresolved local custody"
+    );
+    let records = f
+        .store
+        .read(|tx| tx.integration_recoveries(f.candidate.project))
+        .unwrap();
+    let record = records.iter().find(|record| record.active).unwrap();
+    let owner: IntegrationOwner = serde_json::from_value(record.state.clone()).unwrap();
+    assert_eq!(owner.phase, IntegrationPhase::Landing);
+    assert!(owner.landing_started);
+    assert!(!owner.landing_settled);
+    assert!(owner.landed.is_none());
+    assert!(
+        owner.assembly.as_ref().unwrap().workspace.path.exists(),
+        "unsettled effect's assembly was deleted"
+    );
+    assert_eq!(f.store.read(|tx| tx.landing_intents()).unwrap().len(), 1);
+    assert!(
+        f.store
+            .read(
+                |tx| crate::service::integration_recovery::local_effect_unsettled(
+                    tx,
+                    f.candidate.project
+                )
+            )
+            .unwrap()
+    );
 }

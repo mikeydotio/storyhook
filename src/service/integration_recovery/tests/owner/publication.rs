@@ -949,6 +949,7 @@ fn managed_landing_restart_mints_only_fresh_read_only_observation() {
     let service = IntegrationOwnerService::new(&ctx);
     let mut claim = service.claim_landing(ready, &proof).unwrap().unwrap();
     assert!(service.claim_landing_effect(&mut claim).unwrap());
+    record_fixture_settlement(&service, &mut claim);
     let id = claim.id().to_string();
     let before = service.show(&id).unwrap();
     proof.cancellation.cancel();
@@ -980,7 +981,10 @@ fn managed_landing_restart_mints_only_fresh_read_only_observation() {
     fresh.cancel();
     assert!(restarted.landing_observation_permitted(&query).is_err());
     assert_eq!(restarted.show(&id).unwrap(), before);
-    proof.settle().unwrap();
+    assert!(
+        proof.settle().is_err(),
+        "cancelled proof retained its lifetime refusal"
+    );
 }
 
 #[test]
@@ -1032,7 +1036,7 @@ fn managed_native_landing_refuses_missing_central_guard_before_consuming_request
     .with_activity(activity);
     let outcome = adapter.land_integration(&claim);
     assert!(
-        matches!(outcome, LandingOutcome::Uncertain { ref detail } if detail.contains("no central guard")),
+        matches!(outcome.outcome(), LandingOutcome::Uncertain { detail } if detail.contains("no central guard")),
         "{outcome:?}"
     );
     assert!(
@@ -1052,6 +1056,7 @@ fn landed_proof(
     let service = IntegrationOwnerService::new(&ctx);
     let mut claim = service.claim_landing(ready, proof).unwrap().unwrap();
     assert!(service.claim_landing_effect(&mut claim).unwrap());
+    record_fixture_settlement(&service, &mut claim);
     let cancellation = Cancellation::default();
     let query = service
         .observe_landing(claim.id(), proof.deadline, &cancellation)
@@ -1560,4 +1565,167 @@ fn retained_branch_diagnostic_cannot_replace_owner_custody_or_claim_landing() {
         .unwrap();
     assert_eq!(status[0].retained_branch, Some(observed));
     proof.settle().unwrap();
+}
+
+// Substitute only native local drain. Real owner CAS, intent and completion
+// remain in production; no process is spawned by this fixture receipt.
+fn record_fixture_settlement<S: Store>(
+    service: &IntegrationOwnerService<'_, S>,
+    claim: &mut IntegrationLandingClaim,
+) {
+    let result = crate::daemon::verification::ManagedLandingOutcome::fixture(
+        claim,
+        crate::daemon::verification::LandingOutcome::Uncertain {
+            detail: "fixture local group settled; remote state unknown".into(),
+        },
+        true,
+    );
+    assert!(service.record_landing_settlement(claim, &result).unwrap());
+}
+
+#[test]
+fn managed_landing_unsettled_and_legacy_receipts_block_restart_and_readmission() {
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let ready = certified(&f, &proof);
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let mut claim = service.claim_landing(ready, &proof).unwrap().unwrap();
+    assert!(service.claim_landing_effect(&mut claim).unwrap());
+    let result = crate::daemon::verification::ManagedLandingOutcome::fixture(
+        &claim,
+        crate::daemon::verification::LandingOutcome::Merged {
+            detail: "remote merge cannot prove local settlement".into(),
+        },
+        false,
+    );
+    assert!(
+        !service
+            .record_landing_settlement(&mut claim, &result)
+            .unwrap()
+    );
+    let before = service.show(claim.id()).unwrap();
+    assert!(!before.1.landing_settled);
+    let mut legacy = serde_json::to_value(&before.1).unwrap();
+    legacy.as_object_mut().unwrap().remove("landing_settled");
+    let old: IntegrationOwner = serde_json::from_value(legacy).unwrap();
+    assert!(
+        !old.landing_settled,
+        "older owner silently gained settlement authority"
+    );
+    let reopened = SqliteStore::open(f.store.path()).unwrap();
+    let context = Ctx::new(
+        &reopened,
+        f.candidate.project,
+        f.candidate.checkout.clone(),
+        ctx.env().clone(),
+    )
+    .no_hooks(true);
+    let restarted = IntegrationOwnerService::new(&context);
+    let error = restarted
+        .observe_landing(claim.id(), proof.deadline, &Cancellation::default())
+        .err()
+        .expect("unsettled restart acquired native observation");
+    assert!(
+        error
+            .to_string()
+            .contains("local effect settlement is unproved")
+    );
+    assert!(
+        reopened
+            .read(
+                |tx| crate::service::integration_recovery::local_effect_unsettled(
+                    tx,
+                    f.candidate.project
+                )
+            )
+            .unwrap()
+    );
+    let restarted_activity = crate::daemon::verification::VerificationActivity::new();
+    let retry = crate::daemon::verification::integration_worker::reconcile_one_with(
+        &reopened,
+        context.env(),
+        &restarted_activity,
+        &crate::daemon::lifecycle::InFlight::new(context.env().clone()),
+        f.candidate.project,
+        claim.id(),
+        |_, _, _, _| panic!("restart entered remote observation without local drain proof"),
+    )
+    .unwrap();
+    assert_eq!(retry, crate::daemon::verification::TickResult::Stopped);
+    assert!(restarted_activity.active_for(f.candidate.project).is_none());
+    assert_eq!(restarted.show(claim.id()).unwrap(), before);
+    assert_eq!(
+        reopened.read(|tx| tx.landing_intents()).unwrap(),
+        [claim.intent().clone()]
+    );
+    assert!(!service.claim_landing_effect(&mut claim).unwrap());
+    proof.settle().unwrap();
+}
+
+#[test]
+fn managed_landing_local_settlement_receipt_is_bound_to_exact_owner() {
+    let first = OwnedFixture::new(true);
+    let second = OwnedFixture::new(true);
+    let first_proof = proof(&first);
+    let second_proof = proof(&second);
+    let first_ready = certified(&first, &first_proof);
+    let second_ready = certified(&second, &second_proof);
+    let first_ctx = first.ctx();
+    let second_ctx = second.ctx();
+    let first_service = IntegrationOwnerService::new(&first_ctx);
+    let second_service = IntegrationOwnerService::new(&second_ctx);
+    let mut first_claim = first_service
+        .claim_landing(first_ready, &first_proof)
+        .unwrap()
+        .unwrap();
+    let mut second_claim = second_service
+        .claim_landing(second_ready, &second_proof)
+        .unwrap()
+        .unwrap();
+    assert!(
+        first_service
+            .claim_landing_effect(&mut first_claim)
+            .unwrap()
+    );
+    assert!(
+        second_service
+            .claim_landing_effect(&mut second_claim)
+            .unwrap()
+    );
+    let before = second_service.show(second_claim.id()).unwrap();
+    let receipt = crate::daemon::verification::ManagedLandingOutcome::fixture(
+        &first_claim,
+        crate::daemon::verification::LandingOutcome::Uncertain {
+            detail: "first native effect drained".into(),
+        },
+        true,
+    );
+    assert!(
+        !second_service
+            .record_landing_settlement(&mut second_claim, &receipt)
+            .unwrap()
+    );
+    assert_eq!(second_service.show(second_claim.id()).unwrap(), before);
+    assert!(
+        first_service
+            .record_landing_settlement(&mut first_claim, &receipt)
+            .unwrap()
+    );
+    assert!(
+        first_service
+            .show(first_claim.id())
+            .unwrap()
+            .1
+            .landing_settled
+    );
+    assert!(
+        !second_service
+            .show(second_claim.id())
+            .unwrap()
+            .1
+            .landing_settled
+    );
+    first_proof.settle().unwrap();
+    second_proof.settle().unwrap();
 }
