@@ -238,8 +238,8 @@ button { cursor: pointer; }
    only the double-tap gesture, on the things you tap to *act* -- never on
    `body`, because double-tapping to zoom the board's own text is a gesture
    the reader is entitled to. Safe alongside the board's drag-and-drop:
-   that is HTML5 native dnd (`card.draggable` + `dragstart`), which does
-   not fire on touch at all. Setting it on the two <label> wrappers covers
+   desktop uses HTML5 native dnd; touch uses a held gesture (SH-893)
+   that cancels scrolling only after activation. Setting it on the two <label> wrappers covers
    the checkboxes inside them, since the effective value is the
    intersection over an element and its ancestors. */
 button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-option, .filter-toggle, .pref-toggle { touch-action: manipulation; }
@@ -704,6 +704,15 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
   background: var(--bg-raised); border: 1px solid var(--border); border-left: 3px solid var(--card-accent, var(--border));
   border-radius: var(--radius-sm); padding: var(--space-card); cursor: grab; box-shadow: var(--shadow-sm);
   transition: transform 0.12s, box-shadow 0.12s, opacity 0.12s;
+}
+/* A card is a control. Prevent iOS selection/callouts without disabling
+   panning: immediate swipes still scroll; only a held drag cancels touchmove. */
+.card, .card * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.touch-drag-preview {
+  position: fixed; z-index: 1000; pointer-events: none; max-width: 16rem;
+  padding: var(--space-card); border: 2px solid var(--accent); border-radius: var(--radius-sm);
+  background: var(--bg-raised); color: var(--fg); box-shadow: var(--shadow-md);
+  overflow-wrap: anywhere; transform: translate(-50%, -115%);
 }
 .card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
 .card.dragging { opacity: 0.4; transform: scale(0.97) rotate(-1deg); }
@@ -3558,6 +3567,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function clearBoardRows() {
+    cancelTouchDrag();
     boardPages = Object.create(null);
     if (state.data) {
       state.data.stories = [];
@@ -10477,6 +10487,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var card = el("div", { class: "card", dataset: { id: id }, role: "button", tabIndex: -1 }, []);
     card.addEventListener("click", function() { openDrawer(id); });
     card.addEventListener("dragstart", function(e) {
+      if (touchDrag) { e.preventDefault(); return; }
       card.classList.add("dragging");
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", id);
@@ -10489,6 +10500,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // this card was first built, not what it looks like now.
     card.addEventListener("contextmenu", function(e) {
       e.preventDefault();
+      if (touchDrag) return;
       var current = findStory(id);
       if (current) openStoryMenu(e, current, card);
     });
@@ -10745,6 +10757,150 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     while (next.firstChild) card.appendChild(next.firstChild);
   }
 
+
+  // SH-893: a short stationary hold picks up a card. Before that threshold,
+  // do not cancel any event: a tap opens details and a swipe pans the board.
+  // Touch events are used here because cancelling a touchmove after the hold
+  // preserves native scrolling; pointer touch-action is fixed at pointerdown.
+  var TOUCH_DRAG_HOLD_MS = 250;
+  var TOUCH_DRAG_SLOP_PX = 8;
+  var touchDrag = null;
+  var touchClickGuard = null;
+
+  function validTouchDrag(drag) {
+    var current = findStory(drag.id);
+    return state.screen === "repo" && state.view === "board" && state.repoId === drag.repo &&
+      boardEpoch === drag.epoch && drag.card.isConnected && drag.card.draggable &&
+      !state.pending[drag.id] && current &&
+      (current.display_state || current.story.state) === drag.origin;
+  }
+
+  function cancelTouchDrag() {
+    var drag = touchDrag;
+    if (!drag) return;
+    touchDrag = null;
+    clearTimeout(drag.timer);
+    cancelAnimationFrame(drag.frame);
+    drag.card.classList.remove("dragging");
+    if (drag.column) drag.column.classList.remove("drag-over");
+    if (drag.preview) drag.preview.remove();
+    if (drag.active) touchClickGuard = { id: drag.id, repo: drag.repo, until: Date.now() + 800 };
+  }
+
+  function touchDragColumn(drag) {
+    var target = document.elementFromPoint(drag.x, drag.y);
+    var column = target && target.closest(".column[data-state]");
+    return column && $("board-view").contains(column) ? column : null;
+  }
+
+  function paintTouchDrag() {
+    var drag = touchDrag;
+    if (!drag || !drag.active) return;
+    if (!validTouchDrag(drag)) { cancelTouchDrag(); return; }
+    drag.preview.style.left = drag.x + "px";
+    drag.preview.style.top = drag.y + "px";
+    var board = $("board-view"), rect = board.getBoundingClientRect();
+    // Bounded pixels per second, independent of screen refresh rate. The
+    // edge zone scrolls the board while the finger stays down, making every
+    // visible column reachable on a narrow viewport without a second finger.
+    var now = performance.now(), dt = Math.min(32, now - drag.lastFrame) / 1000;
+    drag.lastFrame = now;
+    var edge = 44, speed = 600;
+    if (drag.y >= rect.top && drag.y <= rect.bottom) {
+      if (drag.x >= rect.left && drag.x < rect.left + edge) board.scrollLeft -= speed * dt;
+      else if (drag.x <= rect.right && drag.x > rect.right - edge) board.scrollLeft += speed * dt;
+    }
+    var column = touchDragColumn(drag);
+    if (column !== drag.column) {
+      if (drag.column) drag.column.classList.remove("drag-over");
+      drag.column = column;
+      if (column) column.classList.add("drag-over");
+    }
+    if (column) {
+      var cards = column.querySelector(".column-cards"), bounds = cards.getBoundingClientRect();
+      if (drag.y >= bounds.top && drag.y < bounds.top + edge) cards.scrollTop -= speed * dt;
+      else if (drag.y <= bounds.bottom && drag.y > bounds.bottom - edge) cards.scrollTop += speed * dt;
+    }
+    drag.frame = requestAnimationFrame(paintTouchDrag);
+  }
+
+  function bindTouchCardDrag() {
+    document.addEventListener("touchstart", function(e) {
+      if (touchDrag) { if (e.touches.length !== 1) cancelTouchDrag(); return; }
+      touchClickGuard = null;
+      if (e.touches.length !== 1 || !(e.target instanceof Element)) return;
+      var card = e.target.closest(".card[data-id]");
+      if (!card || !$("board-view").contains(card) || !card.draggable ||
+          e.target.closest("button, a, input, select, textarea")) return;
+      var current = findStory(card.dataset.id);
+      if (!current) return;
+      var t = e.touches[0];
+      var drag = touchDrag = { id: card.dataset.id, card: card, repo: state.repoId, epoch: boardEpoch,
+        origin: current.display_state || current.story.state, identifier: t.identifier,
+        x: t.clientX, y: t.clientY, startX: t.clientX, startY: t.clientY,
+        active: false, column: null, preview: null, frame: null, timer: null };
+      drag.timer = setTimeout(function() {
+        if (touchDrag !== drag) return;
+        if (!validTouchDrag(drag)) { cancelTouchDrag(); return; }
+        drag.active = true;
+        drag.card.classList.add("dragging");
+        drag.preview = el("div", { class: "touch-drag-preview", "aria-hidden": "true" },
+          [drag.id + ": " + current.story.title]);
+        document.body.appendChild(drag.preview);
+        // A drag has no click to protect. Let progressive replies paint;
+        // validity is rechecked each frame and again before any drop.
+        releasePress("touch-drag");
+        drag.lastFrame = performance.now();
+        paintTouchDrag();
+      }, TOUCH_DRAG_HOLD_MS);
+    }, { passive: true });
+    document.addEventListener("touchmove", function(e) {
+      var drag = touchDrag;
+      if (!drag) return;
+      if (e.touches.length !== 1 || e.touches[0].identifier !== drag.identifier || !validTouchDrag(drag)) {
+        cancelTouchDrag(); return;
+      }
+      var t = e.touches[0];
+      drag.x = t.clientX; drag.y = t.clientY;
+      if (!drag.active) {
+        if (Math.hypot(drag.x - drag.startX, drag.y - drag.startY) > TOUCH_DRAG_SLOP_PX) cancelTouchDrag();
+        return;
+      }
+      // If the browser already owns a scroll, do not turn its eventual
+      // release into a move. Never fight a non-cancelable gesture.
+      if (!e.cancelable) { cancelTouchDrag(); return; }
+      e.preventDefault();
+    }, { passive: false });
+    document.addEventListener("touchend", function(e) {
+      var drag = touchDrag;
+      if (!drag) return;
+      var ended = Array.prototype.some.call(e.changedTouches, function(t) { return t.identifier === drag.identifier; });
+      if (!ended) { cancelTouchDrag(); return; }
+      var end = Array.prototype.filter.call(e.changedTouches, function(t) { return t.identifier === drag.identifier; })[0];
+      drag.x = end.clientX; drag.y = end.clientY;
+      if (drag.active && e.cancelable) e.preventDefault();
+      var column = drag.active && !e.touches.length && validTouchDrag(drag) ? touchDragColumn(drag) : null;
+      var target = column && meta().states.filter(function(def) { return def.slug === column.dataset.state; })[0];
+      cancelTouchDrag();
+      if (target) dropCard(drag.id, target.slug, target.super_state === "CLOSED");
+    }, { passive: false });
+    document.addEventListener("touchcancel", cancelTouchDrag);
+    document.addEventListener("pointerdown", function(e) {
+      if (e.pointerType === "mouse") touchClickGuard = null;
+    }, true);
+    document.addEventListener("click", function(e) {
+      var guard = touchClickGuard;
+      touchClickGuard = null;
+      var card = e.target instanceof Element && e.target.closest(".card[data-id]");
+      if (guard && Date.now() <= guard.until && guard.repo === state.repoId && card && card.dataset.id === guard.id) {
+        e.preventDefault(); e.stopImmediatePropagation();
+      }
+    }, true);
+    window.addEventListener("blur", cancelTouchDrag);
+    document.addEventListener("visibilitychange", function() { if (document.hidden) cancelTouchDrag(); });
+    document.addEventListener("keydown", function(e) { if (e.key === "Escape") cancelTouchDrag(); });
+  }
+
   function bindColumnDrop(column, targetSlug, isClosed) {
     column.addEventListener("dragover", function(e) {
       e.preventDefault();
@@ -10757,35 +10913,39 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       column.classList.remove("drag-over");
       var id = e.dataTransfer.getData("text/plain");
       if (!id) return;
-      var current = findStory(id);
-      if (!current) return;
-      // Compare against the column the card is actually *sitting in*
-      // (`display_state`, when it overrides `state` — SH-165), not the
-      // literal `state` alone: otherwise re-dropping a display-promoted
-      // epic on the column it already visually occupies would silently
-      // persist a real, unintended state write instead of the no-op the
-      // user sees on screen.
-      var currentSlug = current.display_state || current.story.state;
-      if (currentSlug === targetSlug) return;
-      // SH-205: dropping into Blocked opens a skippable prompt for the
-      // reason instead of moving immediately — the council's decision was
-      // that the move must complete either way (Skip, backdrop, Escape),
-      // never abort, so this never blocks the drag itself, only defers it
-      // by one small modal.
-      if (targetSlug === "blocked") {
-        openDropBlockedReasonModal(id);
-        return;
-      }
-      // SH-692: a `verifying` card belongs to the central verifier. Dropping
-      // it on Done is an override, which needs the operator's reason — the
-      // service refuses the bare move — so the drop defers to a prompt that,
-      // unlike Blocked's, is NOT skippable: no reason, no move.
-      if (automationsEnabled() && currentSlug === "verifying" && targetSlug === "done") {
-        openVerifyOverrideModal(id);
-        return;
-      }
-      moveStory(id, targetSlug, isClosed);
+      dropCard(id, targetSlug, isClosed);
     });
+  }
+
+  function dropCard(id, targetSlug, isClosed) {
+    var current = findStory(id);
+    if (!current) return;
+    // Compare against the column the card is actually *sitting in*
+    // (`display_state`, when it overrides `state` — SH-165), not the
+    // literal `state` alone: otherwise re-dropping a display-promoted
+    // epic on the column it already visually occupies would silently
+    // persist a real, unintended state write instead of the no-op the
+    // user sees on screen.
+    var currentSlug = current.display_state || current.story.state;
+    if (currentSlug === targetSlug) return;
+    // SH-205: dropping into Blocked opens a skippable prompt for the
+    // reason instead of moving immediately — the council's decision was
+    // that the move must complete either way (Skip, backdrop, Escape),
+    // never abort, so this never blocks the drag itself, only defers it
+    // by one small modal.
+    if (targetSlug === "blocked") {
+      openDropBlockedReasonModal(id);
+      return;
+    }
+    // SH-692: a `verifying` card belongs to the central verifier. Dropping
+    // it on Done is an override, which needs the operator's reason — the
+    // service refuses the bare move — so the drop defers to a prompt that,
+    // unlike Blocked's, is NOT skippable: no reason, no move.
+    if (automationsEnabled() && currentSlug === "verifying" && targetSlug === "done") {
+      openVerifyOverrideModal(id);
+      return;
+    }
+    moveStory(id, targetSlug, isClosed);
   }
 
   function findStory(id) {
@@ -17334,6 +17494,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // SH-197: one delegated listener per view, not one per card/row --
     // consistent with cards/rows already being reconciled in place rather
     // than rebuilt every render.
+    bindTouchCardDrag();
     bindRovingKeys($("board-view"), ".card[data-id]", boardRovingMove);
     bindRovingFocus($("board-view"), ".card[data-id]");
     bindRovingKeys($("list-body"), "tr[data-id]", listRovingMove);
