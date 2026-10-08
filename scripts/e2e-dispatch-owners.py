@@ -12,6 +12,8 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
+import subprocess
 import sys
 import time
 
@@ -56,6 +58,7 @@ def initialize(root):
     root.mkdir(mode=0o700)
     (root / "lock").touch(mode=0o600)
     (root / "lock").write_text("open")
+    (root / "writers").touch(mode=0o600)
 
 
 def register(root, pid, deadline):
@@ -142,42 +145,25 @@ def drain_receipt(receipt, deadline):
         if os.getpgid(group) != group:
             raise UnsafeCleanup("helper process group changed")
         owned = {group: current}
-    try:
-        # Freeze the proven leader first, then freeze the group to a fixpoint.
-        # A writer cannot fork after the final census and escape deletion's barrier.
-        signal_known(owned, signal.SIGSTOP)
-        if "completed" not in receipt:
-            while True:
-                if not same(owner):
-                    raise UnsafeCleanup("helper leader disappeared during capture")
-                captured = group_members(group)
-                if any(pid in owned and owned[pid]["start"] != value["start"]
-                       for pid, value in captured.items()):
-                    raise UnsafeCleanup("helper member incarnation changed during capture")
-                new = {pid: value for pid, value in captured.items() if pid not in owned}
-                if not new:
-                    break
-                owned.update(new)
-                signal_known(new, signal.SIGSTOP)
-                if time.monotonic() >= deadline:
-                    raise UnsafeCleanup("helper group did not stabilize")
-        else:
-            # A placeholder could fork between the saved census and SIGSTOP.
-            # Without its leader we cannot adopt more members; retain evidence.
-            for pid, value in group_members(group).items():
-                if pid not in owned or owned[pid]["start"] != value["start"]:
-                    raise UnsafeCleanup("completed helper group changed during capture")
-        # Synthetic fixture only: do not run writer EXIT traps during removal.
-        signal_known(owned, signal.SIGKILL)
-        while any(same(value) for value in owned.values()):
-            if time.monotonic() >= deadline:
-                raise UnsafeCleanup("helper writer survived termination")
-            time.sleep(0.01)
-        if group_members(group):
-            raise UnsafeCleanup("unrecorded helper group members survived termination")
-    finally:
-        # A failed observation must not strand preserved processes frozen.
-        signal_known(owned, signal.SIGCONT)
+    if "completed" not in receipt:
+        # The live leader proves only this group. Escaped writers are never
+        # guessed at: their inherited writer-custody lock prevents deletion.
+        captured = group_members(group)
+        if not same(owner):
+            raise UnsafeCleanup("helper leader disappeared during capture")
+        owned.update(captured)
+    # No SIGSTOP: the outer pool may KILL cleanup at any time. Never leave an
+    # external helper frozen if that happens. Signal only captured incarnations.
+    ordered = {pid: value for pid, value in owned.items() if pid != group}
+    if group in owned:
+        ordered[group] = owned[group]
+    signal_known(ordered, signal.SIGKILL)
+    while any(same(value) for value in owned.values()):
+        if time.monotonic() >= deadline:
+            raise UnsafeCleanup("helper writer survived termination")
+        time.sleep(0.01)
+    if group_members(group):
+        raise UnsafeCleanup("unrecorded helper group members survived termination")
 
 
 def drain(root, deadline):
@@ -189,16 +175,79 @@ def drain(root, deadline):
             path.unlink()
 
 
+def writer_admit(root, fd, deadline):
+    # fd was opened by the fake's shell and remains open through every child
+    # and delayed publisher. flock follows the open file description even
+    # across exec, reparenting or setsid; process topology is not custody.
+    with locked(root, deadline) as admission:
+        if admission.read() != "open":
+            raise UnsafeCleanup("slice cleanup has closed writer admission")
+        expected = os.stat(root / "writers")
+        actual = os.fstat(fd)
+        if (expected.st_dev, expected.st_ino) != (actual.st_dev, actual.st_ino):
+            raise UnsafeCleanup("writer custody descriptor does not name this slice")
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+
+
+@contextlib.contextmanager
+def exclusive_writers(root, deadline):
+    with (root / "writers").open("r") as stream:
+        while True:
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise UnsafeCleanup("writer custody remains outside known helper groups")
+                time.sleep(0.01)
+        yield
+
+
+def remaining(deadline):
+    value = deadline - time.monotonic()
+    if value <= 0:
+        raise UnsafeCleanup("aggregate slice cleanup deadline exhausted")
+    return value
+
+
+def cleanup(root, data_root, story_bin, isolated, deadline):
+    # All steps spend one deadline. The pool retains its existing outer kill
+    # bound; interruption can preserve residue, but cannot strand stopped PIDs.
+    close(root, deadline)
+    remaining(deadline)
+    drain(root, deadline)
+    remaining(deadline)
+    with exclusive_writers(root, deadline):
+        remaining(deadline)
+        if isolated:
+            result = subprocess.run([story_bin, "daemon", "stop"],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                    timeout=remaining(deadline), check=False)
+            if result.returncode:
+                raise UnsafeCleanup("isolated daemon stop failed: " +
+                                    result.stderr.decode(errors="replace")[-2048:])
+        remaining(deadline)
+        # Keep exclusive custody through removal, not just through a precheck.
+        shutil.rmtree(data_root)
+
+
 def main(argv):
     if len(argv) < 3:
-        raise UnsafeCleanup("expected init|register|complete|close|drain OWNER_DIR [PID]")
+        raise UnsafeCleanup("expected an ownership action and OWNER_DIR")
     action, root = argv[1], Path(argv[2])
-    # Fixture teardown is bounded by the pool's existing ten-second kill grace.
+    if action == "cleanup" and len(argv) == 7:
+        budget = float(argv[6])
+        if not 0 < budget <= 8 or argv[5] not in ("0", "1"):
+            raise UnsafeCleanup("invalid aggregate cleanup budget or isolation flag")
+        cleanup(root, Path(argv[3]), argv[4], argv[5] == "1", time.monotonic() + budget)
+        return
     deadline = time.monotonic() + 5
     if action == "init":
         initialize(root)
     elif action in ("register", "complete") and len(argv) == 4:
         globals()[action](root, int(argv[3]), deadline)
+    elif action == "writer-admit" and len(argv) == 4:
+        writer_admit(root, int(argv[3]), deadline)
     elif action in ("close", "drain") and len(argv) == 3:
         globals()[action](root, deadline)
     else:
@@ -208,6 +257,7 @@ def main(argv):
 if __name__ == "__main__":
     try:
         main(sys.argv)
-    except (OSError, ValueError, KeyError, RuntimeError, UnsafeCleanup) as error:
+    except (OSError, ValueError, KeyError, RuntimeError, UnsafeCleanup,
+            subprocess.TimeoutExpired) as error:
         print(f"e2e dispatch cleanup: {error}; preserve the slice root", file=sys.stderr)
         sys.exit(1)

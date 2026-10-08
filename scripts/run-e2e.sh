@@ -317,28 +317,20 @@ run_one_project() {
     # A second signal here would abandon a half-stopped daemon and a
     # half-removed seed; the pool KILLs a cleanup that overruns its grace.
     trap '' TERM INT HUP
-    # Reject even a previously spawned wrapper before its first fixture write.
-    # Drain helpers BEFORE stopping the daemon: an in-flight helper CLI call
-    # could otherwise start it again after stop, racing removal of its home.
+    # One aggregate deadline leaves two seconds of the pool's outer grace.
+    # The helper closes admission, drains known identities, proves exclusive
+    # writer custody, stops the isolated daemon, then removes the root.
     if [ "$dispatch_owners_ready" = 1 ]; then
-      python3 -B "$dispatch_owner_tool" close "$dispatch_owners" || cleanup_safe=0
-      python3 -B "$dispatch_owner_tool" drain "$dispatch_owners" || cleanup_safe=0
+      python3 -B "$dispatch_owner_tool" cleanup "$dispatch_owners" "$data_root" \
+        "$story_bin" "$isolated" "$((E2E_STOP_GRACE_SECONDS - 2))" || cleanup_safe=0
+    else
+      # Registration initialization precedes isolation and every daemon call.
+      rm -rf "$data_root"
     fi
-    # Seeding starts a daemon before the explicit start. Never stop the real
-    # store if setup failed before storyhook_isolate selected this slice.
-    if [ "$isolated" = "1" ]; then
-      "$story_bin" daemon stop >/dev/null 2>&1 || cleanup_safe=0
-    fi
-    # Successful helpers captured their surviving placeholder incarnations;
-    # the drain reaps those too. A historical bare pane_pid grants no authority.
     if [ "$cleanup_safe" != 1 ]; then
       echo "run-e2e.sh: cleanup could not prove writer quiescence; retained $data_root" >&2
       [ "$status" != 0 ] || status=1
-      e2e_timing cleanup "$cleanup_started"
-      e2e_timing total "$slice_started"
-      exit "$status"
     fi
-    rm -rf "$data_root"
     e2e_timing cleanup "$cleanup_started"
     e2e_timing total "$slice_started"
     exit "$status"
@@ -438,6 +430,8 @@ run_one_project() {
   # slices too, since each slice's subshell gets its own `data_root` and
   # therefore its own `FAKE_TMUX_STATE`: slices run at the same time (SH-792),
   # never in one state directory.
+  export FAKE_TMUX_CUSTODY="$dispatch_owners"
+  export FAKE_TMUX_CUSTODY_HELPER="$dispatch_owner_tool"
   export FAKE_TMUX_STATE="$data_root/faketmux"
   mkdir -p "$FAKE_TMUX_STATE"
   # The placeholder process the fake's `new-window` spawns to stand in for the
@@ -470,7 +464,8 @@ run_one_project() {
   provider_bin="$data_root/provider-bin"
   faketmux_env="$data_root/faketmux-env"
   export FAKE_TMUX_IMPLEMENTATION="$repo_root/plugins/story/tests/fakes/tmux"
-  write_e2e_provider_doubles "$provider_bin" "$faketmux_env" "$FAKE_TMUX_IMPLEMENTATION" || exit 1
+  write_e2e_provider_doubles "$provider_bin" "$faketmux_env" "$FAKE_TMUX_IMPLEMENTATION" \
+    "$dispatch_owners" "$dispatch_owner_tool" || exit 1
   export PATH="$provider_bin:$PATH"
 
   # Every FAKE_TMUX_* the harness has set, snapshotted one file per knob --

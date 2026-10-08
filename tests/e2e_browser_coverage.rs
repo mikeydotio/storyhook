@@ -994,8 +994,8 @@ fn a_slices_cleanup_cannot_be_cut_short_by_a_second_signal() {
         .find("trap '' TERM INT HUP")
         .expect("cleanup ignores TERM, INT and HUP while it runs");
     let stop = cleanup
-        .find("\"$story_bin\" daemon stop")
-        .expect("cleanup stops the daemon");
+        .find("\"$dispatch_owner_tool\" cleanup")
+        .expect("cleanup delegates the bounded stop and removal");
     assert!(
         immune < stop,
         "the signals are ignored before the daemon stop starts"
@@ -1020,19 +1020,18 @@ fn a_slices_cleanup_stops_its_daemon_whenever_its_store_is_isolated() {
         .split_once("\n  }\n")
         .expect("cleanup ends")
         .0;
-    let guard = cleanup
-        .find("if [ \"$isolated\" = \"1\" ]; then")
-        .expect("cleanup stops the daemon only once the store is isolated");
-    let stop = cleanup
-        .find("\"$story_bin\" daemon stop")
-        .expect("cleanup stops the daemon");
-    let remove = cleanup
-        .find("rm -rf \"$data_root\"")
-        .expect("cleanup removes the data root");
-    assert!(
-        guard < stop && stop < remove,
-        "guard, stop, then removal: the daemon is stopped before its root goes"
-    );
+    assert!(cleanup.contains("\"$story_bin\" \"$isolated\""));
+    let owner_tool = read("scripts/e2e-dispatch-owners.py");
+    let guard = owner_tool
+        .find("if isolated:")
+        .expect("stop is isolation guarded");
+    let stop = owner_tool
+        .find("[story_bin, \"daemon\", \"stop\"]")
+        .expect("stop the isolated daemon");
+    let remove = owner_tool
+        .find("shutil.rmtree(data_root)")
+        .expect("remove after stop");
+    assert!(guard < stop && stop < remove);
     assert!(
         !cleanup.contains("daemon_started"),
         "the stop must not wait for the explicit start: a daemon auto-started during \
@@ -1201,7 +1200,7 @@ fn the_runner_provisions_both_dispatch_provider_commands_before_daemon_startup()
         .find("cat >\"$provider_bin/claude\" <<'PROVIDER'")
         .expect("the browser harness must create its own Claude fixture");
     let codex = library
-        .find("cat >\"$provider_bin/codex\" <<'PROVIDER'")
+        .find("} >\"$provider_bin/codex\" || return 1")
         .expect("the browser harness must retain its Codex fixture");
     let executable = library
         .find("chmod 700 \"$provider_bin/claude\" \"$provider_bin/codex\" \"$provider_bin/tmux\"")
@@ -1212,7 +1211,7 @@ fn the_runner_provisions_both_dispatch_provider_commands_before_daemon_startup()
     );
 
     let written = body
-        .find("write_e2e_provider_doubles \"$provider_bin\" \"$faketmux_env\" \"$FAKE_TMUX_IMPLEMENTATION\" || exit 1")
+        .find("write_e2e_provider_doubles \"$provider_bin\" \"$faketmux_env\" \"$FAKE_TMUX_IMPLEMENTATION\" \"$dispatch_owners\" \"$dispatch_owner_tool\" || exit 1")
         .expect("run_one_project must generate the doubles through the library, refusing on failure");
     let path = body
         .find("export PATH=\"$provider_bin:$PATH\"")
@@ -1609,7 +1608,7 @@ fn interrupted_slice_drains_registered_dispatch_writers_before_removal() {
     command
         .arg("-B")
         .arg(repo_root().join("scripts/tests/test_e2e_dispatch_cleanup.py"));
-    let budget = storyhook_test_support::load_grace::graced_now(UTILITY_DEADLINE * 8 * 3);
+    let budget = storyhook_test_support::load_grace::graced_now(UTILITY_DEADLINE * 13 * 3);
     let output = ChildGuard::spawn_with_output(&mut command)
         .expect("start dispatch cleanup regressions")
         .wait_with_output_within(budget, || {
@@ -1880,7 +1879,7 @@ fn the_placeholder_pane_lifetime_is_stated_before_the_snapshot_and_reaped_at_cle
         .expect("cleanup closes")
         .0;
     let drain = cleanup
-        .find("\"$dispatch_owner_tool\" drain")
+        .find("\"$dispatch_owner_tool\" cleanup")
         .expect("cleanup drains registered helper and placeholder incarnations");
     let removal = cleanup
         .find("rm -rf \"$data_root\"")

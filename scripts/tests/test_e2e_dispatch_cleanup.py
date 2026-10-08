@@ -1,11 +1,13 @@
 """SH-807: exercise the actual wrapper and cleanup without browsers or a daemon."""
 
+import contextlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import shlex
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -150,6 +152,7 @@ data_root={shlex.quote(str(self.root))}
 dispatch_owners={shlex.quote(str(self.registry))}
 dispatch_owner_tool={shlex.quote(str(SCRIPTS / 'e2e-dispatch-owners.py'))}
 dispatch_owners_ready=1
+E2E_STOP_GRACE_SECONDS=10
 isolated=1
 story_bin={shlex.quote(str(story))}
 slice_started=$SECONDS
@@ -236,6 +239,177 @@ while :; do sleep 0.01; done
         self.assertTrue(self.root.exists())
         self.assertIsNone(helper.poll())
         self.assertTrue(owners.same(writer))
+
+    def escaped_writer(self):
+        """A real registered helper forks a writer that changes its session."""
+        marker = self.outer / "escaped.json"
+        heartbeat = self.outer / "heartbeat"
+        child = self.outer / "escaped.py"
+        child.write_text(
+            "import json, os, pathlib, sys, time\n"
+            f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
+            "from host_admission import native\n"
+            f"pathlib.Path({str(marker)!r}).write_text(json.dumps(native.process(os.getpid(), 'fixture')))\n"
+            "count = 0\n"
+            "while True:\n"
+            f" root = pathlib.Path({str(self.state)!r})\n"
+            " root.mkdir(parents=True, exist_ok=True)\n"
+            " (root / 'escaped-input').write_text('owned writer')\n"
+            " count += 1\n"
+            f" pathlib.Path({str(heartbeat)!r}).write_text(str(count))\n"
+            " time.sleep(0.01)\n"
+        )
+        launcher = self.outer / "escape-launcher.py"
+        launcher.write_text(
+            "import pathlib, subprocess, sys, time\n"
+            f"subprocess.Popen([sys.executable, {str(child)!r}], start_new_session=True, "
+            "pass_fds=(9,), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+            f"while not pathlib.Path({str(heartbeat)!r}).exists(): time.sleep(0.01)\n"
+        )
+        wrapper = self.render_wrapper(
+            f'exec 9<{shlex.quote(str(self.registry / "writers"))}\n'
+            f'{shlex.quote(sys.executable)} -B {shlex.quote(str(SCRIPTS / "e2e-dispatch-owners.py"))} '
+            f'writer-admit {shlex.quote(str(self.registry))} 9 || exit 64\n'
+            f'{shlex.quote(sys.executable)} {shlex.quote(str(launcher))}\nexit 7\n'
+        )
+        helper = self.spawn(["/bin/bash", str(wrapper), "--project", "fixture", "dispatch"])
+        _, errors = helper.communicate(timeout=self.budget)
+        self.assertEqual(helper.returncode, 7, errors)
+        identity = json.loads(marker.read_text())
+        self.identities.append(identity)
+        self.assertNotEqual(os.getpgid(identity["pid"]), helper.pid)
+        self.assertEqual(os.getsid(identity["pid"]), identity["pid"])
+        return identity, heartbeat
+
+    def test_escaped_session_writer_preserves_root_until_custody_released(self):
+        writer, _ = self.escaped_writer()
+        with self.assertRaisesRegex(owners.UnsafeCleanup, "writer custody remains"):
+            owners.cleanup(self.registry, self.root, "unused", False, time.monotonic() + 0.5)
+        self.assertTrue(self.root.exists())
+        self.assertTrue(owners.same(writer), "unknown session must not be signalled")
+        self.assertTrue((self.state / "escaped-input").exists())
+        os.kill(writer["pid"], signal.SIGKILL)
+        self.wait_for(lambda: not owners.same(writer), "test writer did not exit")
+        owners.cleanup(self.registry, self.root, "unused", False, time.monotonic() + self.budget)
+        self.assertFalse(self.root.exists())
+
+    def test_outer_kill_does_not_leave_escaped_writer_frozen(self):
+        writer, heartbeat = self.escaped_writer()
+        cleaner = self.spawn([sys.executable, "-B", str(SCRIPTS / "e2e-dispatch-owners.py"),
+                              "cleanup", str(self.registry), str(self.root), "unused", "0", "8"])
+        self.wait_for(lambda: (self.registry / "lock").read_text() == "closed",
+                      "cleanup did not close admission")
+        cleaner.kill()
+        cleaner.communicate(timeout=self.budget)
+        self.assertEqual(cleaner.returncode, -signal.SIGKILL)
+        self.assertTrue(self.root.exists())
+        def count():
+            try:
+                return int(heartbeat.read_text())
+            except ValueError:
+                return -1
+        before = count()
+        self.wait_for(lambda: count() > before + 2, "escaped writer was stranded frozen")
+        self.assertTrue(owners.same(writer))
+
+    def test_cleanup_uses_one_deadline_for_all_phases(self):
+        clock = [100.0]
+        deadlines = []
+        def phase(root, deadline):
+            deadlines.append(deadline)
+            clock[0] += 2
+        def stop(*args, **kwargs):
+            self.assertEqual(kwargs["timeout"], 4.0)
+            clock[0] += 4
+            return subprocess.CompletedProcess(args[0], 0, stderr=b"")
+        with mock.patch.object(owners.time, "monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(owners, "close", side_effect=phase), \
+             mock.patch.object(owners, "drain", side_effect=phase), \
+             mock.patch.object(owners, "exclusive_writers", return_value=contextlib.nullcontext()), \
+             mock.patch.object(owners.subprocess, "run", side_effect=stop) as stopped, \
+             mock.patch.object(owners.shutil, "rmtree") as removed:
+            with self.assertRaisesRegex(owners.UnsafeCleanup, "aggregate.*deadline"):
+                owners.cleanup(self.registry, self.root, "fixture-story", True, 108.0)
+        self.assertEqual(deadlines, [108.0, 108.0])
+        stopped.assert_called_once()
+        removed.assert_not_called()
+        self.assertTrue(self.root.exists())
+
+    def test_closed_real_fake_and_baked_doubles_refuse_before_mutation(self):
+        fake = SCRIPTS.parent / "plugins/story/tests/fakes/tmux"
+        provider_bin = self.outer / "providers"
+        generation = ('source "$1"; write_e2e_provider_doubles "$2" "$3" "$4" "$5" "$6"')
+        result = subprocess.run(["/bin/bash", "-c", generation, "fixture",
+                                 str(SCRIPTS / "e2e-provider-doubles.sh"), str(provider_bin),
+                                 str(self.knobs), str(fake), str(self.registry),
+                                 str(SCRIPTS / "e2e-dispatch-owners.py")], env=self.env,
+                                capture_output=True, text=True, timeout=self.budget)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        owners.close(self.registry, time.monotonic() + self.budget)
+        shutil.rmtree(self.knobs)
+        env = dict(self.env, FAKE_TMUX_STATE=str(self.state), FAKE_TMUX_CUSTODY=str(self.registry),
+                   FAKE_TMUX_CUSTODY_HELPER=str(SCRIPTS / "e2e-dispatch-owners.py"),
+                   FAKE_TMUX_SESSIONS="must-not-seed")
+        for executable, args in [(fake, ["new-window"]), (provider_bin / "tmux", ["new-window"]),
+                                 (provider_bin / "codex", ["exec", "fixture"])]:
+            with self.subTest(executable=str(executable)):
+                result = subprocess.run([str(executable), *args], env=env, capture_output=True,
+                                        text=True, timeout=self.budget)
+                self.assertEqual(result.returncode, 64, result.stderr)
+                self.assertIn("closed writer admission", result.stderr)
+                self.assertEqual(list(self.state.iterdir()), [])
+
+    def test_real_delayed_publisher_retains_custody_after_foreground_exit(self):
+        # Use the real fake's admission and background scheduling. Replace only
+        # the external provider hook with a barrier: no production CLI or hook.
+        source = (SCRIPTS.parent / "plugins/story/tests/fakes/tmux").read_text()
+        marker = self.outer / "publisher.json"
+        release = self.outer / "release-publisher"
+        published = self.outer / "published"
+        publisher = self.outer / "publisher.py"
+        publisher.write_text(
+            "import json, os, pathlib, sys, time\n"
+            f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
+            "from host_admission import native\n"
+            f"pathlib.Path({str(marker)!r}).write_text(json.dumps(native.process(os.getpid(), 'fixture')))\n"
+            f"while not pathlib.Path({str(release)!r}).exists(): time.sleep(0.01)\n"
+            f"pathlib.Path({str(self.state / 'delayed-write')!r}).write_text('published')\n"
+            f"pathlib.Path({str(published)!r}).write_text('done')\n"
+        )
+        before, function = source.split("publish_claude_hook() {", 1)
+        _, after = function.split("\n}\n", 1)
+        fake = self.executable("delayed-tmux", before + "publish_claude_hook() {\n" +
+                               f"  {shlex.quote(sys.executable)} {shlex.quote(str(publisher))}\n" +
+                               "}\n" + after)
+        self.env.update(FAKE_TMUX_STATE=str(self.state), FAKE_TMUX_CUSTODY=str(self.registry),
+                        FAKE_TMUX_CUSTODY_HELPER=str(SCRIPTS / "e2e-dispatch-owners.py"),
+                        FAKE_TMUX_SENTINEL_DELAY_SECS="0.01", FAKE_TMUX_PANE_LIFETIME="300")
+        foreground = self.spawn([str(fake), "new-window", "-c", str(self.outer), "claude", ";",
+                                 "set-window-option", "remain-on-exit", "on"])
+        _, errors = foreground.communicate(timeout=self.budget)
+        self.assertEqual(foreground.returncode, 0, errors)
+        self.wait_for(marker.exists, "delayed publisher did not reach its barrier")
+        def identity_ready():
+            try:
+                return json.loads(marker.read_text())
+            except ValueError:
+                return None
+        self.wait_for(identity_ready, "publisher identity was incomplete")
+        self.identities.append(identity_ready())
+        pane = owners.observed(int((self.state / "pane_pid").read_text()))
+        self.assertIsNotNone(pane)
+        self.identities.append(pane)
+        os.kill(pane["pid"], signal.SIGKILL)
+        self.wait_for(lambda: not owners.same(pane), "placeholder did not exit")
+        try:
+            with self.assertRaisesRegex(owners.UnsafeCleanup, "writer custody remains"):
+                owners.cleanup(self.registry, self.root, "unused", False, time.monotonic() + 0.5)
+            self.assertTrue(self.root.exists())
+        finally:
+            release.touch()
+        self.wait_for(published.exists, "delayed publisher did not finish")
+        owners.cleanup(self.registry, self.root, "unused", False, time.monotonic() + self.budget)
+        self.assertFalse(self.root.exists())
 
     def test_open_descriptor_retains_closed_admission_after_unlink(self):
         owners.close(self.registry, time.monotonic() + self.budget)
