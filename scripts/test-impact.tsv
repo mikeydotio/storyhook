@@ -217,6 +217,8 @@ invoker_seam	:(glob)**/*
 land_pr	:(glob)**/*
 lifecycle_audit	:(glob)**/*
 machine_lock	:(glob)**/*
+managed_landing_retention	:(glob).githooks/**
+managed_landing_retention	:(glob)scripts/**
 mcp_removal	:(glob)**/*
 merge_attributes	:(glob)**/*
 merge_gate	:(glob)**/*
@@ -305,9 +307,9 @@ store_schema_fixture	:(glob)**/*
 story_reset	src/service/query.rs
 story_reset	src/service/resources/mod.rs
 story_reset	src/service/story_reset.rs
-story_reset	src/service/story_reset/preview.rs
 story_reset	src/service/story_reset/cleanup.rs
 story_reset	src/service/story_reset/identity.rs
+story_reset	src/service/story_reset/preview.rs
 story_reset	src/store/schema/0043_story_resets.sql
 story_reset	src/store/sqlite/story_reset.rs
 story_reset	src/store/story_reset.rs
