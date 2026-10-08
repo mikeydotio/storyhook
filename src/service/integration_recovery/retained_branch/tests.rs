@@ -39,7 +39,7 @@ fn assembly() -> AssemblyEvidence {
     }
 }
 fn deadline() -> Instant {
-    Instant::now() + Duration::from_secs(60)
+    Instant::now() + storyhook_test_support::load_grace::graced_now(Duration::from_secs(60))
 }
 fn observe(bytes: Vec<u8>) -> RetainedBranchObservation {
     observe_with(&assembly(), deadline(), &Cancellation::default(), |_| {
