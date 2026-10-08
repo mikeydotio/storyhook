@@ -617,3 +617,37 @@ fn pending_native_host_custody_survives_restart_without_granting_owner_authority
         "raw failure erased pending original identity"
     );
 }
+
+#[test]
+fn native_host_proof_refuses_late_cleanup_custody_replacement() {
+    let f = Fixture::new();
+    let proof = HostFaultEvidence {
+        live: f.proof(false),
+    };
+    let candidate = &f.subject.candidate;
+    assert_eq!(candidate.cleanup_lease, None);
+    let ctx = f.ctx();
+    let service = HostRecoveryService::new(&ctx);
+    let owner = service.enroll(&proof).unwrap();
+    // Enrollment appends a comment. This is therefore a late, conflicting
+    // lease, not the adjacent lease used to define the original generation.
+    f.fixture.append_cleanup_lease(&candidate.story_id, serde_json::from_value(serde_json::json!({
+        "version":1,"project_slug":candidate.project_slug,"story_id":candidate.story_id,
+        "repository_path":candidate.checkout,"worktree_path":candidate.checkout.join("replacement"),
+        "branch":"replacement-work","tmux":{"socket_path":candidate.checkout.join("fixture-socket"),"revivify":null}
+    })).unwrap());
+    assert!(service.enroll(&proof).is_err());
+    assert!(
+        service
+            .restore(
+                &owner.id,
+                owner.revision,
+                &HostRestorationEvidence {
+                    live: f.proof(true)
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(service.list().unwrap(), vec![owner]);
+    assert!(f.store.read(|tx| blocks_admission(tx)).unwrap());
+}

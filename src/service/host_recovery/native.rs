@@ -443,6 +443,7 @@ fn authority_with_phase(
         || row.awaiting.is_some()
         || !crate::service::verification::candidate_is_current(tx, &row, c)?
         || !crate::service::verification::submission_is_current(tx, &row, c)?
+        || !crate::service::verification::recovery_cleanup_history_is_current(tx, c)?
         || crate::service::project_recovery::recovery_resource_hold(tx, c.project, story)?
         || tx.verification_control_revision(c.project)? != subject.control
         || crate::service::project_recovery::recovery_label_revision(tx, c.project, story)?
