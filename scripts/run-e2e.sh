@@ -238,7 +238,7 @@ if [ "$E2E_FULL_KEYBOARD_ACCESS" = "0" ]; then
 fi
 
 echo "run-e2e.sh: building the story binary…" >&2
-cargo build --quiet
+"$repo_root/scripts/managed-cargo.sh" build --quiet
 
 if [ ! -x "$story_artifact" ]; then
   echo "run-e2e.sh: $story_artifact not found after build" >&2

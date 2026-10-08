@@ -147,7 +147,7 @@ for index in "${!RELEASE_TARGETS[@]}"; do
       "PATH=$toolchain/bin:$PATH" \
       "RUSTC=$toolchain/bin/rustc" \
       "CARGO_TARGET_DIR=$target_dir" \
-      "$toolchain/bin/cargo" build --locked --release --target "$target"
+      "$repo_root/scripts/managed-cargo.sh" --cargo-executable "$toolchain/bin/cargo" -- build --locked --release --target "$target"
   fi
   [ -x "$binary" ] || die "$builder did not produce an executable at $binary"
 

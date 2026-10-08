@@ -19,9 +19,9 @@ use regex::Regex;
 /// How one file's runner launches of one kind are accounted for.
 #[derive(Clone, Copy, Debug)]
 enum Coverage {
-    /// Cargo compiles through `rustc-wrapper` and runs test binaries through
-    /// the target `runner`, both admission-aware (`.cargo/config.toml`).
-    Cargo,
+    /// The repository-local whole-Cargo entry owns every build phase. Compiler
+    /// and binary hooks alone do not cover cached build scripts (SH-835).
+    ManagedCargo,
     /// The file itself enters this admission entry before it launches.
     Entry(&'static str),
     /// It runs a Makefile gate tier; each leg's runners are admitted.
@@ -38,6 +38,7 @@ enum Coverage {
 /// Runner signatures by kind. Each regex is applied to code lines only.
 fn signatures() -> Vec<(&'static str, Regex)> {
     vec![
+        ("cargo", Regex::new(r"managed-cargo\.sh").unwrap()),
         (
             "cargo",
             Regex::new(
@@ -62,17 +63,29 @@ fn signatures() -> Vec<(&'static str, Regex)> {
 
 /// Every (file, kind) with a runner launch, and how it is accounted for.
 const SITES: &[(&str, &str, Coverage)] = &[
-    ("Makefile", "cargo", Coverage::Cargo),
+    ("Makefile", "cargo", Coverage::ManagedCargo),
     (
         "scripts/attribution-rust.py",
         "cargo",
         Coverage::Entry("causal-rust"),
     ),
-    ("scripts/build-release-assets.sh", "cargo", Coverage::Cargo),
-    ("scripts/capture-baseline.sh", "cargo", Coverage::Cargo),
+    (
+        "scripts/build-release-assets.sh",
+        "cargo",
+        Coverage::ManagedCargo,
+    ),
+    (
+        "scripts/capture-baseline.sh",
+        "cargo",
+        Coverage::ManagedCargo,
+    ),
     ("scripts/capture-baseline.sh", "make-gate", Coverage::Legs),
-    ("scripts/cargo_diagnostics.py", "cargo", Coverage::Cargo),
-    ("scripts/coverage-map.sh", "cargo", Coverage::Cargo),
+    (
+        "scripts/cargo_diagnostics.py",
+        "cargo",
+        Coverage::ManagedCargo,
+    ),
+    ("scripts/coverage-map.sh", "cargo", Coverage::ManagedCargo),
     (
         "scripts/coverage-map.sh",
         "make-gate",
@@ -94,26 +107,26 @@ const SITES: &[(&str, &str, Coverage)] = &[
         ),
     ),
     ("scripts/release.sh", "make-gate", Coverage::Legs),
-    ("scripts/run-e2e.sh", "cargo", Coverage::Cargo),
+    ("scripts/run-e2e.sh", "cargo", Coverage::ManagedCargo),
     (
         "scripts/run-e2e.sh",
         "playwright",
         Coverage::Entry("browser-pool"),
     ),
-    ("scripts/run-tests.sh", "cargo", Coverage::Cargo),
-    ("scripts/scratch-env.sh", "cargo", Coverage::Cargo),
+    ("scripts/run-tests.sh", "cargo", Coverage::ManagedCargo),
+    ("scripts/scratch-env.sh", "cargo", Coverage::ManagedCargo),
     (
         "scripts/test-delta.sh",
         "cargo",
         Coverage::Prose("a usage message naming its input"),
     ),
-    ("scripts/test-pool.py", "cargo", Coverage::Cargo),
+    ("scripts/test-pool.py", "cargo", Coverage::ManagedCargo),
     (
         "scripts/test-system-attributes.py",
         "cargo",
-        Coverage::Cargo,
+        Coverage::ManagedCargo,
     ),
-    ("scripts/test_discovery.py", "cargo", Coverage::Cargo),
+    ("scripts/test_discovery.py", "cargo", Coverage::ManagedCargo),
     (
         "scripts/test_discovery.py",
         "test-listing",
@@ -133,6 +146,7 @@ const ENTRY_FILES: &[(&str, &str)] = &[
     (".cargo/config.toml", "cargo-test-binary"),
     ("scripts/capture-baseline.sh", "cargo-test-binary"),
     ("scripts/rustc-slot.py", "rustc"),
+    ("scripts/cargo-managed.py", "cargo-managed"),
     ("scripts/run-tests.sh", "rust-pool"),
     ("plugins/story/tests/run-tests.sh", "plugin-pool"),
     ("plugins/story/tests/lib.sh", "plugin-script"),
@@ -322,6 +336,12 @@ fn every_runner_launch_is_admitted_or_an_explicit_exception() {
         .map(|(path, text)| (path.as_str(), text.as_str()))
         .collect();
     for (path, kind, coverage) in SITES {
+        if let Coverage::ManagedCargo = coverage {
+            assert!(
+                texts[path].contains("managed-cargo.sh"),
+                "{path} lacks the whole-Cargo ownership entry"
+            );
+        }
         if let Coverage::Entry(entry) = coverage {
             assert!(
                 enters(texts[path], entry),

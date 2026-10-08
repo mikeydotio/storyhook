@@ -54,7 +54,7 @@ def main():
         bindir.mkdir()
         (bindir / "git").symlink_to(source / "git")
         built = subprocess.run([
-            "cargo", "test", "--test", "merge_attributes", "--no-run", "--message-format=json",
+            str(Path(__file__).with_name("managed-cargo.sh")), "test", "--test", "merge_attributes", "--no-run", "--message-format=json",
         ], cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True)
         executables = [item["executable"] for line in built.stdout.splitlines()
                        if (item := json.loads(line)).get("reason") == "compiler-artifact"

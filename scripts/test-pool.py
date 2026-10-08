@@ -194,7 +194,7 @@ def job_command(job, options, cargo_extra, libtest_args):
     command = [sys.executable, str(here / "activity-run.py"), "--capture", job.log]
     if options["progress"]:
         command += ["--test-progress", options["progress"]]
-    command += ["run-tests.sh/cargo", "--", "cargo", "test", "--no-fail-fast", "-p", job.package]
+    command += ["run-tests.sh/cargo", "--", str(Path(__file__).with_name("managed-cargo.sh")), "test", "--no-fail-fast", "-p", job.package]
     command += job.selector() + cargo_extra
     command += ["--", *libtest_args, f"--test-threads={job.threads}"]
     return command

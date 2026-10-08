@@ -230,11 +230,11 @@ say "storyhook baseline capture — $COMMIT_SHORT on $HOST ($TREE_STATE tree)"
 # ---------------------------------------------------------------------------
 
 say "building (workspace + tests)"
-cargo build --workspace --tests >"$WORK/build.log" 2>&1 || {
+"$REPO_ROOT/scripts/managed-cargo.sh" build --workspace --tests >"$WORK/build.log" 2>&1 || {
   cat "$WORK/build.log" >&2
   exit 1
 }
-cargo build >>"$WORK/build.log" 2>&1
+"$REPO_ROOT/scripts/managed-cargo.sh" build >>"$WORK/build.log" 2>&1
 STORY_BIN="$REPO_ROOT/target/debug/story"
 
 # One TSV row per test binary: kind, target name, package, executable path. The
@@ -247,7 +247,7 @@ STORY_BIN="$REPO_ROOT/target/debug/story"
 # wrong is not cosmetic — jq's array construction silently drops an ELEMENT when
 # `capture` matches nothing, which shifts the executable into the package column
 # and reports a whole crate's tests as zero.
-cargo test --workspace --no-run --message-format=json 2>/dev/null |
+"$REPO_ROOT/scripts/managed-cargo.sh" test --workspace --no-run --message-format=json 2>/dev/null |
   jq -r '
     select(.reason == "compiler-artifact" and .executable != null and .profile.test == true)
     | [ .target.kind[0]
@@ -331,7 +331,7 @@ while IFS="$TAB" read -r kind target package exe; do
   awk -v b="$target" '{ print b "\t" $0 }' "$WORK/ignored-names.txt" >>"$WORK/ignored.tsv"
 done <"$WORK/binaries.tsv"
 
-cargo test --workspace --doc -- --list 2>/dev/null |
+"$REPO_ROOT/scripts/managed-cargo.sh" test --workspace --doc -- --list 2>/dev/null |
   grep ': test$' | sed 's/: test$//' | LC_ALL=C sort >"$WORK/doctests.txt" || true
 DOCTEST_COUNT="$(wc -l <"$WORK/doctests.txt" | tr -d ' ')"
 

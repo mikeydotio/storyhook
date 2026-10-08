@@ -156,11 +156,11 @@ mkdir -p "$root"
 if [ -z "$binary" ]; then
     case "$profile" in
     debug)
-        (cd "$repo_root" && cargo build) >&2
+        (cd "$repo_root" && "$repo_root/scripts/managed-cargo.sh" build) >&2
         binary="$repo_root/target/debug/story"
         ;;
     release)
-        (cd "$repo_root" && cargo build --release) >&2
+        (cd "$repo_root" && "$repo_root/scripts/managed-cargo.sh" build --release) >&2
         binary="$repo_root/target/release/story"
         ;;
     test)
@@ -169,7 +169,7 @@ if [ -z "$binary" ]; then
         # build. Note this overwrites `target/debug/story`, so the next
         # `cargo build` (and `make test`, which runs one) puts the ordinary
         # binary back.
-        (cd "$repo_root" && cargo build --features fault-injection) >&2
+        (cd "$repo_root" && "$repo_root/scripts/managed-cargo.sh" build --features fault-injection) >&2
         binary="$repo_root/target/debug/story"
         ;;
     esac

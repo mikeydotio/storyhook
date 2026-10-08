@@ -32,9 +32,11 @@ def inherited_descriptors():
 class ManagedProcess:
     """A blocked-launch supervisor; SH-869 adapters own preserving its child contract."""
 
-    def __init__(self, client, lease, command, *, publisher=None, env=None):
+    def __init__(self, client, lease, command, *, publisher=None, env=None, grant_environment=True,
+                 cwd=None, forward_signals=False):
         self.client, self.lease, self.child, self.guard = client, lease, None, None
         self.publisher = publisher
+        self.forward_signals = forward_signals
         # The authority's reason for withdrawing this grant, once observed.
         self.drain_reason = None
         self.finished = False
@@ -54,8 +56,14 @@ class ManagedProcess:
         read_ready, write_ready = os.pipe()
         read_exec, write_exec = os.pipe()
         try:
-            env = dict(os.environ if env is None else env, STORYHOOK_HOST_GRANT=lease["token"],
-                       STORYHOOK_HOST_REQUEST=lease["id"], STORYHOOK_HOST_LEASE_FD=str(self.guard))
+            env = dict(os.environ if env is None else env)
+            if grant_environment:
+                env.update(STORYHOOK_HOST_GRANT=lease["token"],
+                           STORYHOOK_HOST_REQUEST=lease["id"],
+                           STORYHOOK_HOST_LEASE_FD=str(self.guard))
+            # Independent product custody may reuse the blocked launcher and
+            # descendant settlement protocol, but must never manufacture a host
+            # resource grant or replace an inherited grant (SH-835).
             # pass_fds forces close_fds; the caller's inheritable descriptors
             # (a Cargo jobserver, a lock holder's stdin) must still reach the
             # command, so they are passed explicitly beside the handshake.
@@ -64,7 +72,7 @@ class ManagedProcess:
                 [sys.executable, "-B", str(Path(__file__).with_name("launcher.py")),
                  str(read_go), str(write_ready), str(self.guard), str(write_exec), *command],
                 start_new_session=True, pass_fds=tuple(sorted(set(handshake) | inherited_descriptors())),
-                env=env)
+                env=env, cwd=cwd)
             os.close(read_go); read_go = None
             os.close(write_ready); write_ready = None
             os.close(write_exec); write_exec = None
@@ -131,6 +139,7 @@ class ManagedProcess:
                 raise Refusal(self.failure)
             return self.result
         requested, sent_term, sent_kill = force_cancel, None, False
+        first_signal = signal.SIGTERM
         draining, failure = force_cancel, None
         # TERM reaches each member once, so a handler that forks is not
         # re-triggered; after escalation every census member gets KILL,
@@ -138,8 +147,10 @@ class ManagedProcess:
         terminated = set()
         prior = {}
         def cancel(_signal, _frame):
-            nonlocal requested
+            nonlocal requested, first_signal
             requested = True
+            if self.forward_signals:
+                first_signal = _signal
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             prior[signum] = signal.signal(signum, cancel)
         try:
@@ -173,7 +184,7 @@ class ManagedProcess:
                     if sent_kill:
                         self._signal(members, signal.SIGKILL)
                     else:
-                        self._signal([pid for pid in members if pid not in terminated], signal.SIGTERM)
+                        self._signal([pid for pid in members if pid not in terminated], first_signal)
                         terminated.update(members)
                 # This is the policy observation cadence, not a guessed workload delay.
                 select.select([], [], [], self.timing["sample_ms"] / 1000)

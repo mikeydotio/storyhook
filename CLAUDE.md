@@ -1,3 +1,13 @@
+## Managed Cargo builds
+
+Use `scripts/managed-cargo.sh` in place of `cargo` for this repository's builds
+and focused tests. It accepts the same Cargo arguments and retains ownership of
+build products through descendants, independently of host resource admission.
+The Makefile and repository runners use this entry. Bare Cargo and older provider
+sessions do not acquire the managed reclamation guarantee; preserve their products
+until ownership is resolved. See [build-product custody](docs/spec/build-product-custody.md).
+This does not change the story's allowed test scope or enable project automations.
+
 <!-- semver:start -->
 ## Semantic Versioning
 

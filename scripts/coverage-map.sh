@@ -186,7 +186,7 @@ trap 'rm -rf "$work"' EXIT
 note "building (this may recompile everything — instrumentation changes every fingerprint)"
 build_json="$work/build.json"
 if ! CARGO_TARGET_DIR="$target_dir" RUSTFLAGS="-C instrument-coverage" \
-    cargo test --workspace --no-run --message-format=json >"$build_json" 2>"$work/build.stderr"; then
+    "$root/scripts/managed-cargo.sh" test --workspace --no-run --message-format=json >"$build_json" 2>"$work/build.stderr"; then
     cat "$work/build.stderr" >&2
     die "the instrumented build failed"
 fi
