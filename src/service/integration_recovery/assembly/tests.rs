@@ -76,6 +76,14 @@ impl Fixture {
             "Actual Assembly Fixture",
             "assembly@example.test",
         );
+        git(
+            &source,
+            &["config", "--local", "user.name", "Actual Assembly Fixture"],
+        );
+        git(
+            &source,
+            &["config", "--local", "user.email", "assembly@example.test"],
+        );
         fs::create_dir(source.join("docs")).unwrap();
         fs::write(source.join("docs/guide.md"), "start\nend\n").unwrap();
         fs::write(source.join("unrelated.txt"), "unchanged\n").unwrap();
