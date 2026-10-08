@@ -144,20 +144,23 @@ fn main() {
 
     // Helpers are deliberately local: gh's own flags and payloads must not
     // enter StoryHook's global flag parser or the daemon request envelope.
-    if raw_args
-        .first()
-        .is_some_and(|argument| argument == "github")
-    {
-        match storyhook::github_access::run_local(&raw_args[1..]) {
-            Ok(bytes) => {
-                if let Err(error) = std::io::Write::write_all(&mut std::io::stdout(), &bytes) {
-                    fail(
-                        &storyhook::error::AppError::GithubApi(error.to_string()),
-                        false,
-                    );
+    if let Some(handler) = cli::model::before_globals(&raw_args) {
+        match handler {
+            cli::model::BeforeGlobals::Github => {
+                match storyhook::github_access::run_local(&raw_args[1..]) {
+                    Ok(bytes) => {
+                        if let Err(error) =
+                            std::io::Write::write_all(&mut std::io::stdout(), &bytes)
+                        {
+                            fail(
+                                &storyhook::error::AppError::GithubApi(error.to_string()),
+                                false,
+                            );
+                        }
+                    }
+                    Err(error) => fail(&error, false),
                 }
             }
-            Err(error) => fail(&error, false),
         }
         return;
     }
@@ -180,16 +183,18 @@ fn main() {
     // `tui` is dispatched here, ahead of parsing, so `story tui --help` would
     // launch the interactive UI instead of explaining it; the help request
     // falls through to the parser, which answers it like any other verb's.
-    if filtered_args.first().is_some_and(|arg| arg == "tui")
-        && !cli::is_help_request(&filtered_args)
-    {
-        let cwd = env::current_dir().unwrap_or_else(|e| {
-            eprintln!("error: failed to resolve current directory: {e}");
-            process::exit(1);
-        });
-        if let Err(e) = storyhook::tui::run(&cwd) {
-            eprintln!("error: {e}");
-            process::exit(e.exit_code());
+    if let Some(handler) = cli::model::before_invocation(&filtered_args) {
+        match handler {
+            cli::model::BeforeInvocation::Tui => {
+                let cwd = env::current_dir().unwrap_or_else(|e| {
+                    eprintln!("error: failed to resolve current directory: {e}");
+                    process::exit(1);
+                });
+                if let Err(e) = storyhook::tui::run(&cwd) {
+                    eprintln!("error: {e}");
+                    process::exit(e.exit_code());
+                }
+            }
         }
         return;
     }
