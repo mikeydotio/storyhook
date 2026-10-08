@@ -221,6 +221,15 @@ impl VerificationActivity {
     ) -> Result<Option<VerificationGuard>, AppError> {
         // Admission and operator release use the same order: release registry,
         // active registry, store. No subprocess runs while a mutex is held.
+        let managed = matches!(
+            reservation,
+            Some(ReservationReason::Integration | ReservationReason::IntegrationObservation)
+        );
+        // Managed entry points may be invoked directly by observation/recovery.
+        // Refuse before the filesystem lock and recheck under the slot lock.
+        if managed && self.active_for(candidate.project).is_some() {
+            return Ok(None);
+        }
         if self
             .landing_releases
             .lock()
@@ -255,6 +264,9 @@ impl VerificationActivity {
             return Ok(None);
         }
         let mut slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        if managed && slots.contains_key(&candidate.project) {
+            return Ok(None);
+        }
         let origin = Instant::now();
         let attempt_id = uuid::Uuid::new_v4().to_string();
         let (record, request_id, retry_origin) = store.write(|tx| {
@@ -270,24 +282,27 @@ impl VerificationActivity {
                     .landing_intents()?
                     .iter()
                     .any(|intent| intent.project == candidate.project && intent.story == no);
-            let allowed =
-                (settling_owned_effect || !crate::service::host_recovery::blocks_admission(tx)?)
-                    && crate::service::verification::human::permits(tx, candidate)?
-                    && !tx.story_resets(candidate.project)?.contains_key(&no)
-                    && tx.engine_reset(candidate.project, no)?.is_none()
-                    && !tx
-                        .story_reset(candidate.project, no)?
-                        .is_some_and(|reset| !reset.completed)
-                    && !incident.as_ref().is_some_and(|incident| incident.halted)
-                    && (tx.verification_enabled(candidate.project)?
-                        || !crate::service::project_recovery::requires_certification(
-                            tx,
-                            candidate.project,
-                            no,
-                        )?
-                        || tx.landing_intents()?.iter().any(|intent| {
-                            intent.project == candidate.project && intent.story == no
-                        }));
+            let managed_current = reservation != Some(ReservationReason::Integration)
+                || crate::service::integration_recovery::candidate_permitted(tx, candidate)?;
+            let allowed = managed_current
+                && (settling_owned_effect || !crate::service::host_recovery::blocks_admission(tx)?)
+                && crate::service::verification::human::permits(tx, candidate)?
+                && !tx.story_resets(candidate.project)?.contains_key(&no)
+                && tx.engine_reset(candidate.project, no)?.is_none()
+                && !tx
+                    .story_reset(candidate.project, no)?
+                    .is_some_and(|reset| !reset.completed)
+                && !incident.as_ref().is_some_and(|incident| incident.halted)
+                && (tx.verification_enabled(candidate.project)?
+                    || !crate::service::project_recovery::requires_certification(
+                        tx,
+                        candidate.project,
+                        no,
+                    )?
+                    || tx
+                        .landing_intents()?
+                        .iter()
+                        .any(|intent| intent.project == candidate.project && intent.story == no));
             let retry_origin = incident
                 .filter(|incident| incident_matches(incident, candidate))
                 .map(|incident| VerificationRetryOrigin {

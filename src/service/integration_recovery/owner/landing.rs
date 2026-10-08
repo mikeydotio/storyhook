@@ -81,6 +81,11 @@ impl IntegrationLandingClaim {
         }
         Ok(())
     }
+    /// Release only original still-open private assembly custody after the
+    /// central worker has settled every effect. Historical receipts cannot call it.
+    pub(crate) fn settle_assembly(self) -> Result<(), AppError> {
+        self.native.settle()
+    }
     pub(crate) fn operation_lifetime(&self) -> (Instant, &Cancellation) {
         (self.deadline, &self.cancellation)
     }

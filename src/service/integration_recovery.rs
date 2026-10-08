@@ -28,7 +28,9 @@ pub use landed_observation::{
 mod owner;
 mod pending;
 mod publication;
-pub(crate) use pending::{retain as retain_conflict_observation, subjects as pending_subjects};
+pub(crate) use pending::{
+    PendingIntegration, retain as retain_conflict_observation, subjects as pending_subjects,
+};
 pub use publication::{NativePublication, PublicationEvidence, publish_owned};
 mod submission;
 pub use assembly::{AssemblyEvidence, NativeAssembly, assemble_owned};
@@ -291,4 +293,17 @@ fn supported_non_code_path(path: &str) -> bool {
             path.extension().and_then(|extension| extension.to_str()),
             Some("md" | "txt" | "rst")
         )
+}
+
+/// Current new-work authority for the centrally owned native lifecycle. A local
+/// policy hint never substitutes for the base-pinned native proposal.
+pub(crate) fn candidate_permitted(
+    tx: &impl crate::store::ReadOps,
+    candidate: &super::VerificationCandidate,
+) -> Result<bool, crate::store::StoreError> {
+    match owner::check_candidate(tx, candidate) {
+        Ok(()) => Ok(true),
+        Err(crate::store::StoreError::Validation(_)) => Ok(false),
+        Err(error) => Err(error),
+    }
 }

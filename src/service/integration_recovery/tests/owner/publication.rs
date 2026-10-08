@@ -1434,3 +1434,36 @@ fn managed_restart_worker_reports_refused_completion_and_exact_cleanup_residue()
     std::fs::remove_dir_all(&path).unwrap();
     proof.settle().unwrap();
 }
+
+#[test]
+fn managed_completed_owner_retains_cleanup_failure_without_reactivating_effects() {
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let (id, native, _) = landed_proof(&f, &proof, |_| {});
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    assert!(service.complete_landing(&native).unwrap());
+    native.settle().unwrap();
+    let before = service.show(&id).unwrap();
+    let residue = before.1.workspace.display().to_string();
+    service
+        .note_hold(
+            &id,
+            &format!("assembly cleanup incomplete; residue retained at {residue}"),
+        )
+        .unwrap();
+    let after = service.show(&id).unwrap();
+    assert!(!after.0.active);
+    assert_eq!(after.1.phase, IntegrationPhase::Landed);
+    assert_eq!(after.1.effect_epoch, before.1.effect_epoch);
+    assert_eq!(after.1.landed, before.1.landed);
+    assert!(after.1.hold.as_deref().unwrap().contains(&residue));
+    assert!(f.store.read(|tx| tx.landing_intents()).unwrap().is_empty());
+    assert!(
+        service
+            .claim_assembly(&id, after.0.revision, &proof)
+            .unwrap()
+            .is_none()
+    );
+    proof.settle().unwrap();
+}

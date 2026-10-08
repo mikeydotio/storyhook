@@ -179,6 +179,25 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
         self.ctx.env()
     }
 
+    /// Preserve a concrete failure without releasing or rewinding its phase.
+    /// Landed owners retain cleanup residue diagnostics without becoming active.
+    /// This is a diagnostic, never a semantic decision or retry authorization.
+    pub(crate) fn note_hold(&self, id: &str, detail: &str) -> Result<(), AppError> {
+        let now = self.ctx.now();
+        self.ctx
+            .store()
+            .write(|tx| {
+                let (mut record, mut state) = find(tx, self.ctx.project(), id)?;
+                if detail.trim().is_empty() {
+                    return Err(invalid("managed hold diagnostic is empty"));
+                }
+                state.hold = Some(detail.chars().take(4096).collect());
+                state.updated_at = now;
+                save(tx, &mut record, &state)
+            })
+            .map_err(Into::into)
+    }
+
     /// Reserve only a live native proposal matching immutable diagnostic head
     /// evidence. Serialized plan/advice cannot call this door with a capability.
     pub fn reserve(
@@ -390,7 +409,11 @@ pub(super) fn decode(record: &IntegrationRecovery) -> Result<IntegrationOwner, S
         || state.workspace.file_name().and_then(|name| name.to_str()) != Some(record.id.as_str())
         || state.branch != format!("storyhook/integration/{}", record.id)
         || uuid::Uuid::parse_str(&record.id).is_err()
-        || (state.phase == IntegrationPhase::Held) != state.hold.is_some()
+        || (state.phase == IntegrationPhase::Held && state.hold.is_none())
+        || state
+            .hold
+            .as_ref()
+            .is_some_and(|reason| reason.trim().is_empty())
         || (state.effect_epoch > 0) != state.effect_started_at.is_some()
         || (state.phase == IntegrationPhase::Reserved && state.effect_epoch != 0)
         || (state.phase == IntegrationPhase::Assembling && state.effect_epoch == 0)

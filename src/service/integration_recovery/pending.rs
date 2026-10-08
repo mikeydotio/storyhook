@@ -26,6 +26,7 @@ pub(crate) struct PendingIntegration {
     pub candidate: VerificationCandidate,
     pub attribution: String,
     pub component: String,
+    pub retained_head: String,
 }
 
 /// Part of the original conflict-hold transaction. Unsupported/legacy missing
@@ -129,6 +130,12 @@ pub(crate) fn subjects(
                     candidate: observed.candidate.clone(),
                     attribution: observed.attribution.id.clone(),
                     component: component.id.clone(),
+                    retained_head: observed
+                        .attribution
+                        .inputs
+                        .head
+                        .clone()
+                        .ok_or_else(|| invalid("retained integration head missing"))?,
                 });
             }
         }

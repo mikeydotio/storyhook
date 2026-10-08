@@ -2703,6 +2703,13 @@ where
     {
         return Ok(TickResult::RetryLater);
     }
+    if incident_candidate.is_none()
+        && actuator.supports_managed_integration()
+        && let Some(result) =
+            integration_worker::start_one(store, env, actuator, activity, inflight, project, bus)?
+    {
+        return Ok(result);
+    }
     let Some(mut candidate) = incident_candidate.or_else(|| {
         ordered
             .into_iter()
