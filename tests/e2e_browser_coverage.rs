@@ -1088,8 +1088,8 @@ fn the_fake_tmux_writer_guard_applies_only_to_dispatch() {
         .split_once(r#"if [ "\$_helper_verb" = dispatch ]; then"#)
         .expect("the fake-tmux writer guard must be explicitly dispatch-only")
         .1
-        .split_once("\nfi\n\nexec bash")
-        .expect("the dispatch-only guard must close immediately before exec")
+        .split_once("\nfi\n\n# Keep the registered leader")
+        .expect("the dispatch-only guard must close before the supervised helper")
         .0;
     for required in [
         r#"_holders="\$FAKE_TMUX_STATE/holders""#,
@@ -1602,6 +1602,27 @@ fn reporter_cleanup_reaps_nested_processes_on_every_exit_path() {
     );
 }
 
+/// SH-807: real out-of-tree writers and placeholders must settle before removal.
+#[test]
+fn interrupted_slice_drains_registered_dispatch_writers_before_removal() {
+    let mut command = std::process::Command::new("python3");
+    command
+        .arg("-B")
+        .arg(repo_root().join("scripts/tests/test_e2e_dispatch_cleanup.py"));
+    let budget = storyhook_test_support::load_grace::graced_now(UTILITY_DEADLINE * 8 * 3);
+    let output = ChildGuard::spawn_with_output(&mut command)
+        .expect("start dispatch cleanup regressions")
+        .wait_with_output_within(budget, || {
+            "dispatch cleanup regressions did not finish".into()
+        });
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// Whether a process bound is a bare millisecond literal (`5_000`, `15000`).
 fn is_bare_numeric(bound: &str) -> bool {
     !bound.is_empty() && bound.chars().all(|c| c.is_ascii_digit() || c == '_')
@@ -1858,18 +1879,16 @@ fn the_placeholder_pane_lifetime_is_stated_before_the_snapshot_and_reaped_at_cle
         .split_once("\n  }\n")
         .expect("cleanup closes")
         .0;
-    assert!(
-        cleanup.contains("$data_root/faketmux/pane_pid")
-            && cleanup.contains("kill -9 \"$placeholder\""),
-        "cleanup must reap the placeholder the fake recorded, since no later new-window will"
-    );
-    let reap = cleanup.find("kill -9 \"$placeholder\"").unwrap();
+    let drain = cleanup
+        .find("\"$dispatch_owner_tool\" drain")
+        .expect("cleanup drains registered helper and placeholder incarnations");
     let removal = cleanup
         .find("rm -rf \"$data_root\"")
         .expect("cleanup removes the data root");
+    assert!(drain < removal);
     assert!(
-        reap < removal,
-        "the pid must be read and the placeholder killed before the file naming it is deleted"
+        !cleanup.contains("kill -9") && !cleanup.contains("cat \"$data_root/faketmux/pane_pid"),
+        "a bare historical placeholder PID must not grant signal authority"
     );
 }
 
