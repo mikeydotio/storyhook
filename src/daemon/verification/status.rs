@@ -494,52 +494,11 @@ impl VerifierStatus {
         if let Some(seconds) = self.output_silence_seconds {
             text.push_str(&format!("Last gate output: {seconds}s ago\n"));
         }
-        for recovery in &self.project_recoveries {
-            if recovery.phase == "invalid" {
-                text.push_str(&format!(
-                    "Project recovery {}: {} at {}; invalid\nNext: {}\n",
-                    recovery.id, recovery.fault, recovery.locus, recovery.next_action
-                ));
-                continue;
-            }
-            text.push_str(&format!("Project recovery {}: {} at {}; {}\nAffected: {}; assessor {}; repair {}; completed attempts {}/{}\nNext: {}\nInspect: story verifier repair show {} --json\n",
-                recovery.id, recovery.fault, recovery.locus, recovery.phase,
-                recovery.affected_stories.join(", "), recovery.assessment_owner,
-                recovery.repair_story.as_deref().unwrap_or(if recovery.scope == Some(crate::service::project_recovery::RepairScope::External) { "none (external)" } else { "undecided" }), recovery.completed_attempts, recovery.attempt_limit,
-                recovery.next_action, recovery.id));
-            if let Some(link) = &recovery.repair_link {
-                text.push_str(&format!("Repair PR: {link}\n"));
-            }
-        }
-        for recovery in &self.host_recoveries {
-            text.push_str(&format!(
-                "Host recovery {}: {}; admission {}; elapsed {}ms\nNext: {}\n",
-                recovery.id,
-                recovery.phase,
-                if recovery.pauses_admission {
-                    "paused"
-                } else {
-                    "subject proofs required"
-                },
-                recovery
-                    .elapsed_milliseconds
-                    .map_or_else(|| "unknown".into(), |ms| ms.to_string()),
-                recovery.next_action
-            ));
-        }
-        for recovery in &self.integration_recoveries {
-            text.push_str(&format!(
-                "Integration recovery {}: {}; {}; original head {}; elapsed {}ms\nNext: {}\n",
-                recovery.id,
-                recovery.story,
-                recovery.phase,
-                recovery.original_head.as_deref().unwrap_or("unknown"),
-                recovery
-                    .elapsed_milliseconds
-                    .map_or_else(|| "unknown".into(), |ms| ms.to_string()),
-                recovery.next_action
-            ));
-        }
+        text.push_str(&render_recoveries(
+            &self.project_recoveries,
+            &self.host_recoveries,
+            &self.integration_recoveries,
+        ));
         for hold in &self.attribution_holds {
             text.push_str(&format!(
                 "Attribution hold {}: {:?}; {}; evidence {}\nNext: {}\n",
@@ -588,5 +547,154 @@ impl VerifierStatus {
             text.push_str(&format!("warning: {warning}\n"));
         }
         text
+    }
+}
+
+fn render_recoveries(
+    projects: &[crate::service::project_recovery::RecoveryStatus],
+    hosts: &[crate::service::host_recovery::HostRecoveryStatus],
+    integrations: &[crate::service::integration_recovery::IntegrationRecoveryStatus],
+) -> String {
+    let mut text = String::new();
+    for recovery in projects {
+        if recovery.phase == "invalid" {
+            text.push_str(&format!(
+                "Project recovery {}: {} at {}; invalid\nNext: {}\n",
+                recovery.id, recovery.fault, recovery.locus, recovery.next_action
+            ));
+            continue;
+        }
+        text.push_str(&format!("Project recovery {}: {} at {}; {}\nAffected: {}; assessor {}; repair {}; completed attempts {}/{}\nNext: {}\nInspect: story verifier repair show {} --json\n",
+                recovery.id, recovery.fault, recovery.locus, recovery.phase,
+                recovery.affected_stories.join(", "), recovery.assessment_owner,
+                recovery.repair_story.as_deref().unwrap_or(if recovery.scope == Some(crate::service::project_recovery::RepairScope::External) { "none (external)" } else { "undecided" }), recovery.completed_attempts, recovery.attempt_limit,
+                recovery.next_action, recovery.id));
+        text.push_str(&format!(
+            "Elapsed {}ms; diagnosis {}ms (cumulative)\n",
+            recovery
+                .elapsed_milliseconds
+                .map_or_else(|| "unknown".into(), |ms| ms.to_string()),
+            recovery.diagnosis_milliseconds
+        ));
+        if let Some(link) = &recovery.repair_link {
+            text.push_str(&format!("Repair PR: {link}\n"));
+        }
+    }
+    for recovery in hosts {
+        if let Some(fault) = &recovery.fault {
+            text.push_str(&format!(
+                "Fault {}: {}; native sequence {}\n",
+                fault.kind, fault.key, fault.sequence
+            ));
+        } else {
+            text.push_str("Fault: unknown\n");
+        }
+        text.push_str(&format!("Affected: {}\n", recovery.submissions.join(", ")));
+        for retained in &recovery.retained_submissions {
+            text.push_str(&retained.render());
+        }
+        text.push_str(&format!(
+            "Host recovery {}: {}; admission {}; elapsed {}ms\nNext: {}\n",
+            recovery.id,
+            recovery.phase,
+            if recovery.pauses_admission {
+                "paused"
+            } else {
+                "subject proofs required"
+            },
+            recovery
+                .elapsed_milliseconds
+                .map_or_else(|| "unknown".into(), |ms| ms.to_string()),
+            recovery.next_action
+        ));
+    }
+    for recovery in integrations {
+        if let Some(retained) = &recovery.retained_submission {
+            text.push_str(&retained.render());
+        }
+        if let Some(epoch) = recovery.effect_epoch {
+            text.push_str(&format!(
+                "Effect ordinal {epoch} (not an admission count)\n"
+            ));
+        }
+        text.push_str(&format!(
+            "Integration recovery {}: {}; {}; original head {}; elapsed {}ms\nNext: {}\n",
+            recovery.id,
+            recovery.story,
+            recovery.phase,
+            recovery.original_head.as_deref().unwrap_or("unknown"),
+            recovery
+                .elapsed_milliseconds
+                .map_or_else(|| "unknown".into(), |ms| ms.to_string()),
+            recovery.next_action
+        ));
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::gate_cost::view::RetainedSubmissionStatus;
+    use crate::store::{GateAttempt, GateSubmission, GlobalSeq, ProjectId};
+    use serde_json::json;
+
+    #[test]
+    fn recovery_status_text_reports_elapsed_fault_and_generation_evidence() {
+        let original = GateSubmission {
+            project: ProjectId::new(1),
+            story_id: "SH-4".into(),
+            generation: Some(GlobalSeq::new(7)),
+            submitted_at: None,
+        };
+        let retained = RetainedSubmissionStatus::from_history(
+            &original,
+            "selected-project",
+            "SH",
+            &Ok(vec![GateAttempt::new(
+                "one".into(),
+                original.clone(),
+                "2026-10-08T00:00:00Z",
+            )]),
+        );
+        let project = serde_json::from_value(json!({
+            "id":"project-owner", "fault":"shared-failure", "locus":"gate", "affected_stories":["SH-4"],
+            "assessment_owner":"SH-5", "repair_story":null, "repair_link":null, "phase":"repairing",
+            "completed_attempts":2, "attempt_limit":3, "elapsed_milliseconds":12345,
+            "diagnosis_milliseconds":321, "next_action":"wait for certified repair"
+        })).unwrap();
+        let host = serde_json::from_value(json!({
+            "id":"host-owner", "phase":"waiting-native-restoration", "started_at":null,
+            "elapsed_milliseconds":23456, "submissions":["SH-4"], "pauses_admission":true,
+            "next_action":"wait for native proof", "fault":{"kind":"native-host-pressure","key":"exact-fault","sequence":17},
+            "retained_submissions":[retained]
+        })).unwrap();
+        let integration = serde_json::from_value(json!({
+            "id":"integration-owner", "story":"SH-4", "phase":"publishing", "started_at":null,
+            "elapsed_milliseconds":34567, "original_head":"head", "assembled_tree":"tree", "effect_epoch":9,
+            "next_action":"reconcile intent", "retained_submission":retained
+        })).unwrap();
+        let text = render_recoveries(&[project], &[host], &[integration]);
+        for expected in [
+            "completed attempts 2/3",
+            "Elapsed 12345ms; diagnosis 321ms (cumulative)",
+            "Fault native-host-pressure: exact-fault; native sequence 17",
+            "Affected: SH-4",
+            "generation 7: retained admissions 1 (including unfinished)",
+            "'story' 'verifier' 'evidence' 'SH-4' '--project' 'selected-project' '--json'",
+            "Effect ordinal 9 (not an admission count)",
+            "elapsed 23456ms",
+            "elapsed 34567ms",
+        ] {
+            assert!(text.contains(expected), "missing {expected}: {text}");
+        }
+        assert!(!text.contains("admissions 9"));
+        // Older payloads preserve unknown, not a made-up zero count/fault.
+        let legacy_host = serde_json::from_value(json!({"id":"old", "phase":"invalid",
+            "started_at":null,"elapsed_milliseconds":null,"submissions":[],"pauses_admission":true,"next_action":"inspect custody"})).unwrap();
+        let text = render_recoveries(&[], &[legacy_host], &[]);
+        assert!(text.contains("Fault: unknown"));
+        assert!(text.contains("elapsed unknownms"));
+        assert!(!text.contains("admissions 0"));
     }
 }

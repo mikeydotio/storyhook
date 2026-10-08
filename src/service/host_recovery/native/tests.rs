@@ -741,3 +741,195 @@ fn restored_host_status_keeps_history_without_claiming_completed_story_needs_gat
         "status projection erased recovery history"
     );
 }
+
+#[test]
+fn host_recovery_status_exposes_exact_fault_and_only_selected_project_admissions() {
+    let f = Fixture::new();
+    let other = ProjectId::new(f.fixture.add_project("other-status-project", "OTHER").get());
+    let other_ctx = Ctx::new(
+        &f.store,
+        other,
+        f.fixture.cwd(),
+        Environment::at(f.fixture.cwd()).with_subprocess_patience(),
+    )
+    .no_hooks(true);
+    let other_story = StoryService::new(&other_ctx)
+        .create(&NewStoryInput {
+            title: "private other-project subject".into(),
+            ..Default::default()
+        })
+        .unwrap()
+        .id;
+    StoryService::new(&other_ctx)
+        .set_state(&other_story, "verifying", None, None, None)
+        .unwrap();
+    let other_candidate = f
+        .store
+        .read(|tx| crate::service::verification::ordered_candidates_for(tx, other))
+        .unwrap()
+        .pop()
+        .unwrap();
+    let owner = HostRecoveryService::new(&f.ctx())
+        .enroll(&HostFaultEvidence {
+            live: f.proof(false),
+        })
+        .unwrap();
+    let original = f.subject.attribution.submission.clone();
+    // Add retained observations for a second project to the same native episode.
+    // This is status-only data; it does not mint a live fault/restoration proof.
+    let mut other_subject = f.subject.clone();
+    other_subject.candidate = other_candidate.clone();
+    other_subject.attribution.id = "other-status-attribution".into();
+    other_subject.attribution.submission = GateSubmission {
+        project: other,
+        story_id: other_story.clone(),
+        generation: other_candidate.verifying_generation,
+        submitted_at: other_candidate.verifying_since.clone(),
+    };
+    other_subject.execution.id = "other-status-execution".into();
+    let mut duplicate_subject = f.subject.clone();
+    duplicate_subject.attribution.id = "second-observation-same-generation".into();
+    duplicate_subject.execution.id = "second-observation-execution".into();
+    f.store
+        .write(|tx| {
+            let mut record = tx
+                .host_recoveries()?
+                .into_iter()
+                .find(|r| r.id == owner.id)
+                .unwrap();
+            let expected = record.revision;
+            let template = record.state["members"][0].clone();
+            for subject in [&other_subject, &duplicate_subject] {
+                let mut member = template.clone();
+                member["subject"] = serde_json::to_value(subject).unwrap();
+                record.state["members"].as_array_mut().unwrap().push(member);
+            }
+            record.revision += 1;
+            assert!(tx.update_host_recovery(&record, expected)?);
+            tx.insert_gate_attempt(&GateAttempt::new(
+                "status-retry".into(),
+                original.clone(),
+                AT,
+            ))?;
+            tx.insert_gate_attempt(&GateAttempt::new(
+                "other-status-attempt".into(),
+                other_subject.attribution.submission.clone(),
+                AT,
+            ))?;
+            assert!(tx.insert_host_recovery(&crate::store::HostRecovery {
+                id: uuid::Uuid::new_v4().to_string(),
+                fault_key: "f".repeat(64),
+                revision: 0,
+                active: true,
+                state: json!({"version":1,"started_at":"invalid"}),
+            })?);
+            Ok(())
+        })
+        .unwrap();
+    let reopened = SqliteStore::open(f.store.path()).unwrap();
+    let before = reopened.read(|tx| tx.host_recoveries()).unwrap();
+    let statuses = reopened
+        .read(|tx| crate::service::host_recovery::status_snapshot(tx, original.project))
+        .unwrap();
+    let status = statuses.iter().find(|s| s.id == owner.id).unwrap();
+    let fault = status.fault.as_ref().unwrap();
+    assert_eq!(fault.kind, "native-host-pressure");
+    assert_eq!(fault.sequence, f.subject.request.fault.sequence);
+    assert_eq!(
+        fault.key,
+        before.iter().find(|r| r.id == owner.id).unwrap().fault_key
+    );
+    assert_eq!(status.submissions, [original.story_id.clone()]);
+    assert_eq!(status.retained_submissions.len(), 1);
+    assert_eq!(status.retained_submissions[0].submission, original);
+    assert_eq!(status.retained_submissions[0].admission_count, Some(2));
+    assert!(!serde_json::to_string(status).unwrap().contains("OTHER-"));
+    let foreign = reopened
+        .read(|tx| crate::service::host_recovery::status_snapshot(tx, other))
+        .unwrap();
+    let selected = foreign.iter().find(|s| s.id == owner.id).unwrap();
+    assert_eq!(selected.retained_submissions.len(), 1);
+    assert_eq!(selected.retained_submissions[0].submission.project, other);
+    assert_eq!(selected.retained_submissions[0].admission_count, Some(1));
+    let invalid = statuses.iter().find(|s| s.phase == "invalid").unwrap();
+    assert!(invalid.fault.is_none());
+    assert!(invalid.retained_submissions.is_empty());
+    assert_eq!(
+        reopened.read(|tx| tx.host_recoveries()).unwrap(),
+        before,
+        "status mutated retained owners"
+    );
+}
+
+#[test]
+fn host_recovery_status_refuses_mixed_candidate_and_attribution_binding() {
+    let f = Fixture::new();
+    let owner = HostRecoveryService::new(&f.ctx())
+        .enroll(&HostFaultEvidence {
+            live: f.proof(false),
+        })
+        .unwrap();
+    let original = f
+        .store
+        .read(|tx| tx.host_recoveries())
+        .unwrap()
+        .into_iter()
+        .find(|r| r.id == owner.id)
+        .unwrap();
+    for field in ["project", "story", "generation"] {
+        let mut subject = f.subject.clone();
+        match field {
+            "project" => {
+                subject.attribution.submission.project =
+                    ProjectId::new(f.subject.candidate.project.get() + 100)
+            }
+            "story" => subject.attribution.submission.story_id = "PRIVATE-999".into(),
+            "generation" => {
+                subject.attribution.submission.generation = Some(GlobalSeq::new(
+                    f.subject.candidate.verifying_generation.unwrap().get() + 1,
+                ))
+            }
+            _ => unreachable!(),
+        }
+        f.store
+            .write(|tx| {
+                let mut record = tx
+                    .host_recoveries()?
+                    .into_iter()
+                    .find(|r| r.id == owner.id)
+                    .unwrap();
+                let expected = record.revision;
+                record.state = original.state.clone();
+                record.state["members"][0]["subject"] = serde_json::to_value(&subject).unwrap();
+                record.revision += 1;
+                assert!(tx.update_host_recovery(&record, expected)?);
+                Ok(())
+            })
+            .unwrap();
+        let before = f.store.read(|tx| tx.host_recoveries()).unwrap();
+        let statuses = f
+            .store
+            .read(|tx| {
+                crate::service::host_recovery::status_snapshot(tx, f.subject.candidate.project)
+            })
+            .unwrap();
+        let status = statuses.iter().find(|s| s.id == owner.id).unwrap();
+        assert_eq!(status.phase, "invalid", "{field}");
+        assert!(
+            status
+                .next_action
+                .contains("subject project, story or generation"),
+            "{field}: {}",
+            status.next_action
+        );
+        assert!(status.fault.is_none());
+        assert!(status.retained_submissions.is_empty());
+        assert!(status.submissions.is_empty());
+        assert!(
+            !serde_json::to_string(status)
+                .unwrap()
+                .contains("PRIVATE-999")
+        );
+        assert_eq!(f.store.read(|tx| tx.host_recoveries()).unwrap(), before);
+    }
+}
