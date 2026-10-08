@@ -26,6 +26,10 @@ struct OwnedFixture {
 
 impl OwnedFixture {
     fn new(settled: bool) -> Self {
+        Self::with_initial_lease(settled, false)
+    }
+
+    fn with_initial_lease(settled: bool, leased: bool) -> Self {
         let native = Fixture::new(
             SINGLE,
             "docs/guide.md",
@@ -60,6 +64,22 @@ impl OwnedFixture {
         StoryService::new(&ctx)
             .set_state(&id, "verifying", None, None, None)
             .unwrap();
+        if leased {
+            // Capture the generation's adjacent lease before queue admission
+            // and before the original conflict attribution holds that queue.
+            let project_slug = store.read(|tx| tx.project(project)).unwrap().unwrap().slug;
+            fixture.append_cleanup_lease(
+                &id,
+                serde_json::from_value(serde_json::json!({
+                    "version":1,"project_slug":project_slug,"story_id":id,
+                    "repository_path":native.root.path(),
+                    "worktree_path":native.root.path().join("original"),
+                    "branch":"original-work",
+                    "tmux":{"socket_path":native.root.path().join("fixture-socket"),"revivify":null}
+                }))
+                .unwrap(),
+            );
+        }
         let candidate = VerificationQueue::new(&store)
             .with_environment(ctx.env().clone())
             .next()
@@ -454,24 +474,25 @@ fn integration_claim_rejects_same_generation_cleanup_lease_replacement() {
 
 #[test]
 fn integration_leased_claim_allows_replay_but_rejects_conflicting_custody_and_aba() {
-    let mut f = OwnedFixture::new(true);
-    let original: crate::domain::StoryCleanupLease = serde_json::from_value(serde_json::json!({
-        "version":1,"project_slug":f.candidate.project_slug,"story_id":f.candidate.story_id,
-        "repository_path":f.native.root.path(),"worktree_path":f.native.root.path().join("original"),
-        "branch":"original-work","tmux":{"socket_path":f.native.root.path().join("fixture-socket"),"revivify":null}
-    })).unwrap();
-    // No story event follows the original Verifying transition yet, so this
-    // is the generation's actual adjacent lease, not a late replacement.
-    f.fixture.append_cleanup_lease(
-        &f.candidate.story_id,
-        serde_json::from_value(serde_json::to_value(original.clone()).unwrap()).unwrap(),
+    let f = OwnedFixture::with_initial_lease(true, true);
+    let original = f
+        .candidate
+        .cleanup_lease
+        .clone()
+        .expect("initial queue admission must retain the adjacent generation lease");
+    assert_eq!(original.branch, "original-work");
+    assert_eq!(
+        original.worktree_path,
+        f.native.root.path().join("original")
     );
-    f.candidate = VerificationQueue::new(&f.store)
-        .with_environment(f.ctx().env().clone())
-        .next()
-        .unwrap()
-        .unwrap();
-    assert_eq!(f.candidate.cleanup_lease.as_ref(), Some(&original));
+    assert!(
+        VerificationQueue::new(&f.store)
+            .with_environment(f.ctx().env().clone())
+            .next()
+            .unwrap()
+            .is_none(),
+        "the original conflict must still hold ordinary queue admission"
+    );
     let proof = f.proof();
     let record = f.reserve(&proof);
     let ctx = f.ctx();
