@@ -180,6 +180,33 @@ fn delayed_engine_admission_rechecks_manual_mode_before_start_and_resume() {
 }
 
 #[test]
+fn engine_controller_caps_the_connection_timeout_and_preserves_shorter_policy() {
+    let fixture = storyhook_test_support::ServiceFixture::new();
+    for (configured, expected) in [
+        (Duration::from_secs(120), crate::env::DEFAULT_BUSY_TIMEOUT),
+        (Duration::from_millis(20), Duration::from_millis(20)),
+    ] {
+        let env = Environment::at(fixture.env().home()).busy_timeout(configured);
+        let controller = EngineController::open(&env).unwrap();
+        // Read SQLite's actual connection setting, not the Environment or a
+        // duplicate of the cap expression. Removing the cap must fail this.
+        assert_eq!(
+            controller
+                .store
+                .read(|tx| tx.busy_timeout_for_test())
+                .unwrap(),
+            expected
+        );
+        // The cap belongs to HTTP engine controls, not ordinary store callers.
+        let ordinary = crate::invoke::open_store(&env).unwrap();
+        assert_eq!(
+            ordinary.read(|tx| tx.busy_timeout_for_test()).unwrap(),
+            configured
+        );
+    }
+}
+
+#[test]
 fn engine_control_patience_stays_below_the_dashboard_mutation_deadline() {
     let html = include_str!("../../web_dashboard.html");
     let prefix = "intFromQuery(\"mutationTimeoutMs\", ";

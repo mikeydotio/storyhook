@@ -671,6 +671,15 @@ pub struct SqliteReadTx<'a> {
 }
 
 impl<'a> SqliteReadTx<'a> {
+    /// Inspect the connection's effective policy without a wall-clock timeout test.
+    #[cfg(test)]
+    pub(crate) fn busy_timeout_for_test(&self) -> Result<Duration, StoreError> {
+        self.conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
+            .map(Duration::from_millis)
+            .map_err(|error| StoreError::from_sqlite(error, "reading test busy timeout"))
+    }
+
     fn begin(conn: PooledConn<'a>) -> Result<Self, StoreError> {
         conn.execute_batch("BEGIN")
             .map_err(|e| StoreError::from_sqlite(e, "beginning a read"))?;

@@ -132,6 +132,9 @@ mod armed {
     pub enum FaultAction {
         /// Return a [`StoreError::Storage`]-shaped failure with this detail.
         Fail(String),
+        /// Return a retryable storage refusal at this exact transaction stage.
+        /// Tests can distinguish admission retries from replaying executed work.
+        Busy(String),
         /// Panic, so the enclosing transaction unwinds and must roll back.
         Panic(String),
         /// Abort the process immediately, without unwinding or flushing —
@@ -180,6 +183,7 @@ mod armed {
                 "injected fault at {}: {detail}",
                 point.as_str()
             ))),
+            Some(FaultAction::Busy(detail)) => Err(StoreError::Busy(detail)),
             Some(FaultAction::Panic(detail)) => {
                 panic!("injected fault at {}: {detail}", point.as_str())
             }

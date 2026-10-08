@@ -73,6 +73,51 @@ fn engine_control_never_retries_busy_after_the_transaction_closure_runs() {
 }
 
 #[test]
+fn engine_control_never_replays_busy_before_commit_or_after_durable_commit() {
+    use crate::store::fault::{FaultAction, FaultPoint, arm};
+
+    for point in [FaultPoint::BeforeCommit, FaultPoint::AfterCommitBeforeAck] {
+        let fixture = storyhook_test_support::ServiceFixture::new();
+        let env = Environment::at(fixture.env().home());
+        let store = crate::invoke::open_store(&env).unwrap();
+        let project = store
+            .read(|tx| Ok(tx.project_by_slug("fixture")?.unwrap().id))
+            .unwrap();
+        let before = store.read(|tx| tx.checkout_path(project)).unwrap();
+        let changed = fixture.cwd().join("committed-without-acknowledgement");
+        assert_ne!(before.as_ref(), Some(&changed));
+        let ctx = Ctx::new(&store, project, fixture.cwd().to_path_buf(), env.clone());
+        let dispatcher = ShellDispatcher::new("unused", env);
+        let service = EngineService::new(&ctx, &dispatcher)
+            .with_control_deadline(Instant::now() + Duration::from_secs(60));
+        let detail = format!("busy at {}", point.as_str());
+        let fault = arm(point, FaultAction::Busy(detail.clone()));
+        let mut calls = 0;
+        let outcome = service.control_write(|tx| {
+            calls += 1;
+            tx.set_checkout_path(project, Some(&changed))?;
+            Ok(())
+        });
+        drop(fault);
+        assert!(matches!(outcome, Err(StoreError::Busy(ref actual)) if actual == &detail));
+        assert_eq!(calls, 1, "{point:?} must not replay the completed body");
+
+        // Read with an independent handle: the fault before COMMIT rolls back,
+        // while a lost acknowledgement leaves the successful write durable.
+        let observer = SqliteStore::open(store.path()).unwrap();
+        let expected = match point {
+            FaultPoint::BeforeCommit => before,
+            FaultPoint::AfterCommitBeforeAck => Some(changed),
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            observer.read(|tx| tx.checkout_path(project)).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
 fn engine_control_deadline_also_bounds_the_shared_handle_write_mutex() {
     let fixture = storyhook_test_support::ServiceFixture::new();
     let env = Environment::at(fixture.env().home());
