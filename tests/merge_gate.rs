@@ -4965,3 +4965,23 @@ fi
         1
     );
 }
+
+#[test]
+fn sh842_merged_head_and_tree_proof_outranks_an_earlier_refusal_receipt() {
+    let (repo, head, tree) = certified_landing_fixture();
+    repo.enable_fake_merge_endpoint();
+    let merged = public_payload(&repo.landing_phase("attempt", &head, &tree));
+    assert_eq!(merged["result"], "merged", "{merged}");
+    fs::write(
+        repo.path().join("landing.attempted.refused"),
+        serde_json::json!({
+            "version": 1, "head": head, "tree": tree, "number": "42", "status": 405
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let recovered = public_payload(&repo.landing_phase("recover", &head, &tree));
+    assert_eq!(recovered["result"], "merged", "{recovered}");
+    let changed = public_payload(&repo.landing_phase("recover", &head, &"a".repeat(40)));
+    assert_eq!(changed["result"], "uncertain", "{changed}");
+}
