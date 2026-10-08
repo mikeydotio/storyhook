@@ -10,6 +10,7 @@ use std::time::Duration;
 
 mod command;
 mod local;
+mod merge;
 mod observation;
 pub use observation::OriginObservation;
 mod release;

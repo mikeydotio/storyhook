@@ -545,3 +545,98 @@ fn a_story_reset_withdraws_one_member_and_the_batch_still_lands_the_rest() {
         assert_eq!(state(&f, &ids[withdrawn]), "verifying");
     }
 }
+
+#[test]
+fn sh842_operator_release_audits_every_batch_member_atomically() {
+    let (f, ids) = submitted(3);
+    let members = candidates(&f, &ids);
+    let batch = gating(&f, &members);
+    let intent = admit(&f, &members, &batch);
+    let queue = VerificationQueue::new(f.store());
+    let reason = "required policy changed after the gate";
+    assert!(
+        queue
+            .release_landing_observed(&f.ctx(), &intent.rows[1].id, reason, |_| Ok((
+                "MERGED".into(),
+                TIP.into()
+            )))
+            .is_err()
+    );
+    assert_eq!(intents(&f), intent.rows);
+    assert_eq!(record(&f, &batch.id).phase, BatchPhase::Landing);
+    let released = queue
+        .release_landing_observed(&f.ctx(), &intent.rows[1].id, reason, |row| {
+            assert_eq!(row.landing_pull_request(), BATCH_PR);
+            Ok(("OPEN".into(), TIP.into()))
+        })
+        .unwrap();
+    assert_eq!(released, ids);
+    assert!(intents(&f).is_empty());
+    let record = record(&f, &batch.id);
+    assert_eq!(record.phase, BatchPhase::Released);
+    assert!(record.detail.unwrap().contains(reason));
+    for row in intent.rows {
+        assert_eq!(state(&f, &row.story_id), "verifying");
+        let story = f
+            .store()
+            .read(|tx| tx.story(f.project(), row.story))
+            .unwrap()
+            .unwrap();
+        assert!(
+            story
+                .snapshot
+                .comments
+                .last()
+                .unwrap()
+                .text
+                .contains(reason)
+        );
+        assert!(
+            story
+                .snapshot
+                .comments
+                .last()
+                .unwrap()
+                .text
+                .contains(&row.id)
+        );
+    }
+}
+
+#[test]
+fn sh842_operator_batch_release_rolls_back_all_members_on_commit_failure() {
+    use storyhook::store::fault::{FaultAction, FaultPoint, arm};
+    let (f, ids) = submitted(2);
+    let members = candidates(&f, &ids);
+    let batch = gating(&f, &members);
+    let intent = admit(&f, &members, &batch);
+    let guard = arm(
+        FaultPoint::BeforeCommit,
+        FaultAction::Fail("release fault".into()),
+    );
+    assert!(
+        VerificationQueue::new(f.store())
+            .release_landing_observed(&f.ctx(), &intent.rows[0].id, "policy changed", |_| Ok((
+                "CLOSED".into(),
+                TIP.into()
+            )))
+            .is_err()
+    );
+    drop(guard);
+    assert_eq!(intents(&f), intent.rows);
+    assert_eq!(record(&f, &batch.id).phase, BatchPhase::Landing);
+    for row in intent.rows {
+        let story = f
+            .store()
+            .read(|tx| tx.story(f.project(), row.story))
+            .unwrap()
+            .unwrap();
+        assert!(
+            !story
+                .snapshot
+                .comments
+                .iter()
+                .any(|c| c.text.contains("OPERATOR LANDING RELEASE"))
+        );
+    }
+}

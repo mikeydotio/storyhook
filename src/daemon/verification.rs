@@ -143,6 +143,7 @@ pub struct VerificationRetryOrigin {
 pub struct VerificationActivity {
     view_requests: super::activity::window::Requests,
     active: Arc<Mutex<BTreeMap<ProjectId, VerificationSlot>>>,
+    landing_releases: Arc<Mutex<BTreeSet<ProjectId>>>,
     costs: cost::Traces,
     bus: ChangeBus,
 }
@@ -583,6 +584,8 @@ pub enum LandingOutcome {
     Merged { detail: String },
     /// The supervised process exited before sending any merge request.
     NotAttempted { detail: String },
+    /// GitHub synchronously refused this exact merge request.
+    Refused { detail: String },
     /// The request may still complete; authority must remain fenced.
     Uncertain { detail: String },
 }
@@ -2456,6 +2459,7 @@ where
         let _log = super::activity::context::enter(
             super::activity::context::LogContext::candidate(candidate, &active.active.attempt_id),
         );
+        let mut released_refusal = false;
         let result =
             observation::human_owned(store, env, bus, candidate, &active.cancellation, || {
                 let outcome = actuator.recover_landing(candidate, &intent);
@@ -2470,6 +2474,17 @@ where
                     &format!("project={} {}", candidate.project_slug, candidate.story_id),
                     &format!("landing {} recovery: {outcome:?}", intent.id),
                 );
+                if let LandingOutcome::Refused { detail } = &outcome {
+                    let ctx = Ctx::new(
+                        store,
+                        candidate.project,
+                        candidate.checkout.clone(),
+                        env.clone(),
+                    )
+                    .no_hooks(true);
+                    released_refusal = queue.release_rejected_landing(&ctx, &intent, detail)?;
+                    return Ok(TickResult::RetryLater);
+                }
                 if let LandingOutcome::Merged { detail } = outcome {
                     let ctx = Ctx::new(
                         store,
@@ -2497,7 +2512,7 @@ where
                 }
                 Ok(TickResult::RetryLater)
             })?;
-        if result != TickResult::RetryLater {
+        if result != TickResult::RetryLater || released_refusal {
             return Ok(result);
         }
         // Even an OPEN response cannot exclude an earlier request still in flight.
@@ -3078,6 +3093,10 @@ where
                                 return Ok(TickResult::Returned);
                             }
                             pending.retire();
+                        }
+                        LandingOutcome::Refused { detail } => {
+                            queue.release_rejected_landing(&ctx, &intent, &detail)?;
+                            return Ok(TickResult::RetryLater);
                         }
                         LandingOutcome::NotAttempted { detail } => {
                             queue.release_unattempted_landing(&intent)?;

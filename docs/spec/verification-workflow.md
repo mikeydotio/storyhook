@@ -1825,3 +1825,43 @@ The supported baseline does not require macOS `os.waitid` (added in Python
 3.13). The portable kqueue interruption fixture and existing platform-specific
 process supervision remain unchanged. This policy fixes interpreter selection;
 it does not attribute unrelated load-sensitive gate failures to Python.
+
+### Refused landing and operator release (SH-842)
+
+The durable landing marker remains a write-before-send fence. The protected
+`gh pr merge --merge --match-head-commit` call, repository routing, GitHub CLI
+policy checks and merge-queue behavior are preserved. A dedicated capture of
+that command recognizes only a failed command's canonical one-line GitHub
+`HTTPError` with a 4xx status and the resolved merge/GraphQL endpoint. A 408,
+transport error, incomplete capture, multiline/unknown diagnostic, or GraphQL
+200 error remains uncertain. No broad substring matching and no retry of that
+command occurs. This narrow contract follows GitHub CLI's
+[HTTPError formatter](https://github.com/cli/go-gh/blob/trunk/pkg/api/errors.go)
+and [merge command](https://github.com/cli/cli/blob/trunk/pkg/cmd/pr/merge/merge.go).
+
+A definitive refusal is retained beside the attempt marker with the exact PR
+number, admitted head and tree. Recovery validates that binding and re-observes
+the PR before releasing authority; malformed or absent receipts stay uncertain.
+MERGED always takes the existing exact-head, fetched-base ancestry and tree
+proof path. Refusal releases the single intent, or all remaining batch members
+and the batch record, atomically with an explanatory comment on every member.
+It does not mark stories Done, send them for author repair, or certify anything.
+A recovered refusal ends that tick rather than immediately sending another merge.
+
+`story verifier landing show --json` exposes the project's exact pending ids.
+`story verifier landing release <intent-id> --reason <reason>` is an operator
+recovery door. It refuses dispatched agent sessions, blank reasons and active
+verifier ownership. A runtime reservation prevents a new verifier admission
+while the read and release are in progress, without changing automation or
+verifier settings. GitHub must freshly report OPEN or CLOSED at the admitted
+head; MERGED, unknown, failed reads and changed local intent membership refuse
+release. A batch member targets the batch PR and releases every remaining member
+in one transaction. Commit failure preserves every intent and comment history.
+
+The recorded reason explicitly acknowledges that OPEN is not proof that an
+old remote request can never finish. Release changes local authority only;
+there is no remote close/cancel/merge, no destructive reset, no gate certificate
+and no story completion. A stale landing callback cannot complete the released
+intent. A remote merge racing after observation remains an external fact for
+normal subsequent reconciliation; the command cannot make a transaction across
+GitHub and the local store.
