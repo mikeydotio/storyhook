@@ -65,6 +65,7 @@ class Fixture:
         self.state = self.root / "owned/state"
         self.state.mkdir(parents=True)
         self.records = {}
+        self.commands = 0
         env = {k: v for k, v in os.environ.items() if not k.startswith("FAKE_TMUX_")}
         env.update(FIXTURE_ROOT=str(self.root), FAKE_TMUX_STATE=str(self.state),
                    FAKE_TMUX_PANE_LIFETIME="900", FAKE_TMUX_CLEANUP_SECONDS=str(allowance()))
@@ -98,7 +99,12 @@ class Fixture:
                 raise AssertionError("fixture exited before reply; " + str(self.root))
 
     def command(self, command, expected=0):
-        self.child.stdin.write(command + "\n")
+        # The owner protocol is line-framed; keep embedded nested shell
+        # programs in an owned file rather than splitting their quoted lines.
+        self.commands += 1
+        script = self.root / ("command-" + str(self.commands) + ".sh")
+        script.write_text(command + "\n")
+        self.child.stdin.write("source " + shlex.quote(str(script)) + "\n")
         self.child.stdin.flush()
         reply = self.read("__done__:")
         self.refresh()
