@@ -18,7 +18,7 @@ impl Fixture {
         // Test-support links another crate instance; reopen the real seed
         // with this unit-test crate's types, as the control tests do.
         let store = crate::store::SqliteStore::open(seed.store().path()).unwrap();
-        let env = Environment::at(seed.cwd());
+        let env = Environment::at(seed.cwd()).with_subprocess_patience();
         let project = ProjectId::new(seed.project().get());
         Self {
             _seed: seed,
@@ -57,7 +57,11 @@ fn candidate(f: &Fixture) -> VerificationCandidate {
     StoryService::new(&f.ctx())
         .set_state(&id, "verifying", None, None, None)
         .unwrap();
-    VerificationQueue::new(f.store()).next().unwrap().unwrap()
+    VerificationQueue::new(f.store())
+        .with_environment(f.env.clone())
+        .next()
+        .unwrap()
+        .unwrap()
 }
 
 #[test]
@@ -78,6 +82,7 @@ fn stale_authority_prevents_spawn() {
     assert!(
         verify(
             f.store(),
+            &f.env,
             &ChangeBus::new(),
             &c,
             &Cancellation::default(),
@@ -100,9 +105,13 @@ fn human_only_removed_between_reads_still_revokes_the_old_attempt() {
     service
         .set_labels(&c.story_id, &[], &["human-only".into()])
         .unwrap();
-    assert!(!current(f.store(), &c).unwrap());
-    let fresh = VerificationQueue::new(f.store()).next().unwrap().unwrap();
-    assert!(current(f.store(), &fresh).unwrap());
+    assert!(!current(f.store(), &f.env, &c).unwrap());
+    let fresh = VerificationQueue::new(f.store())
+        .with_environment(f.env.clone())
+        .next()
+        .unwrap()
+        .unwrap();
+    assert!(current(f.store(), &f.env, &fresh).unwrap());
 }
 
 #[test]
@@ -114,12 +123,16 @@ fn a_block_cleared_between_observer_reads_still_withdraws_the_attempt() {
     svc.set_awaiting(&c.story_id, "temporary hold").unwrap();
     svc.clear_awaiting(&c.story_id).unwrap();
     assert!(
-        !current(f.store(), &c).unwrap(),
+        !current(f.store(), &f.env, &c).unwrap(),
         "the pre-block attempt retained authority"
     );
-    let next = VerificationQueue::new(f.store()).next().unwrap().unwrap();
+    let next = VerificationQueue::new(f.store())
+        .with_environment(f.env.clone())
+        .next()
+        .unwrap()
+        .unwrap();
     assert!(
-        current(f.store(), &next).unwrap(),
+        current(f.store(), &f.env, &next).unwrap(),
         "a fresh admission after unblock is valid"
     );
 }
@@ -148,6 +161,7 @@ fn completed_outcomes_are_rechecked_even_without_a_notification() {
         let c = candidate(&f);
         let result = verify(
             f.store(),
+            &f.env,
             &ChangeBus::new(),
             &c,
             &Cancellation::default(),
@@ -179,15 +193,22 @@ fn unchanged_generation_edits_keep_the_outcome() {
     let outcome = VerificationOutcome::Conflict {
         detail: "expected".into(),
     };
-    let result = verify(f.store(), &bus, &c, &Cancellation::default(), |token| {
-        StoryService::new(&f.ctx())
-            .comment(&c.story_id, "ordinary comment")
-            .unwrap();
-        bus.publish(Change::Project(c.project_slug.clone()));
-        bus.publish(Change::Resync);
-        assert!(!token.is_cancelled());
-        outcome.clone()
-    })
+    let result = verify(
+        f.store(),
+        &f.env,
+        &bus,
+        &c,
+        &Cancellation::default(),
+        |token| {
+            StoryService::new(&f.ctx())
+                .comment(&c.story_id, "ordinary comment")
+                .unwrap();
+            bus.publish(Change::Project(c.project_slug.clone()));
+            bus.publish(Change::Resync);
+            assert!(!token.is_cancelled());
+            outcome.clone()
+        },
+    )
     .unwrap();
     assert_eq!(result, Some(outcome));
 }
@@ -302,19 +323,81 @@ fn manual_cancellation_is_propagated_even_without_store_events() {
 }
 
 #[test]
+fn explicit_policy_reaches_actuator_and_live_authority_observers() {
+    let f = Fixture::new();
+    let c = candidate(&f);
+    let members = std::slice::from_ref(&c);
+    assert!(current(f.store(), &f.env, &c).unwrap());
+    assert!(
+        stale_members(f.store(), &f.env, members)
+            .unwrap()
+            .is_empty()
+    );
+    let bus = ChangeBus::new();
+    let entered = AtomicBool::new(false);
+    let result = verify(
+        f.store(),
+        &f.env,
+        &bus,
+        &c,
+        &Cancellation::default(),
+        |token| {
+            entered.store(true, Ordering::Relaxed);
+            // Keep the linked PR intact throughout the change, so every
+            // authority check must read Git rather than skip a missing PR.
+            f._seed
+                .github_checkout("https://github.com/acme/replacement");
+            bus.publish(Change::Project(c.project_slug.clone()));
+            // Wait for the actual observer's origin read and authority decision,
+            // not merely a returned outcome or a manually cancelled token.
+            let deadline = Instant::now()
+                + storyhook_test_support::load_grace::graced_now(Duration::from_secs(5));
+            while !token.is_cancelled() {
+                assert!(
+                    Instant::now() < deadline,
+                    "authority observer did not cancel"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            VerificationOutcome::Cancelled
+        },
+    )
+    .unwrap();
+    assert!(
+        entered.load(Ordering::Relaxed),
+        "actuator was never reached"
+    );
+    assert!(result.is_none(), "revoked authority retained an outcome");
+    assert_eq!(
+        stale_members(f.store(), &f.env, members).unwrap(),
+        vec![c.story_id.clone()]
+    );
+}
+
+#[test]
 fn panic_in_actuator_stops_and_joins_the_monitor() {
     let f = Fixture::new();
     let c = candidate(&f);
+    let entered = AtomicBool::new(false);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = verify(
             f.store(),
+            &f.env,
             &ChangeBus::new(),
             &c,
             &Cancellation::default(),
-            |_| panic!("actuator panic"),
+            |_| {
+                entered.store(true, Ordering::Relaxed);
+                panic!("actuator panic");
+            },
         );
     }));
-    assert!(result.is_err());
+    assert!(
+        entered.load(Ordering::Relaxed),
+        "actuator was never reached"
+    );
+    let payload = result.expect_err("the actuator must panic");
+    assert_eq!(payload.downcast_ref::<&str>(), Some(&"actuator panic"));
 }
 
 #[test]
@@ -369,7 +452,7 @@ fn revoked_candidates_cannot_write_verdicts_progress_or_remediation() {
         let f = Fixture::new();
         let c = candidate(&f);
         let ctx = f.ctx();
-        let queue = VerificationQueue::new(f.store());
+        let queue = VerificationQueue::new(f.store()).with_environment(f.env.clone());
         StoryService::new(&ctx)
             .set_labels(&c.story_id, &["human-only".into()], &[])
             .unwrap();
@@ -458,6 +541,7 @@ fn human_withdrawal_preserves_cleanup_failure_evidence_without_a_verdict() {
     let c = candidate(&f);
     let result = verify(
         f.store(),
+        &f.env,
         &ChangeBus::new(),
         &c,
         &Cancellation::default(),
@@ -510,7 +594,7 @@ fn landing_completion_requires_the_admitted_human_revision() {
     let f = Fixture::new();
     let c = candidate(&f);
     let ctx = f.ctx();
-    let queue = VerificationQueue::new(f.store());
+    let queue = VerificationQueue::new(f.store()).with_environment(f.env.clone());
     let certificate = VerifiedSubmission {
         head: "a".repeat(40),
         tree: "b".repeat(40),
@@ -566,7 +650,7 @@ fn landing_completion_resumes_the_dependents_it_unblocks() {
     RelationService::new(&ctx)
         .relate(&dependent, "blocked-by", &c.story_id, false)
         .unwrap();
-    let queue = VerificationQueue::new(f.store());
+    let queue = VerificationQueue::new(f.store()).with_environment(f.env.clone());
     let fresh = queue.ordered_for(f.project).unwrap().remove(0);
     let certificate = VerifiedSubmission {
         head: "a".repeat(40),

@@ -2441,7 +2441,7 @@ where
     A: VerificationActuator,
     W: FnMut(&VerificationCandidate) -> Result<ReconcileWait, AppError>,
 {
-    let queue = VerificationQueue::new(store);
+    let queue = VerificationQueue::new(store).with_environment(env.clone());
     if store
         .read(|tx| tx.verification_incident(project))?
         .is_some()
@@ -2854,6 +2854,7 @@ where
                 None if active.active.mode == VerificationMode::VerificationSkipped => (
                     observation::verify(
                         store,
+                        env,
                         bus,
                         &candidate,
                         &active.cancellation,
@@ -2879,6 +2880,7 @@ where
                         |_| {
                             observation::verify(
                                 store,
+                                env,
                                 bus,
                                 &candidate,
                                 &active.cancellation,
@@ -4009,6 +4011,7 @@ fn poll_project_verification(
                 };
                 wait_for_reconciled_candidate_cancellable(
                     store,
+                    env,
                     &subscription,
                     stop,
                     reserved,

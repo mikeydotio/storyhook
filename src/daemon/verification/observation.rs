@@ -18,8 +18,13 @@ impl Drop for Finish<'_> {
     }
 }
 
-fn current(store: &impl Store, candidate: &VerificationCandidate) -> Result<bool, AppError> {
+fn current(
+    store: &impl Store,
+    env: &Environment,
+    candidate: &VerificationCandidate,
+) -> Result<bool, AppError> {
     VerificationQueue::new(store)
+        .with_environment(env.clone())
         .current_for(candidate)
         .map(|current| current.is_some_and(|fresh| still_current(&fresh, candidate)))
         .map_err(|error| {
@@ -34,12 +39,14 @@ fn current(store: &impl Store, candidate: &VerificationCandidate) -> Result<bool
 /// authority they were admitted with, from one queue read.
 pub(super) fn stale_members(
     store: &impl Store,
+    env: &Environment,
     members: &[VerificationCandidate],
 ) -> Result<Vec<String>, AppError> {
     let Some(first) = members.first() else {
         return Ok(Vec::new());
     };
     let queue = VerificationQueue::new(store)
+        .with_environment(env.clone())
         .ordered_for(first.project)
         .map_err(|error| {
             error.with_context(&format!(
@@ -147,13 +154,14 @@ fn observe(
 
 pub(super) fn verify(
     store: &impl Store,
+    env: &Environment,
     bus: &ChangeBus,
     candidate: &VerificationCandidate,
     manual: &Cancellation,
     run: impl FnOnce(&Cancellation) -> VerificationOutcome,
 ) -> Result<Option<VerificationOutcome>, AppError> {
     let subscription = bus.subscribe();
-    if !current(store, candidate)? {
+    if !current(store, env, candidate)? {
         return Ok(None);
     }
     let attempt = Cancellation::default();
@@ -165,14 +173,14 @@ pub(super) fn verify(
         manual,
         &attempt,
         &candidate.project_slug,
-        || current(store, candidate),
+        || current(store, env, candidate),
         || run(&attempt),
     );
-    if !owned? || !current(store, candidate)? {
+    if !owned? || !current(store, env, candidate)? {
         if let VerificationOutcome::CleanupFailed { cleanup, .. } = &outcome
             && !human_permits(store, candidate)?
         {
-            withdraw_with_cleanup_evidence(store, candidate, cleanup)?;
+            withdraw_with_cleanup_evidence(store, env, candidate, cleanup)?;
         }
         return Ok(None);
     }
@@ -184,6 +192,7 @@ pub(super) fn verify(
 /// evidence goes on the story.
 pub(super) fn withdraw_with_cleanup_evidence(
     store: &impl Store,
+    env: &Environment,
     candidate: &VerificationCandidate,
     cleanup: &VerificationCleanupFailure,
 ) -> Result<(), AppError> {
@@ -191,7 +200,7 @@ pub(super) fn withdraw_with_cleanup_evidence(
         store,
         candidate.project,
         candidate.checkout.clone(),
-        Environment::at(&candidate.checkout),
+        env.clone(),
     )
     .no_hooks(true);
     VerificationQueue::new(store).record_generation_withdrawn(&ctx, candidate, &format!(

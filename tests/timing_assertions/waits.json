@@ -300,9 +300,9 @@
   },
   "src/daemon/verification/observation/tests.rs": {
     "Instant::now()<deadline": {
-      "count": 1,
+      "count": 2,
       "kind": "delegated",
-      "reason": "This readiness loop uses a deadline constructed from load_grace::graced_now in the same test; the raw comparison consumes that existing allowance without renewing it."
+      "reason": "The human-reservation and explicit-policy authority observer loops each use one deadline constructed from load_grace::graced_now in the same test; the raw comparisons consume those existing allowances without renewing them."
     },
     "started.elapsed()<Duration::from_secs(2)": {
       "count": 2,

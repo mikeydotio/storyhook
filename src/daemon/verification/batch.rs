@@ -547,7 +547,7 @@ pub(super) fn run<S: Store>(
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone();
-            observation::stale_members(store, &members).map(|stale| stale.is_empty())
+            observation::stale_members(store, env, &members).map(|stale| stale.is_empty())
         },
         || attempt.steps(),
     );
@@ -562,7 +562,7 @@ pub(super) fn run<S: Store>(
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone();
-            observation::stale_members(store, &members)
+            observation::stale_members(store, env, &members)
                 .unwrap_or_else(|error| vec![format!("(authority unreadable: {error})")])
         }
     };

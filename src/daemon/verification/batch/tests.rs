@@ -454,7 +454,7 @@ impl Boundary {
         let root = fixture.github_checkout("https://github.com/acme/widgets");
         let store = SqliteStore::open(fixture.store().path()).unwrap();
         let project = ProjectId::new(fixture.project().get());
-        let env = Environment::at(&root);
+        let env = Environment::at(&root).with_subprocess_patience();
         let mut candidate = head(&store, &env, project);
         candidate.checkout = root.clone();
         candidate.cleanup_lease = Some(crate::domain::StoryCleanupLease {

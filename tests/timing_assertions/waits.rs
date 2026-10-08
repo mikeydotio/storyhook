@@ -352,7 +352,7 @@ fn source_waits(corpus: super::src_bounds::SrcCorpus) -> BTreeMap<String, BTreeM
 
 #[test]
 fn sh846_source_regions_cover_inline_and_path_modules_without_production() {
-    let root = tempfile::tempdir().unwrap();
+    let root = storyhook_test_support::scratch_dir();
     std::fs::create_dir(root.path().join("src")).unwrap();
     std::fs::write(root.path().join("src/cases.rs"), "").unwrap();
     std::fs::write(root.path().join("src/alternate.rs"), "").unwrap();
