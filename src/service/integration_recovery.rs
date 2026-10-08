@@ -17,6 +17,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{path::Path, time::Instant};
 mod assembly;
+mod gate_inputs;
+pub use gate_inputs::{
+    IntegrationGateInputsEvidence, NativeIntegrationGateInputs, observe_gate_inputs,
+};
 mod owner;
 mod pending;
 mod publication;
@@ -25,7 +29,9 @@ pub use publication::{NativePublication, PublicationEvidence, publish_owned};
 mod submission;
 pub use assembly::{AssemblyEvidence, NativeAssembly, assemble_owned};
 pub use owner::IntegrationRecoveryStatus;
-pub use owner::gate::IntegrationGateClaim;
+pub use owner::gate::{
+    CertifiedIntegration, IntegrationCertificationEvidence, IntegrationGateClaim,
+};
 pub use owner::publication::{
     AssembledIntegration, PublicationClaim, PublicationEffect, PublishedIntegration,
 };

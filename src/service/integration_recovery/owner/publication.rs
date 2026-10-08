@@ -330,6 +330,8 @@ pub(super) fn validate_state(
             | IntegrationPhase::Publishing
             | IntegrationPhase::Published
             | IntegrationPhase::Gating
+            | IntegrationPhase::Running
+            | IntegrationPhase::Certified
     );
     if assembled && state.assembly.is_none()
         || matches!(
@@ -338,13 +340,23 @@ pub(super) fn validate_state(
         ) && state.assembly.is_some()
         || !matches!(
             state.phase,
-            IntegrationPhase::Publishing | IntegrationPhase::Published | IntegrationPhase::Gating
+            IntegrationPhase::Publishing
+                | IntegrationPhase::Published
+                | IntegrationPhase::Gating
+                | IntegrationPhase::Running
+                | IntegrationPhase::Certified
         ) && !state.publication_effects.is_empty()
         || matches!(
             state.phase,
-            IntegrationPhase::Published | IntegrationPhase::Gating
+            IntegrationPhase::Published
+                | IntegrationPhase::Gating
+                | IntegrationPhase::Running
+                | IntegrationPhase::Certified
         ) != state.publication.is_some()
-        || (state.phase == IntegrationPhase::Gating) != state.gate_attempt.is_some()
+        || matches!(
+            state.phase,
+            IntegrationPhase::Gating | IntegrationPhase::Running | IntegrationPhase::Certified
+        ) != state.gate_attempt.is_some()
         || state
             .gate_attempt
             .as_ref()
@@ -366,15 +378,24 @@ pub(super) fn validate_state(
         validate_assembly(record, state, evidence)?;
         let epoch = if matches!(
             state.phase,
-            IntegrationPhase::Publishing | IntegrationPhase::Published | IntegrationPhase::Gating
+            IntegrationPhase::Publishing
+                | IntegrationPhase::Published
+                | IntegrationPhase::Gating
+                | IntegrationPhase::Running
+                | IntegrationPhase::Certified
         ) {
-            evidence
-                .epoch
-                .checked_add(if state.phase == IntegrationPhase::Gating {
+            evidence.epoch.checked_add(
+                if matches!(
+                    state.phase,
+                    IntegrationPhase::Gating
+                        | IntegrationPhase::Running
+                        | IntegrationPhase::Certified
+                ) {
                     2
                 } else {
                     1
-                })
+                },
+            )
         } else {
             Some(evidence.epoch)
         };
@@ -384,6 +405,7 @@ pub(super) fn validate_state(
             ));
         }
     }
+    gate::validate_inputs(state, record)?;
     if let Some(publication) = &state.publication {
         if state.publication_effects
             != [
@@ -414,9 +436,10 @@ fn validate_publication(
     if evidence.version != 1
         || evidence.owner != record.id
         || Some(evidence.epoch)
-            != state
-                .effect_epoch
-                .checked_sub(u32::from(state.phase == IntegrationPhase::Gating))
+            != state.effect_epoch.checked_sub(u32::from(matches!(
+                state.phase,
+                IntegrationPhase::Gating | IntegrationPhase::Running | IntegrationPhase::Certified
+            )))
         || evidence.original != state.submission
         || evidence.branch != state.branch
         || evidence.commit != assembly.commit

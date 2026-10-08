@@ -14,6 +14,11 @@ impl Cancellation {
         self.0.store(true, Ordering::Release);
     }
 
+    /// Exact in-process owner identity, never inferred from the current bool.
+    pub(crate) fn same_owner(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     /// Whether the owner has irreversibly requested cancellation.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {

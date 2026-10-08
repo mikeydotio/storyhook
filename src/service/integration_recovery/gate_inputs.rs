@@ -14,19 +14,33 @@ use std::time::Instant;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IntegrationGateInputsEvidence {
+    /// Native observation envelope version.
     pub version: u8,
+    /// Exact original managed integration owner.
     pub owner: String,
+    /// Live original central gate admission.
     pub attempt: String,
+    /// Exact native managed and original PR identities.
     pub publication: PublicationEvidence,
+    /// Fresh remote base, initially required to equal the pinned base.
     pub current_base: String,
+    /// Original intended target branch.
     pub base_branch: String,
+    /// Exact native assembled resolution tree.
     pub tree: String,
+    /// Pinned committed single-integration policy digest.
     pub policy: String,
+    /// Ordered immutable original base and author head.
     pub parents: [String; 2],
 }
 
 /// Constructed only by the successful native observation below. Not Clone or
 /// Deserialize: saved JSON cannot recreate a fresh input-observation capability.
+///
+/// ```compile_fail
+/// use storyhook::service::integration_recovery::NativeIntegrationGateInputs;
+/// let _: NativeIntegrationGateInputs = serde_json::from_str("{}").unwrap();
+/// ```
 pub struct NativeIntegrationGateInputs {
     evidence: IntegrationGateInputsEvidence,
     deadline: Instant,

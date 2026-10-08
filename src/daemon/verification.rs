@@ -16,6 +16,7 @@ mod cleanup;
 mod control;
 mod cost;
 mod diagnosis;
+pub(crate) mod integration_gate;
 pub use diagnosis::{RustDiagnosisRequest, RustDiagnosisResult};
 #[cfg(test)]
 mod authority_refresh_tests;

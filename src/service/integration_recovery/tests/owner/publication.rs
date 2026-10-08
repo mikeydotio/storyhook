@@ -529,3 +529,259 @@ fn managed_gate_expired_operation_cannot_claim_a_published_receipt() {
     assert_eq!(service.show(&id).unwrap(), before);
     proof.settle().unwrap();
 }
+
+fn gate_inputs(claim: &IntegrationGateClaim) -> IntegrationGateInputsEvidence {
+    IntegrationGateInputsEvidence {
+        version: 1,
+        owner: claim.id().into(),
+        attempt: claim.attempt().into(),
+        publication: claim.publication().clone(),
+        current_base: claim.assembly().plan.base.clone(),
+        base_branch: claim.publication().original.base_branch.clone(),
+        tree: claim.publication().tree.clone(),
+        policy: claim.assembly().plan.policy.clone(),
+        parents: claim.publication().parents.clone(),
+    }
+}
+
+#[test]
+fn native_gate_start_consumes_exact_fresh_inputs_without_rewriting_submission() {
+    for changed in [
+        "none",
+        "base",
+        "tree",
+        "owner",
+        "attempt",
+        "expired",
+        "cancelled",
+    ] {
+        let f = OwnedFixture::new(true);
+        let proof = proof(&f);
+        let ready = published(&f, &proof);
+        let attempt = gate_admission(&f, "none");
+        let ctx = f.ctx();
+        let service = IntegrationOwnerService::new(&ctx);
+        let cancellation = Cancellation::default();
+        let claim = service
+            .claim_gate(ready, &proof, &attempt, proof.deadline, &cancellation)
+            .unwrap()
+            .unwrap();
+        let id = claim.id().to_string();
+        let before = service.show(&id).unwrap();
+        let mut inputs = gate_inputs(&claim);
+        let observation_cancel = Cancellation::default();
+        let deadline = if changed == "expired" {
+            Instant::now()
+        } else {
+            proof.deadline
+        };
+        match changed {
+            "base" => inputs.current_base = "f".repeat(40),
+            "tree" => inputs.tree = "f".repeat(40),
+            "owner" => inputs.owner = uuid::Uuid::new_v4().to_string(),
+            "attempt" => inputs.attempt = uuid::Uuid::new_v4().to_string(),
+            "cancelled" => observation_cancel.cancel(),
+            _ => {}
+        }
+        // Substitute only the native remote observation boundary; actual local
+        // assembly, custody, original proposal and Store CAS remain real.
+        let native = crate::service::integration_recovery::gate_inputs::fixture_gate_inputs(
+            inputs.clone(),
+            deadline,
+            observation_cancel,
+        );
+        let result = service.start_gate(claim, native);
+        if changed == "none" {
+            let running = result.unwrap().unwrap();
+            assert!(service.gate_permitted(&running).unwrap());
+            assert!(running.owns_cancellation(&cancellation));
+            assert!(!running.owns_cancellation(&Cancellation::default()));
+            assert_eq!(running.inputs(), Some(&inputs));
+            let after = service.show(&id).unwrap();
+            assert_eq!(after.1.phase, IntegrationPhase::Running);
+            assert_eq!(after.1.started_at, before.1.started_at);
+            assert_eq!(after.1.effect_epoch, before.1.effect_epoch);
+            assert_eq!(after.1.attribution, before.1.attribution);
+            cancellation.cancel();
+            assert!(service.gate_permitted(&running).is_err());
+            assert_eq!(service.show(&id).unwrap(), after);
+        } else {
+            assert!(result.is_err(), "accepted {changed} native observation");
+            assert_eq!(service.show(&id).unwrap(), before);
+        }
+        proof.settle().unwrap();
+    }
+}
+
+#[test]
+fn running_gate_keeps_central_admission_after_physical_result_until_guard_settles() {
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let ready = published(&f, &proof);
+    let attempt = gate_admission(&f, "none");
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let cancellation = Cancellation::default();
+    let claim = service
+        .claim_gate(ready, &proof, &attempt, proof.deadline, &cancellation)
+        .unwrap()
+        .unwrap();
+    let native = crate::service::integration_recovery::gate_inputs::fixture_gate_inputs(
+        gate_inputs(&claim),
+        proof.deadline,
+        Cancellation::default(),
+    );
+    let running = service.start_gate(claim, native).unwrap().unwrap();
+    let mut admission = f
+        .store
+        .read(|tx| tx.gate_attempts(f.candidate.project))
+        .unwrap()
+        .into_iter()
+        .find(|a| a.id == attempt)
+        .unwrap();
+    admission.verdict = Some("certified".into());
+    admission.revision = 1;
+    assert!(
+        f.store
+            .write(|tx| tx.update_gate_attempt(&admission, 0))
+            .unwrap()
+    );
+    assert!(
+        service.gate_permitted(&running).unwrap(),
+        "physical verdict prematurely retired native post-gate observation"
+    );
+    assert!(
+        service.show(running.id()).unwrap().1.gate.is_none(),
+        "accounting alone minted a certificate"
+    );
+    admission.finished_at = Some(AT.into());
+    admission.revision = 2;
+    assert!(
+        f.store
+            .write(|tx| tx.update_gate_attempt(&admission, 1))
+            .unwrap()
+    );
+    assert!(
+        service.gate_permitted(&running).is_err(),
+        "retired admission retained process authority"
+    );
+    proof.settle().unwrap();
+}
+
+#[test]
+fn managed_certificate_requires_exact_settled_original_physical_gate() {
+    for changed in [
+        "none",
+        "missing",
+        "unfinished",
+        "estimated",
+        "unbound",
+        "wrong-tree",
+        "wrong-submission",
+    ] {
+        let f = OwnedFixture::new(true);
+        let proof = proof(&f);
+        let ready = published(&f, &proof);
+        let attempt = gate_admission(&f, "none");
+        let ctx = f.ctx();
+        let service = IntegrationOwnerService::new(&ctx);
+        let cancellation = Cancellation::default();
+        let claim = service
+            .claim_gate(ready, &proof, &attempt, proof.deadline, &cancellation)
+            .unwrap()
+            .unwrap();
+        let inputs = gate_inputs(&claim);
+        let native = crate::service::integration_recovery::gate_inputs::fixture_gate_inputs(
+            inputs.clone(),
+            proof.deadline,
+            cancellation.clone(),
+        );
+        let running = service.start_gate(claim, native).unwrap().unwrap();
+        let mut admission = f
+            .store
+            .read(|tx| tx.gate_attempts(f.candidate.project))
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == attempt)
+            .unwrap();
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let mut execution = crate::store::GateExecution::new(
+            execution_id.clone(),
+            AT,
+            "scratch-managed-gate.ndjson".into(),
+        );
+        execution.inputs = GateInputs {
+            head: Some(inputs.publication.commit.clone()),
+            base: Some(inputs.current_base.clone()),
+            tree: Some(inputs.tree.clone()),
+            ..Default::default()
+        };
+        execution.submissions = vec![admission.submission.clone()];
+        execution.journal_bound = changed != "unbound";
+        if changed == "wrong-tree" {
+            execution.inputs.tree = Some("f".repeat(40));
+        }
+        if changed == "wrong-submission" {
+            execution.submissions[0].generation = None;
+        }
+        // The fixture goes through real live execution insertion, then completion
+        // CAS; no production accounting invariant is disabled for this test.
+        if changed != "missing" {
+            admission.executions.push(execution);
+            admission.revision += 1;
+            assert!(
+                f.store
+                    .write(|tx| tx.update_gate_attempt(&admission, 0))
+                    .unwrap()
+            );
+            let execution = admission.executions.last_mut().unwrap();
+            if changed != "unfinished" {
+                execution.finished_at = Some(AT.into());
+            }
+            execution.estimated = changed == "estimated";
+            execution.verdict = Some("certified".into());
+            admission.verdict = Some("certified".into());
+            admission.revision += 1;
+            assert!(
+                f.store
+                    .write(|tx| tx.update_gate_attempt(&admission, 1))
+                    .unwrap()
+            );
+        }
+        let before = service.show(running.id()).unwrap();
+        let certification = crate::domain::landing::VerifiedSubmission {
+            head: inputs.publication.commit.clone(),
+            tree: inputs.tree.clone(),
+            gate: "make test".into(),
+        };
+        let fresh = crate::service::integration_recovery::gate_inputs::fixture_gate_inputs(
+            inputs,
+            proof.deadline,
+            cancellation,
+        );
+        let native = crate::daemon::verification::integration_gate::fixture_certification(
+            execution_id,
+            certification,
+            fresh,
+        );
+        let id = running.id().to_string();
+        let result = service.accept_gate(running, native);
+        if changed == "none" {
+            let certified = result.unwrap().unwrap();
+            certified.validate_custody().unwrap();
+            let after = service.show(&id).unwrap();
+            assert_eq!(after.1.phase, IntegrationPhase::Certified);
+            assert_eq!(after.1.candidate, before.1.candidate);
+            assert_eq!(after.1.attribution, before.1.attribution);
+            assert_eq!(after.1.started_at, before.1.started_at);
+            assert!(
+                f.store.read(|tx| tx.landing_intents()).unwrap().is_empty(),
+                "certificate silently admitted a merge"
+            );
+        } else {
+            assert!(result.is_err(), "certified {changed} physical evidence");
+            assert_eq!(service.show(&id).unwrap(), before);
+        }
+        proof.settle().unwrap();
+    }
+}

@@ -30,6 +30,10 @@ pub enum IntegrationPhase {
     Published,
     /// The original central slot owns a distinct physical integration gate.
     Gating,
+    /// A fresh native input proof started the centrally supervised gate.
+    Running,
+    /// Actual central result and fresh native inputs certified the exact tree.
+    Certified,
     /// Authority, semantic ambiguity, or uncertain effects require reconciliation.
     Held,
 }
@@ -84,6 +88,12 @@ pub struct IntegrationOwner {
     /// Physical admission identity, never a certificate or replay permission.
     #[serde(default)]
     pub gate_attempt: Option<String>,
+    /// Native admission inputs; metadata alone grants no gate result.
+    #[serde(default)]
+    pub gate_inputs: Option<IntegrationGateInputsEvidence>,
+    /// Certified physical execution; JSON retains evidence but cannot land.
+    #[serde(default)]
+    pub gate: Option<gate::IntegrationCertificationEvidence>,
 }
 
 /// One native assembly claim, minted only by the durable compare-and-swap.
@@ -210,7 +220,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
                 started_at: attempt.admitted_at, reserved_at: now.clone(), updated_at: now.clone(),
                 label_revision: crate::service::project_recovery::recovery_label_revision(tx, candidate.project, story)?,
                 control_revision, phase: IntegrationPhase::Reserved, effect_epoch: 0, effect_started_at: None, hold: None,
-                assembly: None, publication_effects: Vec::new(), publication: None, gate_attempt: None,
+                assembly: None, publication_effects: Vec::new(), publication: None, gate_attempt: None, gate_inputs: None, gate: None,
             };
             let record = IntegrationRecovery { id, project: candidate.project, story, generation: candidate.verifying_generation.ok_or_else(|| invalid("submission has no generation"))?, revision: 0, active: true, state: encode(&state)? };
             decode(&record)?;
@@ -585,6 +595,14 @@ pub(crate) fn status_snapshot(
             IntegrationPhase::Gating => (
                 "gating",
                 "The central slot must finish and settle its exact managed gate; stored admission metadata grants no certificate or restart replay.",
+            ),
+            IntegrationPhase::Running => (
+                "running",
+                "The original central slot supervises progress and owns child settlement; native input metadata is not a passed gate or merge receipt.",
+            ),
+            IntegrationPhase::Certified => (
+                "certified",
+                "The exact managed tree has a native central certificate; a separately owned protected landing must still prove merge and original-head ancestry.",
             ),
             IntegrationPhase::Held => (
                 "held",
