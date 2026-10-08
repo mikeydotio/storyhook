@@ -1,5 +1,7 @@
 //! A card reset holds readiness until exact resource cleanup succeeds.
 mod cleanup;
+mod preview;
+pub use preview::{ResetPreview, ResetWindowPreview};
 pub(crate) mod identity;
 mod summary;
 mod takeover;
@@ -23,7 +25,7 @@ use std::time::{Duration, Instant};
 ///
 /// Shorter than the dashboard's 75-second mutation deadline, so a contended
 /// request still answers before its client gives up.
-pub(crate) const RESERVE_PATIENCE: Duration = Duration::from_secs(60);
+pub(crate) const RESERVE_PATIENCE: Duration = crate::store::patience::HTTP_WRITE_ADMISSION_PATIENCE;
 
 /// Attempts of the finish transaction before the reset degrades (D3).
 const FINISH_ATTEMPTS: u32 = 3;

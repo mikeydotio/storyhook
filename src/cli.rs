@@ -180,6 +180,15 @@ pub enum EngineAction {
 /// The controls under `story verifier` (SH-666).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerifierAction {
+    /// Inspect the selected project's pending landing authority.
+    LandingShow,
+    /// Release an exact pending intent (and every batch member), with a reason.
+    LandingRelease {
+        /// Exact intent id from landing show.
+        intent_id: String,
+        /// Operator reason retained on every affected story.
+        reason: String,
+    },
     /// Read durable submission and gate-cost history without changing admission.
     Evidence {
         /// Story whose own and shared batch executions are requested.
@@ -667,8 +676,16 @@ pub enum Invocation {
         caller: crate::service::reset::ResetCaller,
         /// Canonical or project-relative story identifier.
         id: String,
-        /// Explicit permission to discard dirty or locked worktree contents.
+        /// Compatibility flag; reset always discards owned local work.
         force: bool,
+    },
+    /// Read-only reset preview. A separate wire variant ensures an older daemon
+    /// rejects this request rather than ignoring a flag and executing a reset.
+    ResetPreview {
+        /// Canonical or project-relative story identifier.
+        id: String,
+        /// Terminal identity captured by the client.
+        caller: crate::service::reset::ResetCaller,
     },
     /// Revokes unattempted terminal effects before a managed session replacement.
     /// The caller holds workspace exclusion through the replacement itself.
@@ -1044,7 +1061,7 @@ impl Invocation {
                 | ProjectAction::Settings(_) => {}
             },
             Self::Delete { force, .. } => *force = true,
-            Self::Reset { .. } => {}
+            Self::Reset { .. } | Self::ResetPreview { .. } => {}
             // Answers `ConfirmationRequired` too, and until SH-638 was never
             // forced on the re-run: `story archive-state` at a terminal
             // printed its plan twice and archived nothing.
@@ -2004,7 +2021,7 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "reset",
         subcommand: None,
-        flags: &[bare("force")],
+        flags: &[bare("force"), bare("dry-run")],
     },
     VerbFlags {
         verb: "unclaim",
@@ -2609,19 +2626,28 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "reset" => {
             let mut id = None;
             let mut force = false;
+            let mut dry_run = false;
             for arg in &args[1..] {
                 match arg.as_str() {
                     "--force" if !force => force = true,
+                    "--dry-run" if !dry_run => dry_run = true,
                     value if !value.starts_with('-') && id.is_none() => id = Some(value.to_owned()),
-                    _ => return Err(AppError::Usage("usage: story reset <id> [--force]".into())),
+                    _ => {
+                        return Err(AppError::Usage(
+                            "usage: story reset <id> [--force] [--dry-run]".into(),
+                        ));
+                    }
                 }
             }
-            Ok(Invocation::Reset {
-                caller: crate::service::reset::ResetCaller::capture(),
-                id: id
-                    .ok_or_else(|| AppError::Usage("usage: story reset <id> [--force]".into()))?,
-                force,
-            })
+            let id = id.ok_or_else(|| {
+                AppError::Usage("usage: story reset <id> [--force] [--dry-run]".into())
+            })?;
+            let caller = crate::service::reset::ResetCaller::capture();
+            if dry_run {
+                Ok(Invocation::ResetPreview { id, caller })
+            } else {
+                Ok(Invocation::Reset { id, force, caller })
+            }
         }
         "internal" => parse_internal(args),
         "engine" => parse_engine(args),
@@ -4062,10 +4088,30 @@ const VERIFIER_ACK_USAGE: &str = "usage: story verifier ack <incident-id> [--lea
 fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
     let Some(action) = args.get(1).map(String::as_str) else {
         return Err(AppError::Usage(
-            "usage: story verifier <status|evidence|start|stop|drain|ack|repair>".to_string(),
+            "usage: story verifier <status|evidence|landing|start|stop|drain|ack|repair>"
+                .to_string(),
         ));
     };
     let action = match action {
+        "landing" => {
+            const USAGE: &str =
+                "usage: story verifier landing show | release <intent-id> --reason <reason>";
+            match args.get(2).map(String::as_str) {
+                Some("show") if args.len() == 3 => VerifierAction::LandingShow,
+                Some("release")
+                    if args.len() == 6
+                        && args[4] == "--reason"
+                        && !is_flag_shaped(&args[3])
+                        && !args[5].trim().is_empty() =>
+                {
+                    VerifierAction::LandingRelease {
+                        intent_id: args[3].clone(),
+                        reason: args[5].clone(),
+                    }
+                }
+                _ => return Err(AppError::Usage(USAGE.into())),
+            }
+        }
         "evidence" => {
             const USAGE: &str = "usage: story verifier evidence <story-id> [--json]";
             if args.len() != 3 || args[2].trim().is_empty() || is_flag_shaped(&args[2]) {
@@ -4177,7 +4223,8 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
         }
         _ => {
             return Err(AppError::Usage(
-                "usage: story verifier <status|evidence|start|stop|drain|ack|repair>".to_string(),
+                "usage: story verifier <status|evidence|landing|start|stop|drain|ack|repair>"
+                    .to_string(),
             ));
         }
     };
@@ -7147,6 +7194,37 @@ mod tests {
         #[test]
         fn pr_check_with_too_many_arguments_is_a_usage_error() {
             assert!(parse(&["pr-check", "SH-1", "extra"]).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod landing_release_tests {
+    use super::*;
+    #[test]
+    fn sh842_landing_release_cli_requires_exact_id_and_reason() {
+        let parse =
+            |s: &[&str]| parse_verifier(&s.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert!(matches!(
+            parse(&["verifier", "landing", "show"]).unwrap(),
+            Invocation::Verifier {
+                action: VerifierAction::LandingShow
+            }
+        ));
+        assert!(
+            matches!(parse(&["verifier", "landing", "release", "intent-1", "--reason", "checked rejection"]).unwrap(), Invocation::Verifier { action: VerifierAction::LandingRelease { intent_id, reason } } if intent_id == "intent-1" && reason == "checked rejection")
+        );
+        for args in [
+            vec!["verifier", "landing", "release", "intent-1"],
+            vec![
+                "verifier", "landing", "release", "intent-1", "--reason", " ",
+            ],
+            vec![
+                "verifier", "landing", "release", "intent-1", "--reason", "reason", "--force",
+            ],
+            vec!["verifier", "landing", "show", "extra"],
+        ] {
+            assert!(parse(&args).is_err(), "{args:?}");
         }
     }
 }

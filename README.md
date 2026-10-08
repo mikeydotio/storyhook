@@ -422,7 +422,7 @@ story next [--count <n>] [--phase <N>] [--epic <id>] [--exclude-label <csv>]
 story claim <id> [--comment <text> | --no-comment] [--dry-run]
 story claim --next [--phase <N>] [--epic <id>] [--exclude-label <csv>] [--comment <text> | --no-comment] [--dry-run]
 story unclaim <id> [--comment <text> | --no-comment] [--dry-run]
-story reset <id> [--force]
+story reset <id> [--force] [--dry-run]
 story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex] [--model <id>] [--effort <id>] [--speed standard|fast]
 story engine configure (--lanes <n> | --model <id> | --effort <id> | --speed standard|fast) [--run <id>]
 story engine adopt <id> [<id> ...] [--run <id>]
@@ -762,12 +762,12 @@ resume, clean, or delete anything.
 
 ### Live daemon and verifier activity
 
-The daemon maintains one `verification` window in each project-slug tmux
-session on the default server. Its right pane follows the project journal; its
-left pane runs the Verifier Agent (`claude --agent story:verifier`, Opus at
+The daemon maintains two single-pane windows in each project-slug tmux
+session on the default server. `verification` follows the project journal;
+`verifier` runs the Verifier Agent (`claude --agent story:verifier`, Opus at
 xhigh effort) in the registered checkout, a build and integration specialist
 for verifier wedges, red gates and merge conflicts. The daemon recreates a
-missing or failed reader, and a closed agent pane after a minute; when the
+missing or failed reader, and a closed agent window after a minute; when the
 agent exits, its pane waits for Enter to start it again.
 
 ```bash
@@ -790,7 +790,7 @@ containing `*` in it, so git never lists the journal and your repository's own
 remain under `<daemon state directory>/activity/`. Both rotate at UTC midnight,
 append across restarts, and remain until you remove them. Set
 `STORYHOOK_VERIFIER_MIRROR=0` to disable all tmux calls while retaining logs,
-or `STORYHOOK_VERIFIER_AGENT=0` to keep the reader without the agent pane.
+or `STORYHOOK_VERIFIER_AGENT=0` to keep the reader without creating an agent window.
 
 ## Storage model
 

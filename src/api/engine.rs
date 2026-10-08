@@ -6,6 +6,9 @@
 //! the fixed store dispatchers while waiting for that child would reproduce
 //! the deadlock [`crate::api::dispatch`] exists to avoid.
 
+#[cfg(test)]
+mod contention_tests;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -39,6 +42,18 @@ use crate::store::{
     EngineScope, EngineSpeed, ReadOps, SqliteStore, Store,
 };
 
+/// Admission can retry for 60 seconds plus at most one five-second SQLite
+/// attempt, below the dashboard's default 75-second mutation deadline. HTTP
+/// controls suppress hooks; Stop Now retains its separate durable cleanup wait.
+const CONTROL_PATIENCE: std::time::Duration = crate::store::patience::HTTP_WRITE_ADMISSION_PATIENCE;
+
+fn control_service<'a, D: Dispatcher>(
+    ctx: &'a Ctx<'a, SqliteStore>,
+    dispatcher: &'a D,
+) -> EngineService<'a, SqliteStore, D> {
+    EngineService::new(ctx, dispatcher).with_control_deadline(Instant::now() + CONTROL_PATIENCE)
+}
+
 /// One persistent store handle for engine requests, shared by every worker.
 ///
 /// The ordinary REST pool remains borrowed by `Serving`; this independently
@@ -52,7 +67,12 @@ pub(crate) struct EngineController {
 impl EngineController {
     pub(crate) fn open(env: &Environment) -> Result<Self, AppError> {
         Ok(Self {
-            store: crate::invoke::open_store(env)?,
+            store: crate::invoke::open_store(
+                &env.clone().busy_timeout(
+                    env.busy_timeout_value()
+                        .min(crate::env::DEFAULT_BUSY_TIMEOUT),
+                ),
+            )?,
             env: env.clone(),
         })
     }
@@ -75,7 +95,7 @@ impl EngineController {
         let request: StartBody = parse_body(body, "engine start")?;
         let ctx = self.context(project)?;
         let dispatcher = NoopDispatcher;
-        let service = EngineService::new(&ctx, &dispatcher);
+        let service = control_service(&ctx, &dispatcher);
         let run = service.start(StartRequest {
             scope: request.epic.map_or(EngineScope::Project, EngineScope::Epic),
             lanes: request.lanes,
@@ -100,7 +120,7 @@ impl EngineController {
     fn configure(&self, project: &str, body: &str) -> Result<RunView, AppError> {
         let request: ConfigureBody = parse_body(body, "engine configure")?;
         let ctx = self.context(project)?;
-        EngineService::new(&ctx, &NoopDispatcher).configure(
+        control_service(&ctx, &NoopDispatcher).configure(
             &request.run,
             ConfigureRequest {
                 lanes: request.lanes,
@@ -124,7 +144,7 @@ impl EngineController {
                 let request: StopBody = parse_body(body, "engine stop")?;
                 let ctx = self.context(project)?;
                 if !request.now {
-                    return EngineService::new(&ctx, &NoopDispatcher).stop(&request.run, false);
+                    return control_service(&ctx, &NoopDispatcher).stop(&request.run, false);
                 }
 
                 with_immediate_stop_inflight(
@@ -149,21 +169,20 @@ impl EngineController {
                             .iter()
                             .any(|lane| !matches!(lane.state, EngineLaneState::Idle));
                         if !needs_helper {
-                            return EngineService::new(&ctx, &NoopDispatcher)
-                                .stop(&request.run, true);
+                            return control_service(&ctx, &NoopDispatcher).stop(&request.run, true);
                         }
 
                         let script = resolve_dispatch_script(current.run.agent.into())
                             .map_err(AppError::Storage)?;
                         let dispatcher = ShellDispatcher::new(script, self.env.clone());
-                        EngineService::new(&ctx, &dispatcher).stop(&request.run, true)
+                        control_service(&ctx, &dispatcher).stop(&request.run, true)
                     },
                 )
             }
             EngineAction::Pause | EngineAction::Resume | EngineAction::Ack => {
                 let request: ActionBody = parse_body(body, action.label())?;
                 let ctx = self.context(project)?;
-                let service = EngineService::new(&ctx, &NoopDispatcher);
+                let service = control_service(&ctx, &NoopDispatcher);
                 match action {
                     EngineAction::Pause => service.pause(&request.run),
                     EngineAction::Resume => service.resume(&request.run),

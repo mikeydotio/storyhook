@@ -703,6 +703,11 @@ fn dispatch_inner<S: Store>(
             comment,
             dry_run,
         } => dispatch_unclaim(ctx, &id, &comment, dry_run),
+        Invocation::ResetPreview { id, caller } => {
+            crate::service::story_reset::StoryResetService::new(ctx)
+                .preview(&id, &caller)
+                .map(|preview| Response::ResetPreview(Box::new(preview)))
+        }
         Invocation::Reset { id, force, caller } => {
             let reset = crate::service::reset::reset_story(ctx, &id, force, &caller)?;
             let mut response = ctx.story_view(&id)?;
@@ -1104,6 +1109,45 @@ fn dispatch_verifier<S: Store>(
     use crate::service::verification_control::{VerificationAcknowledgement, VerificationAction};
     let recovery = crate::service::project_recovery::ProjectRecoveryService::new(ctx);
     match &action {
+        VerifierAction::LandingShow => {
+            let intents = ctx.store().read(|tx| {
+                Ok(tx
+                    .landing_intents()?
+                    .into_iter()
+                    .filter(|row| row.project == ctx.project())
+                    .collect::<Vec<_>>())
+            })?;
+            return Ok(Response::RawJson(serde_json::to_string(&intents)?));
+        }
+        VerifierAction::LandingRelease { intent_id, reason } => {
+            let activity = ctx.verification_activity().ok_or_else(|| {
+                AppError::Validation("landing release requires the daemon runtime".into())
+            })?;
+            let _reservation = activity.reserve_landing_release(ctx.project())?;
+            let released = crate::service::VerificationQueue::new(ctx.store())
+                .release_landing_observed(ctx, intent_id, reason, |intent| {
+                    let repository = crate::github_access::Repository::resolve(&intent.checkout)?;
+                    let metadata = repository.gh(&[
+                        "pr".into(),
+                        "view".into(),
+                        intent.landing_pull_request().into(),
+                        "--json".into(),
+                        "state,headRefOid".into(),
+                    ])?;
+                    let value: serde_json::Value = serde_json::from_slice(&metadata)?;
+                    let state = value["state"]
+                        .as_str()
+                        .ok_or_else(|| AppError::Validation("missing PR state".into()))?;
+                    let head = value["headRefOid"]
+                        .as_str()
+                        .ok_or_else(|| AppError::Validation("missing PR head".into()))?;
+                    Ok((state.into(), head.into()))
+                })?;
+            return Ok(Response::RawJson(
+                serde_json::json!({"released": released, "intent_id": intent_id, "reason": reason})
+                    .to_string(),
+            ));
+        }
         VerifierAction::Evidence { story_id } => {
             let (attempts, attributions) = ctx.store().read(|tx| {
                 let project = tx.project(ctx.project())?.ok_or_else(|| {
@@ -1164,7 +1208,9 @@ fn dispatch_verifier<S: Store>(
             let answer = activity.admit_repair(ctx, &story_id, &attempt_id, generation, &input)?;
             return Ok(Response::RawJson(serde_json::to_string(&answer)?));
         }
-        VerifierAction::Evidence { .. }
+        VerifierAction::LandingShow
+        | VerifierAction::LandingRelease { .. }
+        | VerifierAction::Evidence { .. }
         | VerifierAction::RepairShow { .. }
         | VerifierAction::RepairDecide { .. }
         | VerifierAction::RepairSatisfy { .. } => {
@@ -3194,7 +3240,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Next { .. } => "next",
         Invocation::Claim { .. } => "claim",
         Invocation::Unclaim { .. } => "unclaim",
-        Invocation::Reset { .. } => "reset",
+        Invocation::Reset { .. } | Invocation::ResetPreview { .. } => "reset",
         Invocation::SupersedeBlockDeliveries { .. } => "supersede-block-deliveries",
         Invocation::SupersedeContinuations { .. } => "supersede-continuations",
         Invocation::Engine { .. } => "engine",
@@ -4338,6 +4384,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
         | Invocation::Reset { .. }
+        | Invocation::ResetPreview { .. }
         | Invocation::SupersedeBlockDeliveries { .. }
         | Invocation::SupersedeContinuations { .. }
         | Invocation::Engine { .. }

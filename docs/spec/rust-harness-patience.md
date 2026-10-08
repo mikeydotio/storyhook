@@ -19,11 +19,11 @@ so a failing assertion releases workers before their join.
 
 ## Census
 
-The sweep covers 475 Rust files recursively under `tests/` and
-`crates/storyhook-test-support/`, plus test-only regions in 407 tracked `src/`
+The sweep covers 477 Rust files recursively under `tests/` and
+`crates/storyhook-test-support/`, plus test-only regions in 417 tracked `src/`
 files. The exact retained inventory is `tests/timing_assertions/waits.json`:
-136 expressions at 193 sites (90 proof, 53 delegated, 50 fixture). The source
-portion contributes 58 expressions at 98 sites. These counts describe the
+148 expressions at 211 sites (93 proof, 60 delegated, 58 fixture). The source
+portion contributes 70 expressions at 115 sites. These counts describe the
 lexical fence, not every blocking operation. Each entry states its owner and
 reason; occurrence counts prevent a new use from inheriting an old waiver.
 
@@ -492,7 +492,7 @@ and retains the final diagnostic. The SH-806 forced-timeout path stays literal.
 The normal gate receipt helper graces its eight-second cleanup allowance; the
 speculative termination-budget proof keeps its explicit policy.
 
-The capture census retains 61 sites in 51 entries across 31 files. It distinguishes
+The capture census retains 60 sites in 50 entries across 31 files. It distinguishes
 explicit forwarded bounds from retained production contracts. Private-object Git
 has no Environment owner and retains its 30-second query and answer-size limits;
 controlled queries still take the minimum with the caller's remaining absolute
@@ -508,3 +508,16 @@ local per-bound policy, default versus explicit actuator controls, answered
 adoption observations and gate child-policy forwarding. Their execution belongs
 to the parent validation lane; this source-stage update does not claim a test pass
 or reproduction of the historical cleanup-grace incident.
+
+### Integrated census after SH-807 / SH-855 / SH-889 / SH-891
+
+The integrated inventory retires SH-855's two wall-clock probe fixture entries
+and follows its single live capture into `engine/probe_runtime.rs`. Newly landed
+cache waits delegate to their shared graced patience; SH-889's SQLite inputs,
+negative busy observation, driven admission deadlines and release barriers retain
+their proof/fixture owners. Its post-release receives use the shared ceiling.
+The additional browser writer-drain helper shares the graced completion budget.
+Reset preview now forwards the same Environment allowance as execution while
+preserving no-optional-locks, disabled fsmonitor, pending-origin cwd fallback,
+planned-removal predicates and stale-registration handling. The shared reset
+workspace fixture declares patience before either preview or execution.

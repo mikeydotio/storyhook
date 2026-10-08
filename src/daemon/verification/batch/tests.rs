@@ -240,6 +240,14 @@ impl Store for CountingStore {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.inner.write(f)
     }
+    fn try_write<T>(
+        &self,
+        f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        self.writes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.try_write(f)
+    }
     fn migrate(&self) -> Result<crate::store::MigrationReport, StoreError> {
         self.inner.migrate()
     }

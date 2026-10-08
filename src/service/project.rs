@@ -44,6 +44,8 @@ use super::state_set::write_states;
 use super::templates;
 use super::{Clock, append_and_fold, refold_story};
 
+mod prefix_change;
+
 /// The story-id prefix a project gets when `init` is not told one.
 pub const DEFAULT_PREFIX: &str = "SH";
 
@@ -1530,7 +1532,8 @@ impl<'a, S: Store> ProjectService<'a, S> {
     /// rename it exists to undo (SH-297).
     ///
     /// Refuses if `new_prefix` is not valid, is the prefix this project
-    /// already has, or already belongs to another project — nothing in the
+    /// already has, already belongs to another project, or an unfinished
+    /// operation still owns canonical story IDs in this project — nothing in the
     /// schema stops two projects sharing a prefix, and project resolution
     /// never consults one, so a silent collision would let a typed id
     /// resolve into the wrong project undetected.
@@ -1723,7 +1726,7 @@ fn validate_prefix_change(
             holder.slug
         )));
     }
-    Ok(())
+    prefix_change::require_quiescent(tx, record)
 }
 
 /// `(stories, relationships)` a prefix rewrite would touch.

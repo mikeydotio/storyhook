@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Reconcile the owned project verification window (SH-748, SH-822).
+"""Reconcile the owned project verification windows (SH-748, SH-822, SH-861).
 
-The window has a reader pane that follows the project journal (right) and,
-when the daemon supplies a launch, a Verifier Agent pane (left).
+The verification window follows the project journal; the verifier window
+holds the Verifier Agent. Both are detached, single-pane allocations.
 
 Runs only as the daemon composes it: plugins/story/lib/tmux_server_env.py
 and probe_budget.py followed by this file (src/daemon/activity/window.rs), which supplies
@@ -35,7 +35,7 @@ READER_PROOF = "@storyhook-reader-proof-v1"
 # gets it back; a launch that fails at once cannot become a restart loop.
 AGENT_RESPAWN_COOLDOWN = 60
 # The agent's $0. It is in the pane's start command from creation, so a pass
-# interrupted after the split can never leave an agent this view cannot see.
+# interrupted after allocation can never leave an agent this view cannot see.
 AGENT_MARKER = "storyhook-verifier:"
 # A person restarts the agent: the loop waits for Enter after every exit, so a
 # launch that fails at once shows its status instead of being run again.
@@ -162,6 +162,11 @@ def readopt_view(rows, owner):
         row = live.get(saved['pane_id'])
         if row is None and not uuid_owners.get(uuid_key):
             continue  # A later owned replacement already retired this UUID.
+        if (row is not None and row[5] == "" and row[1].startswith("verification-retained-")
+                and uuid_owners.get(uuid_key) == {row[2]}
+                and tmux("show-option", "-w", "-q", "-v", "-t", row[0],
+                         "@storyhook-view-released") == owner):
+            continue  # This reconciler deliberately handed the mixed window back.
         if row is None or row[5] != owner or uuid_owners.get(uuid_key) != {row[2]}:
             raise RuntimeError('restored verification pane is moved, duplicated or foreign')
         if tmux('show-options', '-p', '-v', '-t', row[2], '@revivify-uuid') != uuid_key:
@@ -209,8 +214,9 @@ def reconcile(session, directory, binary, checkout=None, *agent):
     """Keep the owned reader and agent alive without disturbing other terminal work.
 
     Each pass makes at most one structural change (create the window, replace
-    the reader, or create the agent), so every pass fits the one operation
-    budget and a failure leaves at most one step to recover.
+    the reader, migrate a pane, release a mixed window, or create the agent).
+    Every pass fits the one operation budget; a failure leaves at most one
+    step to recover.
     """
     global VIEW_TARGET
     if os.environ.get("STORYHOOK_VERIFIER_MIRROR") == "0":
@@ -230,7 +236,8 @@ def reconcile(session, directory, binary, checkout=None, *agent):
             return  # The current owner is already reconciling this project.
         VIEW_TARGET = view_target(ensure=True)
         reader = [str(Path(binary).resolve()), "daemon", "logs", "--directory", str(directory), "--follow"]
-        launch = (checkout, list(agent)) if checkout and agent else None
+        launch = ((checkout, list(agent)) if checkout and agent
+                  and os.environ.get("STORYHOOK_VERIFIER_AGENT") != "0" else None)
         # new-session -A is not suitable here: it attaches when the session exists.
         sessions = tmux("list-sessions", "-F", "#{session_name}") if server_has_sessions() else ""
         if session not in sessions.splitlines():
@@ -251,26 +258,40 @@ def reconcile(session, directory, binary, checkout=None, *agent):
                     raise
                 return
         rows = inventory(session)
-        windows = {row[0] for row in rows if row[1] == "verification"}
-        if len(windows) > 1 or any(row[1] == "verification" and row[5] != owner for row in rows):
-            raise RuntimeError(f"verification ownership conflict in session {session}")
-        own = [row for row in rows if row[1] == "verification"]
-        if readopt_view(own, owner):
+        for name in ("verification", "verifier"):
+            windows = {row[0] for row in rows if row[1] == name}
+            if len(windows) > 1 or any(row[1] == name and row[5] != owner for row in rows):
+                raise RuntimeError(f"{name} ownership conflict in session {session}")
+        if readopt_view(rows, owner):
             rows = inventory(session)
-            own = [row for row in rows if row[1] == "verification"]
+        own = [row for row in rows if row[1] == "verification"]
+        agents = [row for row in rows if is_agent(row, owner)]
+        if len(agents) > 1 or any(row[5] != owner for row in agents):
+            raise RuntimeError(f"verifier agent ownership conflict in session {session}")
+        agent_window = [row for row in rows if row[1] == "verifier"]
+        if agent_window and not any(is_agent(row, owner) for row in agent_window):
+            raise RuntimeError(f"verifier occupant conflict in session {session}")
+        # Move the exact legacy pane without restarting it. Disabled agents stay
+        # where they are; that switch never authorizes ending a live process.
+        legacy = [row for row in agents if row[1] != "verifier"]
+        if legacy and launch:
+            if agent_window:
+                raise RuntimeError(f"verifier ownership conflict in session {session}")
+            migrate_agent(session, [row for row in rows if row[0] == legacy[0][0]], owner, legacy[0])
+            return
         reader_row = next((row for row in own if is_reader(row)), None)
         if reader_row and healthy(reader_row):
-            reap_temporary(session, rows, owner)
-            if launch:
-                ensure_agent(session, own, owner, reader_row, launch)
+            if reap_temporary(session, rows, owner):
+                return
+            if launch and not agents:
+                ensure_agent(session, own, owner, launch)
             return
-        others = [row for row in own if row[4] == "0" and not reader_like(row)]
-        if others:
-            replace_reader(session, own, owner, reader, others)
-            reap_temporary(session, rows, owner)
+        # Even a dead user pane is a person's work. Only a single proven reader
+        # may be retired; mixed/replaced panes are preserved and released.
+        if own and (len(own) != 1 or not reader_like(own[0])):
+            release_reader_window(session, own)
             return
         replace_window(session, own, owner, reader)
-        reap_temporary(session, rows, owner)
 
 
 def replace_window(session, own, owner, reader):
@@ -292,65 +313,65 @@ def replace_window(session, own, owner, reader):
         raise
 
 
-def replace_reader(session, own, owner, reader, others):
-    """Replace only the reader of a window that other live panes share.
-
-    Killing the window would end the agent and any pane a person added, so the
-    new reader is split in beside a live pane, marked, and only then are the
-    old reader panes retired, each after its evidence is checked again.
-    """
+def release_reader_window(session, own):
+    """Preserve a mixed or repurposed window; a later pass allocates its reader."""
     window = own[0][0]
-    agents = sorted((row for row in others if is_agent(row, owner)), key=pane_number)
-    beside = (agents or others)[0][2]
-    pane = tmux("split-window", "-d", "-h", "-t", beside, "-c", str(Path.home()),
-                "-P", "-F", "#{pane_id}", *reader)
-    try:
-        mark(window, pane, owner)
-        retired = [row for row in own if reader_like(row) or is_reader(row)]
-        current = {row[2]: row for row in inventory(session) if row[0] == window}
-        for row in retired:
-            # The mark above rewrote the window options every row repeats, so
-            # the pane's own immutable evidence is what is compared.
-            now = current.get(row[2])
-            if now is not None and now[2:5] + [now[7]] != row[2:5] + [row[7]]:
-                raise RuntimeError("verification reader changed during replacement")
-        for row in retired:
-            if row[2] in current:
-                tmux("kill-pane", "-t", row[2])
-    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
-        rollback_pane(pane, error)
-        raise
+    if [row for row in inventory(session) if row[0] == window] != own:
+        raise RuntimeError("verification ownership changed before release")
+    # A disabled legacy agent retains ownership until a later enabled pass
+    # can migrate it; never forget it and launch a duplicate.
+    ownership = ([] if any(is_agent(row, row[5]) for row in own) else
+                 ["set-option", "-w", "-t", window, "@storyhook-view-released", own[0][5], ";",
+                  "set-option", "-w", "-u", "-t", window, "@storyhook-journal", ";"])
+    tmux("rename-window", "-t", window, "verification-retained-" + uuid.uuid4().hex, ";",
+         *ownership,
+         "set-option", "-w", "-u", "-t", window, "@storyhook-reader", ";",
+         "set-option", "-w", "-u", "-t", window, "@storyhook-command")
 
 
-def ensure_agent(session, own, owner, reader_row, launch):
-    """Keep exactly one Verifier Agent pane left of the reader."""
-    agents = sorted((row for row in own if is_agent(row, owner)), key=pane_number)
-    if len(agents) > 1:
-        # Two passes can both split before either sees the other's pane; the
-        # lowest pane ID is the one that existed first.
-        current = {row[2]: row for row in inventory(session) if row[0] == own[0][0]}
-        for row in agents[1:]:
-            if current.get(row[2], [None] * FIELDS)[2:4] == row[2:4]:
-                tmux("kill-pane", "-t", row[2])
-        return
-    if agents:
-        return
-    started = own[0][9]
+def agent_clock(owner):
+    """Session ownership outlives either window, including an operator close."""
+    return "@storyhook-agent-started-" + owner
+
+
+def migrate_agent(session, own, owner, agent):
+    """Break out one positively identified legacy agent, preserving its PID."""
+    if [row for row in inventory(session) if row[0] == agent[0]] != own:
+        raise RuntimeError("verification ownership changed before agent migration")
+    # Preserve the old cooldown even if the reader is later replaced or closed.
+    started = agent[9] if agent[9].isdigit() else str(int(time.time()))
+    session_id = tmux("display-message", "-p", "-t", "=" + session, "#{session_id}")
+    target = "=" + session + ":=verifier"
+    move = (["rename-window", "-t", agent[0], "verifier"] if len(own) == 1 else
+            ["break-pane", "-d", "-s", agent[2], "-t", "=" + session + ":", "-n", "verifier"])
+    release = ([";", "set-option", "-w", "-t", agent[0], "@storyhook-view-released", owner,
+                ";", "set-option", "-w", "-u", "-t", agent[0], "@storyhook-journal"]
+               if len(own) > 1 and agent[1] != "verification" else [])
+    tmux("set-option", "-t", session_id, agent_clock(owner), started, ";",
+         *move, ";",
+         "set-option", "-w", "-t", target, "@storyhook-journal", owner, ";",
+         "set-option", "-w", "-t", target, "automatic-rename", "off", ";",
+         "set-option", "-w", "-t", target, "allow-rename", "off", *release)
+
+
+def ensure_agent(session, own, owner, launch):
+    """Create the missing agent in its own detached window, after cooldown."""
+    session_id = tmux("display-message", "-p", "-t", "=" + session, "#{session_id}")
+    started = tmux("show-option", "-q", "-v", "-t", session_id, agent_clock(owner))
+    # Read the legacy clock until the first new launch/migration publishes it.
+    if not started and own:
+        started = own[0][9]
     if started.isdigit() and time.time() - int(started) < AGENT_RESPAWN_COOLDOWN:
         return
     checkout, command = launch
-    # A server a provider process started can hold its session state; this
-    # session is storyhook's, so its new panes are cleaned before the launch.
     scrub_owned_session(tmux, session, os.environ)
-    window = own[0][0]
-    tmux("set-option", "-w", "-t", window, "@storyhook-agent-started", str(int(time.time())), ";",
-         "split-window", "-d", "-h", "-b", "-t", reader_row[2], "-c", checkout,
-         *pane_overrides(os.environ), "/bin/sh", "-c", AGENT_LOOP, AGENT_MARKER + owner, *command)
-
-
-def pane_number(row):
-    """Order panes by creation: tmux numbers pane IDs upward from %0."""
-    return int(row[2].lstrip("%") or 0)
+    target = "=" + session + ":=verifier"
+    tmux("set-option", "-t", session_id, agent_clock(owner), str(int(time.time())), ";",
+         "new-window", "-d", "-t", "=" + session + ":", "-n", "verifier", "-c", checkout,
+         *pane_overrides(os.environ), "/bin/sh", "-c", AGENT_LOOP, AGENT_MARKER + owner, *command, ";",
+         "set-option", "-w", "-t", target, "@storyhook-journal", owner, ";",
+         "set-option", "-w", "-t", target, "automatic-rename", "off", ";",
+         "set-option", "-w", "-t", target, "allow-rename", "off")
 
 
 def rollback(window, original):
@@ -362,15 +383,6 @@ def rollback(window, original):
                            "a later reconcile will recover it") from original
 
 
-def rollback_pane(pane, original):
-    """Retire a reader pane this pass split in but could not mark or confirm."""
-    try:
-        tmux("kill-pane", "-t", pane)
-    except (OSError, RuntimeError, subprocess.TimeoutExpired) as cleanup:
-        raise RuntimeError(f"{original}; cleanup of owned pane {pane} failed: {cleanup}; "
-                           "a later reconcile will recover it") from original
-
-
 def reap_temporary(session, rows, owner):
     """Only retire interrupted allocations after a permanent view exists."""
     for row in rows:
@@ -379,6 +391,8 @@ def reap_temporary(session, rows, owner):
             current = [other for other in inventory(session) if other[0] == row[0]]
             if current == [row]:
                 tmux("kill-window", "-t", row[0])
+                return True
+    return False
 
 
 def server_has_sessions():

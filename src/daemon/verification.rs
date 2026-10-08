@@ -17,6 +17,8 @@ mod control;
 mod cost;
 mod diagnosis;
 pub use diagnosis::{RustDiagnosisRequest, RustDiagnosisResult};
+#[cfg(test)]
+mod authority_refresh_tests;
 pub(crate) mod evidence;
 #[cfg(test)]
 mod journal_retirement_tests;
@@ -143,6 +145,7 @@ pub struct VerificationRetryOrigin {
 pub struct VerificationActivity {
     view_requests: super::activity::window::Requests,
     active: Arc<Mutex<BTreeMap<ProjectId, VerificationSlot>>>,
+    landing_releases: Arc<Mutex<BTreeSet<ProjectId>>>,
     costs: cost::Traces,
     bus: ChangeBus,
 }
@@ -583,6 +586,8 @@ pub enum LandingOutcome {
     Merged { detail: String },
     /// The supervised process exited before sending any merge request.
     NotAttempted { detail: String },
+    /// GitHub synchronously refused this exact merge request.
+    Refused { detail: String },
     /// The request may still complete; authority must remain fenced.
     Uncertain { detail: String },
 }
@@ -2474,6 +2479,7 @@ where
         let _log = super::activity::context::enter(
             super::activity::context::LogContext::candidate(candidate, &active.active.attempt_id),
         );
+        let mut released_refusal = false;
         let result =
             observation::human_owned(store, env, bus, candidate, &active.cancellation, || {
                 let outcome = actuator.recover_landing(candidate, &intent);
@@ -2488,6 +2494,17 @@ where
                     &format!("project={} {}", candidate.project_slug, candidate.story_id),
                     &format!("landing {} recovery: {outcome:?}", intent.id),
                 );
+                if let LandingOutcome::Refused { detail } = &outcome {
+                    let ctx = Ctx::new(
+                        store,
+                        candidate.project,
+                        candidate.checkout.clone(),
+                        env.clone(),
+                    )
+                    .no_hooks(true);
+                    released_refusal = queue.release_rejected_landing(&ctx, &intent, detail)?;
+                    return Ok(TickResult::RetryLater);
+                }
                 if let LandingOutcome::Merged { detail } = outcome {
                     let ctx = Ctx::new(
                         store,
@@ -2515,7 +2532,7 @@ where
                 }
                 Ok(TickResult::RetryLater)
             })?;
-        if result != TickResult::RetryLater {
+        if result != TickResult::RetryLater || released_refusal {
             return Ok(result);
         }
         // Even an OPEN response cannot exclude an earlier request still in flight.
@@ -3097,6 +3114,10 @@ where
                             }
                             pending.retire();
                         }
+                        LandingOutcome::Refused { detail } => {
+                            queue.release_rejected_landing(&ctx, &intent, &detail)?;
+                            return Ok(TickResult::RetryLater);
+                        }
                         LandingOutcome::NotAttempted { detail } => {
                             queue.release_unattempted_landing(&intent)?;
                             StoryService::new(&ctx).comment(
@@ -3447,6 +3468,29 @@ enum AuthorityRefresh {
     Released,
 }
 
+/// Link metadata changes independently of submission authority. The queue has
+/// already checked registration and close-on-merge eligibility; the parsed
+/// host (including port), repository identity and number identify the PR.
+/// Keep invalid/missing submissions distinct, including their diagnostic facts.
+fn same_pull_request_authority(
+    current: &Result<PrLink, VerificationProblem>,
+    owned: &Result<PrLink, VerificationProblem>,
+) -> bool {
+    match (current, owned) {
+        (Ok(current), Ok(owned)) => {
+            current.owner == owned.owner
+                && current.repo == owned.repo
+                && current.number == owned.number
+                && matches!(
+                    (parse_pr_url(&current.url), parse_pr_url(&owned.url)),
+                    (Ok(current), Ok(owned)) if current == owned
+                )
+        }
+        (Err(current), Err(owned)) => current == owned,
+        _ => false,
+    }
+}
+
 fn candidate_authority(
     queue: &VerificationQueue<'_, impl Store>,
     candidate: &VerificationCandidate,
@@ -3456,7 +3500,7 @@ fn candidate_authority(
         Some(current)
             if current.verifying_generation == candidate.verifying_generation
                 && current.human_only_revision == candidate.human_only_revision
-                && current.pull_request == candidate.pull_request
+                && same_pull_request_authority(&current.pull_request, &candidate.pull_request)
                 && current.checkout == candidate.checkout
                 && current.project_slug == candidate.project_slug
                 && current.blocking_revision == candidate.blocking_revision =>

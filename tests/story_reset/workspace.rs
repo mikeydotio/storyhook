@@ -47,7 +47,7 @@ impl Workspace {
     /// The base commit is on origin/main; the story branch `worktree-SH-1` is
     /// checked out in `.codex/worktrees/SH-1` and holds nothing else yet.
     pub(crate) fn new(with_origin: bool) -> Self {
-        let fixture = ServiceFixture::new();
+        let fixture = ServiceFixture::new().with_subprocess_patience();
         let root = storyhook_test_support::scratch_dir();
         let repo = root.path().join("repo");
         let remote = root.path().join("remote.git");

@@ -75,7 +75,7 @@ fn run_attempt(
 ) -> Result<Vec<u8>, AppError> {
     let usage = || {
         AppError::Usage(
-            "usage: story github resolve|exec|git --checkout PATH [--authority PATH] [--expected HOST/OWNER/REPO] [-- ARGUMENTS]".into(),
+            "usage: story github resolve|exec|git|merge --checkout PATH [--authority PATH] [--expected HOST/OWNER/REPO] [-- ARGUMENTS]".into(),
         )
     };
     if arguments.len() < 3 || arguments[1] != "--checkout" {
@@ -118,6 +118,12 @@ fn run_attempt(
         "resolve" if remaining.is_empty() => serde_json::to_vec(&repository).map_err(|error| {
             AppError::GithubApi(format!("encoding resolved GitHub origin: {error}"))
         }),
+        "merge" if remaining.len() == 3 && remaining[0] == "--" => {
+            let number = remaining[1].parse::<u64>().map_err(|_| usage())?;
+            repository
+                .merge_once(number, &remaining[2])
+                .and_then(|reply| serde_json::to_vec(&reply).map_err(Into::into))
+        }
         "exec" if remaining.len() > 1 && remaining[0] == "--" => repository.gh(&remaining[1..]),
         "git" if remaining.len() > 1 && remaining[0] == "--" => repository.git(&remaining[1..]),
         _ => Err(usage()),

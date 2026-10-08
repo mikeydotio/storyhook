@@ -27,14 +27,14 @@ const STEP_PAUSE: Duration = Duration::from_secs(1);
 #[derive(Debug, Default)]
 pub(super) struct Authority {
     /// The repository whose worktree and branch are in scope.
-    repository: Option<PathBuf>,
+    pub(super) repository: Option<PathBuf>,
     /// Remove the registered worktree, including a registration whose
     /// directory is already gone.
-    worktree: bool,
+    pub(super) worktree: bool,
     /// Delete the directory of a worktree that Git no longer registers.
-    orphan_directory: bool,
+    pub(super) orphan_directory: bool,
     /// Delete the local branch.
-    branch: bool,
+    pub(super) branch: bool,
 }
 
 /// Accumulates residue, one entry per resource.
@@ -55,7 +55,11 @@ impl Residue {
     }
 
     /// Marks (or adds) a resource the next dispatch would collide with.
-    fn blocks_dispatch(&mut self, resource: impl Into<String>, reason: impl Into<String>) {
+    pub(super) fn blocks_dispatch(
+        &mut self,
+        resource: impl Into<String>,
+        reason: impl Into<String>,
+    ) {
         let resource = resource.into();
         if let Some(entry) = self.0.iter_mut().find(|entry| entry.resource == resource) {
             entry.blocks_dispatch = true;
@@ -326,7 +330,14 @@ fn legacy_authority(
     let dirty = git::text_with_bound(
         env.subprocess_bound(std::time::Duration::from_secs(60)),
         target,
-        &["status", "--porcelain", "--untracked-files=all"],
+        &[
+            "--no-optional-locks",
+            "-c",
+            "core.fsmonitor=false",
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        ],
     )
     .map_or(true, |status| !status.trim().is_empty());
     if locked || dirty {
@@ -491,6 +502,8 @@ fn installed_artifact_guard(
 }
 
 /// Counts what removal will discard, before anything is removed.
+/// Status cannot refresh the index or start a configured filesystem monitor:
+/// this same observation is used by the read-only reset preview.
 pub(super) fn recovery(
     env: &crate::env::Environment,
     report: &ResourceReport,
@@ -502,7 +515,15 @@ pub(super) fn recovery(
         && let Ok(status) = git::text_with_bound(
             env.subprocess_bound(std::time::Duration::from_secs(60)),
             worktree,
-            &["status", "--porcelain=v2", "-z", "--untracked-files=all"],
+            &[
+                "--no-optional-locks",
+                "-c",
+                "core.fsmonitor=false",
+                "status",
+                "--porcelain=v2",
+                "-z",
+                "--untracked-files=all",
+            ],
         )
     {
         let (dirty, untracked) = count_changes(&status);
@@ -646,61 +667,49 @@ pub(super) fn remove(
     }
 }
 
-/// Closes the exact pinned window; any doubt about its identity leaves it.
-fn close_window(
-    report: &ResourceReport,
+/// Shared read-only proof for the exact window reset may close.
+pub(super) fn window_authority<'a>(
+    report: &'a ResourceReport,
     caller: &ResetCaller,
     env: &crate::env::Environment,
-    workspace: Option<&WorkspaceLock>,
-    residue: &mut Residue,
-) {
-    let resource = window_resource(report);
+) -> Result<Option<(crate::service::tmux_target::Target, &'a tmux::ResourcePane)>, String> {
     // The window is only as proven as the identity it was resolved with.
     if !matches!(report.status.as_str(), "resolved" | "absent") {
         if report.socket_path.is_some() || report.pane.is_some() {
-            residue.leave(
-                resource,
-                format!(
-                    "resource identity is {}: {}",
-                    report.status,
-                    report.diagnostics.join("; ")
-                ),
-            );
+            return Err(format!(
+                "resource identity is {}: {}",
+                report.status,
+                report.diagnostics.join("; ")
+            ));
         }
-        return;
+        return Ok(None);
     }
     let Some(socket) = &report.socket_path else {
         if report.pane.is_some() {
-            residue.leave(resource, "the tmux window has no recorded socket");
+            return Err("the tmux window has no recorded socket".into());
         }
-        return;
+        return Ok(None);
     };
     let names = BTreeSet::from([report.window_name.clone()]);
     let (target, panes) = match attempt(|| tmux::resolved_panes(env, socket, &names)) {
         Ok(observed) => observed,
-        Err(error) => return residue.leave(resource, error.to_string()),
+        Err(error) => return Err(error.to_string()),
     };
     if panes.is_empty() {
-        return;
+        return Ok(None);
     }
     if target.protected && target.endpoint != *socket {
-        return residue.leave(
-            resource,
-            "the tmux server generation changed after reset began",
-        );
+        return Err("the tmux server generation changed after reset began".into());
     }
     let Some(expected) = &report.pane else {
-        return residue.leave(resource, "a new tmux window appeared after reset began");
+        return Err("a new tmux window appeared after reset began".into());
     };
     if panes.len() != 1
         || panes[0].window_id != expected.window_id
         || panes[0].pane_id != expected.pane_id
         || panes[0].pid != expected.pid
     {
-        return residue.leave(
-            resource,
-            "the tmux window's identity changed after reset began",
-        );
+        return Err("the tmux window's identity changed after reset began".into());
     }
     if caller.pane.as_deref() == Some(expected.pane_id.as_str())
         && caller.socket.as_ref().is_some_and(|own| {
@@ -711,8 +720,27 @@ fn close_window(
                     .is_ok_and(|own| target.endpoint.canonicalize().is_ok_and(|end| own == end))
         })
     {
-        return residue.leave(resource, "it is the reset caller's own tmux window");
+        return Err("it is the reset caller's own tmux window".into());
     }
+    Ok(Some((target, expected)))
+}
+
+/// Closes the exact pinned window; any doubt about its identity leaves it.
+fn close_window(
+    report: &ResourceReport,
+    caller: &ResetCaller,
+    env: &crate::env::Environment,
+    workspace: Option<&WorkspaceLock>,
+    residue: &mut Residue,
+) {
+    let resource = window_resource(report);
+    let (target, expected) = match window_authority(report, caller, env) {
+        Ok(Some(proof)) => proof,
+        Ok(None) => return,
+        Err(reason) => return residue.leave(resource, reason),
+    };
+    let socket = report.socket_path.as_ref().expect("proven window socket");
+    let names = BTreeSet::from([report.window_name.clone()]);
     let closed = attempt(|| {
         let mut command = std::process::Command::new("tmux");
         crate::env::spawn_env::apply_dispatch_allowlist(&mut command);
@@ -757,7 +785,29 @@ pub(super) fn dispatch_overlap(
     env: &crate::env::Environment,
     residue: &mut Residue,
 ) {
-    if let Some(socket) = &report.socket_path {
+    overlap(report, authority, env, residue, false, false);
+}
+
+/// Predicts residue after the proven removals, without performing them.
+pub(super) fn preview_overlap(
+    report: &ResourceReport,
+    authority: &Authority,
+    env: &crate::env::Environment,
+    residue: &mut Residue,
+    window: bool,
+) {
+    overlap(report, authority, env, residue, true, window);
+}
+
+fn overlap(
+    report: &ResourceReport,
+    authority: &Authority,
+    env: &crate::env::Environment,
+    residue: &mut Residue,
+    planned: bool,
+    window: bool,
+) {
+    if !window && let Some(socket) = &report.socket_path {
         let names = BTreeSet::from([report.window_name.clone()]);
         match tmux::panes(env, socket, &names) {
             Ok(panes) if panes.is_empty() => {}
@@ -781,7 +831,9 @@ pub(super) fn dispatch_overlap(
         }
         return;
     };
-    if let Some(worktree) = &report.worktree {
+    if !(planned && (authority.worktree || authority.orphan_directory))
+        && let Some(worktree) = &report.worktree
+    {
         let registered = git::inventory_with_bound(
             env.subprocess_bound(std::time::Duration::from_secs(60)),
             repository,
@@ -795,12 +847,13 @@ pub(super) fn dispatch_overlap(
     let Some(branch) = &report.branch else {
         return;
     };
-    if git::branch_exists_with_bound(
-        env.subprocess_bound(std::time::Duration::from_secs(60)),
-        repository,
-        branch,
-    )
-    .unwrap_or(true)
+    if !(planned && authority.branch)
+        && git::branch_exists_with_bound(
+            env.subprocess_bound(std::time::Duration::from_secs(60)),
+            repository,
+            branch,
+        )
+        .unwrap_or(true)
     {
         residue.blocks_dispatch(branch_resource(branch), "the local branch still exists");
     }

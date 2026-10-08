@@ -34,6 +34,7 @@ github_call() {
 }
 
 github_exec() { github_call exec "$@"; }
+github_merge() { github_call merge "$@"; }
 github_git() { github_call git "$@"; }
 
 # Generic default/ref observations also support explicitly file-only origins.

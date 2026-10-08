@@ -44,7 +44,7 @@ authority, so do not guess a displayed name or re-derive the workflow from memor
 | `doctor` | Run **Provider dispatch** below in doctor mode. |
 | `claim <id>` or `claim --next` | Run **Claim** below. One of the two is required; a bare `claim` is refused rather than resolved to `--next`. |
 | `unclaim <id>` | Run **Release** below. Hands the claim back and closes the story's tmux window. Nothing on disk is touched. |
-| `reset <id> [--force]` | Run **Release** below. Only on the user's explicit request: closes the window, discards the worktree (uncommitted work included) and the local branch, and returns the story to todo. |
+| `reset <id> [--force] [--dry-run]` | Run **Release** below. Only on the user's explicit request: closes the window, discards the worktree (uncommitted work included) and the local branch, and returns the story to todo. |
 | `context [--full] [--story <id>]` | Load `<plugin-root>/skills/story-context/SKILL.md` and pass the flag through. |
 | `setup` | Load `<plugin-root>/skills/story-setup/SKILL.md`. |
 | `sync [--since <duration>]` | Load `<plugin-root>/skills/story-sync/SKILL.md` and pass the flag through. |
@@ -142,6 +142,8 @@ previews both without writing.
 - On success `unclaim` reports `unclaimed_from` and `restored_to`. When those differ from where
   the story was actually claimed from, `restore_fallback` names why; show it, because it is a
   statement about where the work came from.
+
+With `reset --dry-run`, the helper delegates to the native read-only preview. Show its actual window, worktree counts, branch tip and unique-commit count, awaiting reason, and retained residue. It neither reserves nor performs a reset and posts no comment. Unknown counts remain unknown; execution rechecks ownership.
 
 ## Provider dispatch
 

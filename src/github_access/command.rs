@@ -40,31 +40,7 @@ fn execute_with_bound(
     checkout: &std::path::Path,
     arguments: &[String],
 ) -> Result<Vec<u8>, AppError> {
-    let arguments = routed_arguments(identity, arguments)?;
-    let mut command = Command::new("gh");
-    crate::env::spawn_env::apply_verification_allowlist(&mut command);
-    command
-        .current_dir(checkout)
-        .args(arguments)
-        .env("GH_HOST", &identity.host)
-        .env("GH_REPO", qualified(identity))
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GH_PAGER", "cat")
-        .env("GH_NO_UPDATE_NOTIFIER", "1")
-        .env("GH_NO_EXTENSION_UPDATE_NOTIFIER", "1")
-        .env("GIT_TERMINAL_PROMPT", "0");
-    let output = run_captured_private(command, bound).map_err(|error| {
-        let detail = match error {
-            CaptureError::Spawn(ref source) if source.kind() == std::io::ErrorKind::NotFound => {
-                "install gh and make it available on the StoryHook process PATH".to_owned()
-            }
-            _ => error.detail(),
-        };
-        AppError::GithubApi(format!(
-            "gh for {}: {detail}; the operation was not retried",
-            qualified(identity)
-        ))
-    })?;
+    let output = capture(bound, identity, checkout, arguments)?;
     if !output.status.success() {
         let mut detail = String::from_utf8_lossy(&output.stderr).into_owned();
         for name in crate::env::spawn_env::GITHUB_CREDENTIAL_MAY_SEE {
@@ -192,4 +168,38 @@ fn routed_arguments(
 
 fn qualified(identity: &crate::domain::github_remote::GithubRepo) -> String {
     format!("{}/{}/{}", identity.host, identity.owner, identity.repo)
+}
+
+/// Captures one routed command without discarding its refusal diagnostics.
+pub(super) fn capture(
+    bound: Duration,
+    identity: &crate::domain::github_remote::GithubRepo,
+    checkout: &std::path::Path,
+    arguments: &[String],
+) -> Result<crate::process::Captured, AppError> {
+    let arguments = routed_arguments(identity, arguments)?;
+    let mut command = Command::new("gh");
+    crate::env::spawn_env::apply_verification_allowlist(&mut command);
+    command
+        .current_dir(checkout)
+        .args(arguments)
+        .env("GH_HOST", &identity.host)
+        .env("GH_REPO", qualified(identity))
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_PAGER", "cat")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .env("GH_NO_EXTENSION_UPDATE_NOTIFIER", "1")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    run_captured_private(command, bound).map_err(|error| {
+        let detail = match error {
+            CaptureError::Spawn(ref source) if source.kind() == std::io::ErrorKind::NotFound => {
+                "install gh and make it available on the StoryHook process PATH".to_owned()
+            }
+            _ => error.detail(),
+        };
+        AppError::GithubApi(format!(
+            "gh for {}: {detail}; the operation was not retried",
+            qualified(identity)
+        ))
+    })
 }

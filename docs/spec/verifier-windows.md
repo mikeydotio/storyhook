@@ -27,16 +27,23 @@ The daemon prepares the journal directory, ignore file first, before it runs
 the helper. The helper never creates the directory. If the directory is absent,
 it fails loudly before any tmux call (SH-771, `activity-log.md`).
 
-A bounded Python helper takes a nonblocking per-directory flock. It identifies
-owned windows with a canonical journal hash, pane ID/PID, and original reader
-command. An unrelated occupant or a second window named `verification` is a
-visible ownership conflict; since SH-822 identity is per pane, so the agent pane
-and panes a person adds are not conflicts. Missing windows are created; dead or
-changed owned readers are replaced. When other live panes share the window, the
-reader alone is replaced: a new reader is split in beside them, marked by exact
-pane ID, and each old reader pane is rechecked before `kill-pane`. Otherwise a
-replacement window is allocated and marked before retirement of the old exact
-window ID, whose evidence is checked again before removal.
+A bounded Python helper takes a nonblocking per-directory flock. Each owned
+window carries the canonical journal hash; the reader additionally records
+its exact pane ID/PID and command. An unrelated occupant or a second window
+named `verification` or `verifier` is a visible ownership conflict. Missing
+windows are created detached. A dead, single proven reader is replaced by a
+new owned window before retiring the old exact window ID, whose evidence is
+checked again before removal.
+
+A person may add panes. A healthy mixed window is left alone. If its reader
+dies or is repurposed, the helper checks the complete window inventory, renames
+it `verification-retained-<uuid>`, and releases reader ownership. It never kills
+any of that window's panes, including dead user panes. The next pass allocates
+a fresh single-pane `verification` window. A disabled legacy agent is retained
+under its existing owner in the renamed window until it can migrate safely;
+its marker prevents duplicate launches. After migration, the retained user
+window's ownership is released. Retained windows are never temporary cleanup
+candidates.
 Creation and the first ownership tag run in one tmux command group. Staging
 names use `verification-pending-<uuid>`: a period is a pane delimiter even in
 an exact window target. Cleanup also accepts the old `.verification-` prefix,
@@ -90,33 +97,44 @@ removal and confirms disappearance. Production readers, unknown occupants,
 logs, and the shared server survive. Existing installed binaries are not updated
 or restarted by this cleanup; they can retain old routing until normal rollout.
 
-## The Verifier Agent pane — SH-822
+## The Verifier Agent window — SH-822, SH-861
 
-The window's left pane runs the Verifier Agent (`plugins/story/agents/verifier.md`,
-`storyhook::plugin::VERIFIER_AGENT`) in the registered checkout; the reader is on
-the right. The daemon resolves the launch (`src/daemon/activity/verifier_agent.rs`):
-`claude` on its own PATH, kept as spelled so an updater's versioned symlink keeps
-working, and the first plugin root that carries `agents/verifier.md` — the copy
-`STORYHOOK_DISPATCH_SCRIPT` names, the binary's release projection, a checkout,
-then Claude Code's registry. It reads files only; no provider CLI runs on the
-reconcile tick. The argv is `--plugin-dir <root> --agent story:verifier --model
-opus --effort xhigh`. Without `claude` or a root, the window keeps its reader
-alone and the project journal records why once, on the edge.
+The `verifier` window runs the Verifier Agent (`plugins/story/agents/verifier.md`,
+`storyhook::plugin::VERIFIER_AGENT`) in the registered checkout. The separate
+`verification` window follows the journal. The daemon resolves the launch
+(`src/daemon/activity/verifier_agent.rs`): `claude` on its own PATH, kept as
+spelled so an updater's versioned symlink keeps working, and the first plugin
+root that carries `agents/verifier.md` — the copy `STORYHOOK_DISPATCH_SCRIPT`
+names, the binary's release projection, a checkout, then Claude Code's registry.
+It reads files only; no provider CLI runs on the reconcile tick. The argv is
+`--plugin-dir <root> --agent story:verifier --model opus --effort xhigh`.
+Without `claude` or a root, only the reader is created and the project journal
+records why once, on the edge.
 
-The pane runs `/bin/sh -c <loop> storyhook-verifier:<owner> <argv>`. The marker is
-`$0`, so the pane is identifiable from its start command from creation; an
-interrupted pass cannot leave an agent the view does not see, and duplicates
-keep the lowest pane ID. When `claude` exits, the loop prints its status and
-waits for Enter, so a person restarts it and a failing launch cannot loop. A
-missing agent pane is created again at most once per 60 seconds
-(`@storyhook-agent-started`, stamped in the command group that splits), with
-the shared pane overrides (`tmux_server_env.pane_overrides`) and after the
-owned session's retained provider state is scrubbed. A pass makes at most one
-structural change — the window, the reader, or the agent — so each pass fits
-the 30-second operation budget, and splits use `-d` so focus is never taken.
+The agent pane runs `/bin/sh -c <loop> storyhook-verifier:<owner> <argv>`.
+The `$0` marker identifies it from creation; duplicate agents are a visible
+conflict, never grounds to kill a live process. When `claude` exits, the loop
+prints its status and waits for Enter, so a person restarts it and a failing
+launch cannot loop. A missing agent window is created at most once per 60
+seconds. The owner-scoped `@storyhook-agent-started-<owner>` session option is
+stamped before allocation, surviving either window's closure/replacement.
+Legacy window timestamps migrate into that session option. Launches use the
+shared pane overrides (`tmux_server_env.pane_overrides`) after
+`scrub_owned_session` removes retained provider state.
 
-`STORYHOOK_VERIFIER_AGENT=0` omits the pane. The shared test environment sets it
+A legacy shared window is migrated by moving the exact agent pane with
+`break-pane -d`, keeping its pane ID and PID. If its reader was already closed,
+the single remaining agent window is renamed instead. No process is restarted
+or killed to migrate. Creation and migration never take focus. Each pass makes
+at most one structural change (allocation/replacement, migration, mixed-window
+release, or retirement of one interrupted allocation), within the shared
+30-second operation budget. Production code never subdivides a window.
+
+`STORYHOOK_VERIFIER_AGENT=0` creates no agent window and leaves an existing
+agent alive, including a legacy shared pane. `STORYHOOK_VERIFIER_MIRROR=0`
+makes no tmux call. The shared test environment disables the agent
 (`Literal("0")`), and `tests/verifier_fixture_hygiene.rs` refuses a fixture that
 turns it on without a fake `claude`: a real provider session is paid and
-network-bound. The private-server view tests use a fake provider; one
-production-daemon test proves the launch end to end.
+network-bound. Private-server tests cover layout, migration, ownership,
+preservation and cooldown; a production-daemon test proves the launch end to
+end. A source fence rejects window subdivision in production source.

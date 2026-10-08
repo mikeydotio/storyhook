@@ -114,6 +114,33 @@
       "reason": "Nonblocking inspection of an already-published or empty event queue; the zero-duration receive does not wait."
     }
   },
+  "src/api/engine/contention_tests.rs": {
+    ".busy_timeout(Duration::from_millis(10)": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "SH-889 deliberately configures short SQLite busy handling so the held writer outlasts it; changing this input would change the contention case."
+    },
+    ".busy_timeout(configured": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "SH-889 injects long and short SQLite connection settings and reads the actual PRAGMA back to prove capping only for engine controllers."
+    },
+    ".recv_timeout(Duration::from_millis(150)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Negative observation while the real writer remains held: a patient control must not return Busy after the shorter SQLite busy limit. Preserve this proof window."
+    },
+    ".recv_timeout(storyhook_test_support::load_grace::PATIENCE_CEILING": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Completion after writer release uses the shared maximum harness patience; do not apply grace twice."
+    },
+    "Instant::now()<observed": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The admission-attempt observer uses the shared load-graced five-second deadline created immediately above; it does not hold the write gate while observing."
+    }
+  },
   "src/daemon/activity/hygiene_tests.rs": {
     "Instant::now()+FIRST_SWEEP_PATIENCE": {
       "count": 1,
@@ -331,6 +358,23 @@
       "reason": "Checks the Environment builder stores the supplied busy timeout; no database or timed wait is invoked."
     }
   },
+  "src/plugin/codex_cache/tests.rs": {
+    ".recv_timeout(bound": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "Both coalescing/readiness barriers use patience(), which obtains shared load grace for STORY_COMMAND_DEADLINE before starting the worker."
+    },
+    "Instant::now()+bound": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The cache coalescing observation deadline uses the same already-graced patience() allowance as its worker barriers."
+    },
+    "Instant::now()<deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The wait for the second cache caller observes against the preceding already-graced coalescing deadline."
+    }
+  },
   "src/plugin/operation/tests.rs": {
     ".wait_within(patience": {
       "count": 1,
@@ -412,11 +456,31 @@
       "reason": "The preview tests inject synchronous in-memory preparation and merge answers; this future deadline is an unexpired fixture, not subprocess patience."
     }
   },
-  "src/service/engine/restart_probe_tests.rs": {
-    "Instant::now()+bound": {
+  "src/service/engine/control_patience_tests.rs": {
+    ".busy_timeout(Duration::from_millis(100)": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "SQLite fixture input exceeds the driven sixty-millisecond admission deadline, exposing an admission wait that incorrectly blocks or executes."
+    },
+    ".recv(": {
+      "count": 2,
+      "kind": "fixture",
+      "reason": "Owned writer/admission release barriers unblock when their scoped sender is dropped, including failure cleanup. They establish ordering rather than an elapsed deadline."
+    },
+    ".recv_timeout(storyhook_test_support::load_grace::PATIENCE_CEILING": {
       "count": 2,
       "kind": "delegated",
-      "reason": "bound is the declared Environment subprocess patience shared across identity/activity calls. The deliberately slow fixture tests exhaustion of that same budget. SH-855 replaces these real-time proofs with logical-clock cases."
+      "reason": "Readiness/admission receives use the shared maximum harness patience; actual deadline expiry is separately synchronized or driven, not widened here."
+    },
+    "Instant::now()+Duration::from_millis(60)": {
+      "count": 2,
+      "kind": "proof",
+      "reason": "These are the driven admission deadlines under test, for external-writer and local-writer exclusion; the expected Busy/no-write result requires expiry and stays literal."
+    },
+    "Instant::now()+Duration::from_secs(60)": {
+      "count": 3,
+      "kind": "fixture",
+      "reason": "Explicit transaction-admission policy input in no-replay/rollback/fault fixtures. These cases assert transaction count and durable results, not expiration; the dedicated sixty-millisecond tests prove deadline enforcement."
     }
   },
   "src/service/tmux_target_tests.rs": {
@@ -565,9 +629,9 @@
   },
   "tests/e2e_browser_coverage.rs": {
     ".wait_with_output_within(budget": {
-      "count": 1,
+      "count": 2,
       "kind": "delegated",
-      "reason": "The reporter cleanup wrapper passes graced_now(UTILITY_DEADLINE * 6 * 3): six lifecycle scenarios, each with startup, exit and reap patience. ChildGuard consumes that single caller-supplied budget."
+      "reason": "The browser ownership and writer-drain regressions use their caller-computed shared load-graced fixture completion budget; process cleanup remains owned by the fixture."
     }
   },
   "tests/e2e_provider_doubles.rs": {

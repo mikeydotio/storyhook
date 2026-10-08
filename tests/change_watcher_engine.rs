@@ -259,6 +259,12 @@ impl Store for ReadFaultStore {
     ) -> Result<T, StoreError> {
         self.inner.write(f)
     }
+    fn try_write<T>(
+        &self,
+        f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        self.inner.try_write(f)
+    }
     fn migrate(&self) -> Result<MigrationReport, StoreError> {
         self.inner.migrate()
     }
