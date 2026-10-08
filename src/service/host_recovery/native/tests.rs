@@ -430,11 +430,15 @@ fn host_restoration_preserves_manual_control_and_tampered_raw_holds() {
 fn native_host_pause_fences_other_project_queue_and_cached_direct_admission() {
     use crate::service::project_recovery::{ProjectRecoveryService, RepairAdmission, RepairInput};
     let f = Fixture::new();
-    let other = ProjectId::new(f.fixture.add_project("another-project", "OTHER").get());
+    let fixture_project = f.fixture.add_project("another-project", "OTHER");
+    let checkout = f
+        .fixture
+        .github_checkout_for(fixture_project, "https://github.com/acme/another");
+    let other = ProjectId::new(fixture_project.get());
     let other_ctx = Ctx::new(
         &f.store,
         other,
-        f.fixture.cwd(),
+        &checkout,
         Environment::at(f.fixture.cwd()).with_subprocess_patience(),
     )
     .no_hooks(true);
@@ -446,6 +450,9 @@ fn native_host_pause_fences_other_project_queue_and_cached_direct_admission() {
         })
         .unwrap()
         .id;
+    PrLinkService::new(&other_ctx)
+        .link(&story, "https://github.com/acme/another/pull/2", true)
+        .unwrap();
     stories
         .set_state(&story, "verifying", None, None, None)
         .unwrap();
@@ -461,6 +468,21 @@ fn native_host_pause_fences_other_project_queue_and_cached_direct_admission() {
         head_tree: "c".repeat(40),
         tree: "d".repeat(40),
     };
+    assert_eq!(cached.project, other);
+    assert!(cached.verifying_generation.is_some());
+    assert_eq!(cached.checkout, checkout);
+    assert_eq!(
+        cached.pull_request.as_ref().unwrap().url,
+        "https://github.com/acme/another/pull/2"
+    );
+    // Establish that the exact cached submission reaches the real repair door
+    // before the native fault; missing PR metadata must not satisfy this test.
+    assert!(matches!(
+        ProjectRecoveryService::new(&other_ctx)
+            .admit_repair(&cached, "before-native-host-fault", &input)
+            .unwrap(),
+        RepairAdmission::Proceed { recovery_id: None }
+    ));
     let original = f.ctx();
     let service = HostRecoveryService::new(&original);
     let owner = service
