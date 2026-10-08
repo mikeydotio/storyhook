@@ -12,7 +12,11 @@ pub(super) fn retained_lineage(b: &mut Board) -> String {
             true,
         )
         .unwrap();
-    b.candidate = VerificationQueue::new(&b.store).next().unwrap().unwrap();
+    b.candidate = VerificationQueue::new(&b.store)
+        .with_environment(b.env.clone())
+        .next()
+        .unwrap()
+        .unwrap();
     let ctx = b.ctx();
     let service = ProjectRecoveryService::new(&ctx);
     let fault = ProjectFault::MissingCertification {
@@ -73,6 +77,10 @@ pub(super) fn retained_lineage(b: &mut Board) -> String {
     StoryService::new(&ctx)
         .set_state(&b.candidate.story_id, "verifying", None, None, None)
         .unwrap();
-    b.candidate = VerificationQueue::new(&b.store).next().unwrap().unwrap();
+    b.candidate = VerificationQueue::new(&b.store)
+        .with_environment(b.env.clone())
+        .next()
+        .unwrap()
+        .unwrap();
     view.record.id
 }

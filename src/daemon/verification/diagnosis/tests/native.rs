@@ -59,7 +59,11 @@ fn behavior_and_fixture_failures_run_through_durable_coordinator_and_return_tran
             f.directory.path(),
             "https://github.com/acme/widgets",
         );
-        b.candidate = VerificationQueue::new(&b.store).next().unwrap().unwrap();
+        b.candidate = VerificationQueue::new(&b.store)
+            .with_environment(b.env.clone())
+            .next()
+            .unwrap()
+            .unwrap();
         let owner = b.owner();
         let original_request = original(&b, &owner, &f, fixture_defect);
         let (gate, _) = record::original(&b.store, &b.candidate, &owner)
@@ -140,7 +144,7 @@ fn behavior_and_fixture_failures_run_through_durable_coordinator_and_return_tran
             *actuator.head.lock().unwrap() = head;
             assert_eq!(
                 return_for_repair(
-                    &VerificationQueue::new(&b.store),
+                    &VerificationQueue::new(&b.store).with_environment(b.env.clone()),
                     &b.ctx(),
                     &actuator,
                     &b.candidate,
@@ -162,7 +166,7 @@ fn behavior_and_fixture_failures_run_through_durable_coordinator_and_return_tran
         *actuator.head.lock().unwrap() = Some(proof.submitted_head().into());
         assert_eq!(
             return_for_repair(
-                &VerificationQueue::new(&b.store),
+                &VerificationQueue::new(&b.store).with_environment(b.env.clone()),
                 &b.ctx(),
                 &actuator,
                 &b.candidate,
@@ -201,7 +205,11 @@ fn retained_allowance_and_unsettled_work_prevent_native_restarts() {
             f.directory.path(),
             "https://github.com/acme/widgets",
         );
-        b.candidate = VerificationQueue::new(&b.store).next().unwrap().unwrap();
+        b.candidate = VerificationQueue::new(&b.store)
+            .with_environment(b.env.clone())
+            .next()
+            .unwrap()
+            .unwrap();
         let owner = b.owner();
         let request = original(&b, &owner, &f, false);
         let (gate, _) = record::original(&b.store, &b.candidate, &owner)
@@ -338,7 +346,11 @@ fn retained_repair_lineage_requires_the_same_native_capability_for_a_new_return(
         f.directory.path(),
         "https://github.com/acme/widgets",
     );
-    b.candidate = VerificationQueue::new(&b.store).next().unwrap().unwrap();
+    b.candidate = VerificationQueue::new(&b.store)
+        .with_environment(b.env.clone())
+        .next()
+        .unwrap()
+        .unwrap();
     let recovery = super::recovery::retained_lineage(&mut b);
     let owner = b.owner();
     let ctx = b.ctx();
@@ -386,7 +398,7 @@ fn retained_repair_lineage_requires_the_same_native_capability_for_a_new_return(
     };
     assert_eq!(
         return_for_repair(
-            &VerificationQueue::new(&b.store),
+            &VerificationQueue::new(&b.store).with_environment(b.env.clone()),
             &ctx,
             &actuator,
             &b.candidate,

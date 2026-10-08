@@ -152,6 +152,7 @@ fn placeholder(token: &str) -> Option<&'static str> {
         "<id>" | "<a>" | "<b>" | "<story-id>" | "<epic-id>" | "<expected>" | "<blocker>" => "SH-1",
         "<run-id>" => "run-1",
         "<incident-id>" => "2:28821",
+        "<intent-id>" => "a2cb702b-12e8-46c4-831b-c78bf57e944b",
         "<recovery-id>" => "recovery-1",
         "<json-file>" => "decision.json",
         "<checkout>" => "/tmp/project",

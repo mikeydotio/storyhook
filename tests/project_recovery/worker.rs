@@ -573,7 +573,8 @@ fn sh870_retained_a_retained_managed_lease_survives_a_project_prefix_change() {
     use storyhook::domain::{StoryCleanupLease, TmuxCleanupTarget};
     use storyhook::service::engine::{EngineService, StartRequest};
     use storyhook::service::project::ProjectService;
-    use storyhook::store::{EngineAgent, EngineLaneState, EngineScope};
+    use storyhook::store::{EngineAgent, EngineLaneState, EngineRunState, EngineScope};
+    use storyhook_test_support::{DispatcherCall, DispatcherStep, FakeDispatcher};
     let f = fixture();
     let initial = decision::ready(&f);
     let ctx = f.ctx();
@@ -625,7 +626,53 @@ fn sh870_retained_a_retained_managed_lease_survives_a_project_prefix_change() {
     let delivered = service.show(&view.record.id).unwrap();
     assert_eq!(delivered.state.work[0].managed_lease, Some(lease.clone()));
 
-    ProjectService::new(f.store(), f.cwd())
+    let projects = ProjectService::new(f.store(), f.cwd());
+    let error = projects
+        .set_prefix(f.project(), "NW", &f.env().maintenance_backups_dir())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(&run.id), "{error}");
+    assert_eq!(service.show(&view.record.id).unwrap(), delivered);
+    assert_eq!(
+        f.store()
+            .read(|tx| tx.project(f.project()))
+            .unwrap()
+            .unwrap()
+            .prefix,
+        "SH"
+    );
+
+    // This fixture creates no agent, tmux server, worktree or branch. Let the
+    // normal Stop Now transaction consume the scripted absence receipt and
+    // release its lane; never mark a live run finished just to permit renaming.
+    assert!(!lease.worktree_path.exists());
+    assert!(!lease.tmux.socket_path.exists());
+    let dispatcher = FakeDispatcher::new([DispatcherStep::Reset]);
+    let stopped = EngineService::new(&ctx, &dispatcher)
+        .stop(&run.id, true)
+        .unwrap();
+    assert_eq!(stopped.run.state, EngineRunState::Finished);
+    assert!(
+        stopped
+            .lanes
+            .iter()
+            .all(|lane| lane.state == EngineLaneState::Idle)
+    );
+    let calls = dispatcher.calls();
+    assert!(matches!(calls.as_slice(), [DispatcherCall::Reset(reset)]
+        if reset.run_id == run.id && reset.lease == lease));
+    assert!(
+        f.store()
+            .read(|tx| tx.engine_reset(f.project(), StoryNo::new(2)))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        service.show(&view.record.id).unwrap().state.work[0].managed_lease,
+        Some(lease.clone())
+    );
+
+    projects
         .set_prefix(f.project(), "NW", &f.env().maintenance_backups_dir())
         .unwrap();
 

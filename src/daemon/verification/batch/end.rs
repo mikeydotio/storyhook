@@ -217,7 +217,7 @@ impl<S: Store> Attempt<'_, S> {
             return Ok(BatchEnd::Done(summary));
         };
         if !observation::human_permits(self.store, self.head)? {
-            observation::withdraw_with_cleanup_evidence(self.store, self.head, cleanup)?;
+            observation::withdraw_with_cleanup_evidence(self.store, self.env, self.head, cleanup)?;
             return Ok(BatchEnd::Tick {
                 result: TickResult::Returned,
                 outcome: Box::new(outcome.clone()),

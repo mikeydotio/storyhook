@@ -119,7 +119,7 @@ impl Cached {
     fn new(result: &Answer, completed: Instant) -> Self {
         Self {
             completed,
-            result: result.as_ref().map(Clone::clone).map_err(WireError::from),
+            result: result.as_ref().map_err(WireError::from).cloned(),
             files: result
                 .as_ref()
                 .ok()

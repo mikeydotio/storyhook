@@ -127,6 +127,10 @@ fn every_event_writer_accounts_for_effective_block_changes() {
             "grouping",
             "labels only; structural grouping delegates to RelationService",
         ),
+        (
+            "landing_release",
+            "audit comments and landing/batch lifecycle metadata only; no state, hold or relation changes",
+        ),
         ("mod", "defines append helpers, not a service transaction"),
         (
             "pr_link",

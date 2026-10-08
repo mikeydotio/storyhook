@@ -1549,7 +1549,7 @@ mod tests {
                     String::from_utf8_lossy(&out.stderr)
                 );
             }
-            let env = crate::env::Environment::at(data.path());
+            let env = crate::env::Environment::at(data.path()).with_subprocess_patience();
             let store = crate::store::SqliteStore::open(env.store_path()).unwrap();
             store.migrate().unwrap();
             let fixture = TuiFixture {

@@ -19,7 +19,7 @@ impl Board {
         let fixture = ServiceFixture::new();
         let store = SqliteStore::open(fixture.store().path()).unwrap();
         let project = ProjectId::new(fixture.project().get());
-        let env = Environment::at(fixture.cwd());
+        let env = Environment::at(fixture.cwd()).with_subprocess_patience();
         let ctx = Ctx::new(&store, project, fixture.cwd(), env.clone()).no_hooks(true);
         let story = StoryService::new(&ctx)
             .create(&NewStoryInput {

@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::domain::StoryCleanupLease;
+use crate::env::Environment;
 use crate::error::AppError;
 use crate::process::Cancellation;
 use crate::service::engine::{STALL_CEILING_SECS, WindowProbe, silent_on_both_channels};
@@ -316,6 +317,7 @@ pub fn wait_for_reconciled_candidate(
 ) -> Result<ReconcileWait, AppError> {
     wait_for_reconciled_candidate_cancellable(
         store,
+        &Environment::at(&reserved.checkout),
         subscription,
         stop,
         reserved,
@@ -326,13 +328,16 @@ pub fn wait_for_reconciled_candidate(
 
 pub(super) fn wait_for_reconciled_candidate_cancellable(
     store: &impl Store,
+    env: &Environment,
     subscription: &crate::daemon::bus::Subscription,
     stop: &AtomicBool,
     reserved: &VerificationCandidate,
     cancellation: &Cancellation,
     watch: &HoldWatch<'_>,
 ) -> Result<ReconcileWait, AppError> {
-    let queue = VerificationQueue::new(store);
+    // Idle observations remain store-only. Once this story resubmits, its
+    // origin validation must retain the owning verifier's Environment.
+    let queue = VerificationQueue::new(store).with_environment(env.clone());
     let newer = |generation: Option<GlobalSeq>| {
         generation.is_some() && generation != reserved.verifying_generation
     };

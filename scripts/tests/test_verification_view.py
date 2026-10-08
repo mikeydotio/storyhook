@@ -518,6 +518,13 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         row = dict(at=now.isoformat(), level="INFO", source="fixture-helper", stream="stderr",
                    pid=1, context=f"project={slug} VIEW-1 attempt=live", message="LIVE_PROJECT_OUTPUT")
         path.write_text(json.dumps(row) + "\n")
+        self.assertEqual(shutil.which("claude", path=self.env["PATH"]), str(self.agent),
+                         "only the fixture's fake provider may answer to `claude`")
+        # This copied daemon has no installed plugin projection in its isolated
+        # HOME. Supply the matching checkout plugin for its enabled verifier.
+        plugin = Path(__file__).resolve().parents[2] / "plugins/story"
+        self.assertTrue((plugin / "agents/verifier.md").is_file())
+        self.env["STORYHOOK_DISPATCH_SCRIPT"] = str(plugin / "bin/story.sh")
         # Hold one call past 3 s and a later call so the pass exceeds 5 s.
         wrapper = self.root / "bin/tmux"
         prefix = ""

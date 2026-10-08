@@ -24,12 +24,18 @@ use std::path::Path;
 
 /// Where an uncoupled `Store::snapshot` is legitimate, and why.
 ///
-/// `src/daemon/backup.rs` is the whole of it: the daily schedule and `story
+/// In `src/daemon/backup.rs`, the daily schedule and `story
 /// store backup` both take a copy that no write depends on, which is exactly
-/// what `Store::snapshot` promises. `src/store/` is not listed because it is
+/// what `Store::snapshot` promises. The test-only `AdmittedStore` decorator
+/// forwards that trait method unchanged and separately delegates the coupled
+/// `write_with_snapshot` method; no write depends on its standalone copy.
+/// `src/store/` is not listed because it is
 /// the engine — the place `write_with_snapshot` is *implemented*, where the
 /// call this scan is looking for is the correct one.
-const UNCOUPLED_BACKUP_SITES: &[&str] = &["src/daemon/backup.rs"];
+const UNCOUPLED_BACKUP_SITES: &[&str] = &[
+    "src/daemon/backup.rs",
+    "src/service/engine/control_patience_tests.rs",
+];
 
 /// Every tracked `.rs` file under `src/`, as (path, contents).
 fn tracked_sources(root: &Path) -> Vec<(String, String)> {

@@ -103,6 +103,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "the engine HTTP controller chooses a working directory only after resolving the project by slug",
     ),
     (
+        "src/api/engine/contention_tests.rs",
+        "HTTP contention fixtures assign a temporary checkout to the project already selected by slug; the path never resolves project identity",
+    ),
+    (
         "src/service/catalog.rs",
         "doctor's orphan audit, the catalog listing, and the unregistered-origin probe",
     ),
@@ -126,6 +130,10 @@ const ALLOWED: &[(&str, &str)] = &[
     (
         "src/service/engine.rs",
         "engine start refuses repo-side work when the already-selected project has no checkout",
+    ),
+    (
+        "src/service/engine/control_patience_tests.rs",
+        "control-write fixtures mutate and read back the selected project's checkout column to prove rollback or durable commit without transaction replay; the values never resolve project identity",
     ),
     (
         "src/service/engine/adoption.rs",

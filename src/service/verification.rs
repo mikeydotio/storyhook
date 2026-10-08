@@ -2132,7 +2132,7 @@ mod tests {
                 &store,
                 ProjectId::new(fixture.project().get()),
                 fixture.cwd(),
-                crate::env::Environment::at(fixture.cwd()),
+                crate::env::Environment::at(fixture.cwd()).with_subprocess_patience(),
             )
             .no_hooks(true);
             let service = crate::service::StoryService::new(&ctx);
@@ -2146,7 +2146,7 @@ mod tests {
             service
                 .set_state(&id, "verifying", None, None, None)
                 .unwrap();
-            let queue = VerificationQueue::new(&store);
+            let queue = VerificationQueue::new(&store).with_environment(ctx.env().clone());
             let mut candidate = queue.next().unwrap().unwrap();
             // The helper's project has been cleaned up; this service fixture
             // owns the comment transaction, with the same submitted branch.

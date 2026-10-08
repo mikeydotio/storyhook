@@ -284,11 +284,6 @@ fn apply_recorded_provider(report: &mut ResourceReport, providers: &[(StoryClean
     }
 }
 
-/// Proves exact repository/worktree/branch identity without requiring clean work.
-pub fn validate_lease(lease: &StoryCleanupLease) -> Result<(), AppError> {
-    validate_lease_with_bound(std::time::Duration::from_secs(60), lease)
-}
-
 /// Revalidates identity using the operation's explicit Git allowance.
 pub(crate) fn validate_lease_with_bound(
     git_bound: std::time::Duration,

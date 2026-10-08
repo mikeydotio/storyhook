@@ -24,7 +24,7 @@ GRACE_SPEC.loader.exec_module(grace)
 
 
 class WatchTests(unittest.TestCase):
-    """Only the external proof is a fixture; Git, locks and watcher are real."""
+    """External proof/tool availability are fixtures; Git, locks and watcher are real."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="isolation-watch-", dir="/tmp")
@@ -155,9 +155,16 @@ echo proof-executed
         self.assertEqual(watcher.status(self.base)[0], "failed")
 
     def test_plist_is_daily_durable_and_never_starts_proof_at_install(self):
+        # This is a renderer contract, not a dependency on the user's installed tools.
+        durable = "/opt/storyhook-isolation-fixture/bin"
+        tools = ("story", "git", "cargo", "node", "npm")
         transient = str(ROOT / "scripts/python-bin") + os.pathsep + str(self.base) + os.pathsep + "."
-        with mock.patch.dict(os.environ, {"PATH": transient + os.pathsep + os.environ["PATH"]}):
+        with (mock.patch.dict(os.environ, {"PATH": transient + os.pathsep + durable}),
+              mock.patch.object(watcher.shutil, "which", side_effect=[
+                  str(Path(durable) / tool) for tool in tools]) as lookup):
             plist = plistlib.loads(watcher.launchd(self.base))
+        self.assertEqual(lookup.call_args_list,
+                         [mock.call(tool, path=durable) for tool in tools])
         self.assertEqual(plist["StartCalendarInterval"], {"Hour": 4, "Minute": 17})
         self.assertFalse(plist.get("RunAtLoad", False))
         self.assertEqual(plist["EnvironmentVariables"]["STORYHOOK_ISOLATION_HOME"], str(self.base))
@@ -166,6 +173,21 @@ echo proof-executed
         self.assertNotIn(str(ROOT / "scripts/python-bin"), path)
         self.assertNotIn(str(self.base), path)
         self.assertNotIn(".", path)
+        self.assertEqual(path, [durable])
+
+    def test_plist_refuses_each_missing_durable_tool(self):
+        durable = "/opt/storyhook-isolation-fixture/bin"
+        tools = ("story", "git", "cargo", "node", "npm")
+        for index, missing in enumerate(tools):
+            with (self.subTest(tool=missing),
+                  mock.patch.dict(os.environ, {"PATH": durable}),
+                  mock.patch.object(watcher.shutil, "which", side_effect=[
+                      str(Path(durable) / tool) for tool in tools[:index]] + [None]) as lookup):
+                with self.assertRaisesRegex(ValueError,
+                                            f"^durable LaunchAgent PATH cannot find {missing}$"):
+                    watcher.launchd(self.base)
+                self.assertEqual(lookup.call_args_list,
+                                 [mock.call(tool, path=durable) for tool in tools[:index + 1]])
 
     def test_fetched_new_tree_marks_prior_success_stale(self):
         self.assertEqual(watcher.watch(self.base), 0)

@@ -1706,8 +1706,47 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             return Ok(report);
         }
 
+        // Dispatching is an unfinished handoff, not proof that its not-yet-
+        // published pane disappeared. A sibling pass may observe it while the
+        // real dispatcher owns the controller lock. Only an acquired lock
+        // proves orphan ownership; keep it through observation AND every
+        // resulting lane CAS, not just a successful momentary probe.
+        let has_dispatching = self.ctx.store().read(|tx| {
+            Ok(tx
+                .engine_lanes(run_id)?
+                .iter()
+                .any(|lane| lane.state == EngineLaneState::Dispatching))
+        })?;
+        let dispatch_file =
+            has_dispatching.then(|| reset::run_lock_file(self.ctx.env(), "dispatch", run_id));
+        let (dispatch_observation, dispatch_deferred) = match dispatch_file.as_ref() {
+            Some(Ok((path, file))) => match ExecutorLock::acquire(file, path) {
+                Ok(guard) => (Some(guard), None),
+                Err(error) => (
+                    None,
+                    Some(format!(
+                        "dispatch controller {} remains owned or cannot be probed: {error}",
+                        path.display()
+                    )),
+                ),
+            },
+            Some(Err(error)) => (None, Some(error.to_string())),
+            // A lane first appearing as Dispatching in the following fresh
+            // read has no ownership proof from this pass. Defer it too.
+            None => (
+                None,
+                Some("dispatch began after the ownership snapshot".into()),
+            ),
+        };
+
         // ---- observe + classify -------------------------------------------
-        let observed = self.observe_lanes(&slug, run_id, pass)?;
+        let observed = self.observe_lanes(
+            &slug,
+            run_id,
+            pass,
+            dispatch_deferred.as_deref(),
+            &mut report.deferred,
+        )?;
 
         // ---- apply: free completions, hold handoffs, quarantine hard stops
         let mut hard_stops = Vec::new();
@@ -1777,6 +1816,10 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             }
         }
 
+        // Every observed orphan's state/CAS write has now finished. New
+        // dispatch admission below acquires this same lock independently.
+        drop(dispatch_observation);
+
         // ---- breaker ------------------------------------------------------
         // A completion zeroes the streak; each hard stop increments it.
         // Applied AFTER every lane is classified so one pass that both
@@ -1845,6 +1888,8 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         slug: &str,
         run_id: &RunId,
         pass: ReconcilePass,
+        dispatch_deferred: Option<&str>,
+        deferred: &mut Vec<(u32, String)>,
     ) -> Result<Vec<(EngineLaneRecord, LaneClassification, LaneObservation)>, AppError> {
         let project = self.ctx.project();
         let now = self.ctx.now();
@@ -1891,6 +1936,15 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
 
         let mut observed = Vec::with_capacity(facts.len());
         for (mut lane, row, blocked) in facts {
+            if lane.state == EngineLaneState::Dispatching
+                && let Some(detail) = dispatch_deferred
+            {
+                // Do not seed clocks, restore bindings, probe windows or
+                // change story/lane metadata while another controller owns
+                // the handoff (or its ownership cannot be established).
+                deferred.push((lane.lane_index, detail.to_owned()));
+                continue;
+            }
             // Startup publication remains read-only and bounded. The first
             // background pass owns readiness and restoration side effects.
             let restoration = if pass == ReconcilePass::Steady {
