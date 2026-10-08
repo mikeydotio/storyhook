@@ -110,6 +110,17 @@ fn sh853_idle_epic_runs_keep_their_prefix_in_every_resumable_state() {
         EngineRunState::Halted,
     ] {
         let f = ServiceFixture::new();
+        f.store()
+            .write(|tx| {
+                let mut types = tx.types(f.project())?;
+                types.push(storyhook::domain::TypeDef {
+                    slug: "epic".into(),
+                    description: None,
+                    emoji: None,
+                });
+                tx.put_types(f.project(), &types)
+            })
+            .unwrap();
         let ctx = f.ctx().no_hooks(true);
         let epic = StoryService::new(&ctx)
             .create(&NewStoryInput {
@@ -253,7 +264,16 @@ fn sh853_native_and_legacy_pending_resets_block_but_completed_receipts_do_not() 
 #[test]
 fn sh853_closure_cleanup_blocks_until_its_exact_receipt_completes() {
     let f = ServiceFixture::new();
-    story(&f, "done");
+    let id = story(&f, "todo");
+    StoryService::new(&f.ctx().no_hooks(true))
+        .set_state(
+            &id,
+            "done",
+            Some("Fixture completion for closure ownership"),
+            None,
+            None,
+        )
+        .unwrap();
     let mut cleanup = f
         .store()
         .read(|tx| tx.closure_cleanup(f.project(), StoryNo::new(1)))
@@ -680,7 +700,13 @@ fn sh853_completed_exact_closure_retires_lease_but_unreaped_closure_does_not() {
     let f = ServiceFixture::new();
     let (id, lease) = leased_submission(&f);
     StoryService::new(&f.ctx().no_hooks(true))
-        .set_state(&id, "done", None, None, None)
+        .set_state(
+            &id,
+            "done",
+            Some("Fixture override to exercise the exact closure receipt"),
+            None,
+            None,
+        )
         .unwrap();
     let mut closure = f
         .store()
