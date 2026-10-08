@@ -4,6 +4,9 @@ use crate::{
     domain::pr_url::parse_pr_url, github_access::Repository, service::VerificationCandidate,
 };
 
+mod clean;
+pub use clean::{CleanIntegrationEvidence, NativeCleanIntegration, observe_clean_submission};
+
 /// Retained native PR metadata. Deserializing this evidence grants no effects.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -199,6 +202,9 @@ pub fn inspect_submission(
         })),
     }
 }
+
+#[cfg(test)]
+pub(super) use clean::observe_clean_for_fixture;
 
 #[cfg(test)]
 mod tests {
