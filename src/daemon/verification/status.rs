@@ -48,6 +48,13 @@ pub struct VerifierStatus {
     /// Project fault work, independent of infrastructure admission control.
     #[serde(default)]
     pub project_recoveries: Vec<crate::service::project_recovery::RecoveryStatus>,
+    /// Native pressure owners affecting this project; observations grant no release.
+    #[serde(default)]
+    pub host_recoveries: Vec<crate::service::host_recovery::HostRecoveryStatus>,
+    /// Distinct single-submission integration owners and original elapsed time.
+    #[serde(default)]
+    pub integration_recoveries:
+        Vec<crate::service::integration_recovery::IntegrationRecoveryStatus>,
     /// Receipt of the command being answered; absent on ordinary status reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command_receipt: Option<VerificationRecovery>,
@@ -379,6 +386,11 @@ pub(crate) fn snapshot(
                 tx,
                 ctx.project(),
             )?,
+            host_recoveries: crate::service::host_recovery::status_snapshot(tx, ctx.project())?,
+            integration_recoveries: crate::service::integration_recovery::status_snapshot(
+                tx,
+                ctx.project(),
+            )?,
             command_receipt: None,
             last_evidence_at,
             silence_seconds,
@@ -498,6 +510,35 @@ impl VerifierStatus {
             if let Some(link) = &recovery.repair_link {
                 text.push_str(&format!("Repair PR: {link}\n"));
             }
+        }
+        for recovery in &self.host_recoveries {
+            text.push_str(&format!(
+                "Host recovery {}: {}; admission {}; elapsed {}ms\nNext: {}\n",
+                recovery.id,
+                recovery.phase,
+                if recovery.pauses_admission {
+                    "paused"
+                } else {
+                    "subject proofs required"
+                },
+                recovery
+                    .elapsed_milliseconds
+                    .map_or_else(|| "unknown".into(), |ms| ms.to_string()),
+                recovery.next_action
+            ));
+        }
+        for recovery in &self.integration_recoveries {
+            text.push_str(&format!(
+                "Integration recovery {}: {}; {}; original head {}; elapsed {}ms\nNext: {}\n",
+                recovery.id,
+                recovery.story,
+                recovery.phase,
+                recovery.original_head.as_deref().unwrap_or("unknown"),
+                recovery
+                    .elapsed_milliseconds
+                    .map_or_else(|| "unknown".into(), |ms| ms.to_string()),
+                recovery.next_action
+            ));
         }
         for hold in &self.attribution_holds {
             text.push_str(&format!(

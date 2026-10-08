@@ -181,3 +181,57 @@ fn fresh_native_inspection_cannot_renew_cancelled_publication_operation() {
     initial.settle().unwrap();
     fresh.settle().unwrap();
 }
+
+#[test]
+fn managed_integration_status_reports_original_time_and_isolates_invalid_evidence() {
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let record = f.reserve(&proof);
+    let ctx = f.ctx();
+    let statuses = f
+        .store
+        .read(|tx| crate::service::integration_recovery::status_snapshot(tx, f.candidate.project))
+        .unwrap();
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].started_at.as_deref(), Some(AT));
+    assert_eq!(
+        statuses[0].original_head.as_deref(),
+        Some(f.native.head.as_str())
+    );
+    let bad_story = StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: "invalid retained status fixture".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let number = f
+        .store
+        .read(|tx| {
+            let prefix = crate::service::project_prefix(tx, f.candidate.project)?;
+            crate::store::StoryNo::parse_id(&prefix, &bad_story.id)
+        })
+        .unwrap();
+    f.store
+        .write(|tx| {
+            let mut invalid = record.clone();
+            invalid.id = uuid::Uuid::new_v4().simple().to_string();
+            invalid.story = number;
+            invalid.state = serde_json::json!({"version":1,"started_at":"invalid"});
+            assert!(tx.insert_integration_recovery(&invalid)?);
+            Ok(())
+        })
+        .unwrap();
+    let statuses = f
+        .store
+        .read(|tx| crate::service::integration_recovery::status_snapshot(tx, f.candidate.project))
+        .unwrap();
+    assert_eq!(statuses.len(), 2);
+    assert!(statuses.iter().any(|s| s.id == record.id
+        && s.phase == "reserved"
+        && s.started_at.as_deref() == Some(AT)));
+    let invalid = statuses.iter().find(|s| s.phase == "invalid").unwrap();
+    assert_eq!(invalid.original_head, None);
+    assert_eq!(invalid.elapsed_milliseconds, None);
+    assert_eq!(invalid.effect_epoch, None);
+    proof.settle().unwrap();
+}

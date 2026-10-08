@@ -651,3 +651,43 @@ fn native_host_proof_refuses_late_cleanup_custody_replacement() {
     assert_eq!(service.list().unwrap(), vec![owner]);
     assert!(f.store.read(|tx| blocks_admission(tx)).unwrap());
 }
+
+#[test]
+fn native_host_status_isolates_invalid_owner_and_preserves_original_elapsed_origin() {
+    let f = Fixture::new();
+    let ctx = f.ctx();
+    let owner = HostRecoveryService::new(&ctx)
+        .enroll(&HostFaultEvidence {
+            live: f.proof(false),
+        })
+        .unwrap();
+    f.store
+        .write(|tx| {
+            assert!(tx.insert_host_recovery(&crate::store::HostRecovery {
+                id: uuid::Uuid::new_v4().to_string(),
+                fault_key: "f".repeat(64),
+                revision: 0,
+                active: true,
+                state: json!({"version":1,"started_at":"not-a-timestamp"}),
+            })?);
+            Ok(())
+        })
+        .unwrap();
+    let statuses = f
+        .store
+        .read(|tx| crate::service::host_recovery::status_snapshot(tx, f.subject.candidate.project))
+        .unwrap();
+    assert_eq!(statuses.len(), 2);
+    let valid = statuses.iter().find(|s| s.id == owner.id).unwrap();
+    assert_eq!(valid.started_at.as_deref(), Some(AT));
+    assert!(valid.elapsed_milliseconds.is_some());
+    assert!(valid.pauses_admission);
+    let invalid = statuses.iter().find(|s| s.phase == "invalid").unwrap();
+    assert_eq!(invalid.started_at, None);
+    assert_eq!(invalid.elapsed_milliseconds, None);
+    assert!(invalid.pauses_admission);
+    assert!(
+        f.store.read(|tx| blocks_admission(tx)).is_err(),
+        "status isolation granted admission through invalid custody"
+    );
+}

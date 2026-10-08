@@ -312,6 +312,54 @@ fn view(record: &HostRecovery, state: &State) -> HostRecoveryView {
             .count(),
     }
 }
+
+/// Status evidence never grants native restoration or gate certification.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostRecoveryStatus {
+    /// Native episode owner identity.
+    pub id: String,
+    /// Waiting, restored, or invalid retained evidence.
+    pub phase: String,
+    /// Original admission, including all recovery pauses.
+    pub started_at: Option<String>,
+    /// Elapsed wall time from original admission; no retry resets it.
+    pub elapsed_milliseconds: Option<u64>,
+    /// Original submissions in the selected project, not other projects' data.
+    pub submissions: Vec<String>,
+    /// Whether this owner currently pauses admission across the store.
+    pub pauses_admission: bool,
+    /// Specific remaining proof or diagnostic obligation.
+    pub next_action: String,
+}
+
+pub(crate) fn status_snapshot(
+    tx: &impl ReadOps,
+    project: crate::store::ProjectId,
+) -> Result<Vec<HostRecoveryStatus>, StoreError> {
+    let mut result = Vec::new();
+    for record in tx.host_recoveries()? {
+        let state = match decode(&record) {
+            Ok(state) => state,
+            Err(error) => {
+                result.push(HostRecoveryStatus { id: record.id, phase: "invalid".into(), started_at: None, elapsed_milliseconds: None, submissions: Vec::new(), pauses_admission: true, next_action: format!("Native host owner evidence is invalid; admission remains closed until custody is reconciled: {error}") });
+                continue;
+            }
+        };
+        let submissions: Vec<_> = state
+            .members
+            .iter()
+            .filter(|m| m.subject.candidate.project == project)
+            .map(|m| m.subject.candidate.story_id.clone())
+            .collect();
+        if !record.active && submissions.is_empty() {
+            continue;
+        }
+        let started = chrono::DateTime::parse_from_rfc3339(&state.started_at)
+            .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        result.push(HostRecoveryStatus { id: record.id, phase: if record.active { "waiting-native-restoration" } else { "restored-requires-fresh-gate" }.into(), elapsed_milliseconds: Some((chrono::Utc::now()-started.with_timezone(&chrono::Utc)).num_milliseconds().max(0) as u64), started_at: Some(state.started_at), submissions, pauses_admission: record.active, next_action: if record.active { "Wait for fresh native pressure restoration, completed hysteresis and all affected execution custody; JSON status or a later green sample cannot release this hold." } else { "Each retained subject still needs its own fresh restoration proof and an exact-original-head central gate. Manual stops and independent holds remain authoritative." }.into() });
+    }
+    Ok(result)
+}
 fn decode(record: &HostRecovery) -> Result<State, StoreError> {
     let state: State = serde_json::from_value(record.state.clone())
         .map_err(|e| StoreError::Corrupt(format!("host owner {}: {e}", record.id)))?;

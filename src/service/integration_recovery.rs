@@ -20,7 +20,9 @@ mod assembly;
 mod owner;
 mod submission;
 pub use assembly::{AssemblyEvidence, NativeAssembly, assemble_owned};
+pub use owner::IntegrationRecoveryStatus;
 pub use owner::publication::{AssembledIntegration, PublicationClaim, PublicationEffect};
+pub(crate) use owner::status_snapshot;
 pub use owner::{AssemblyClaim, IntegrationOwner, IntegrationOwnerService, IntegrationPhase};
 pub use submission::{
     BoundInspection, BoundIntegrationProposal, SubmissionObservation, inspect_submission,

@@ -488,3 +488,83 @@ fn save(
 fn invalid(detail: &str) -> StoreError {
     StoreError::Validation(format!("integration recovery: {detail}"))
 }
+
+/// Read-only original-submission ownership; no serialized phase grants effects.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationRecoveryStatus {
+    /// Durable single-submission coordinator identity.
+    pub id: String,
+    /// Original submitted story.
+    pub story: String,
+    /// Current phase, or invalid when retained evidence fails validation.
+    pub phase: String,
+    /// Original gate admission, not the most recent retry or effect.
+    pub started_at: Option<String>,
+    /// Wall time including all held and stopped intervals.
+    pub elapsed_milliseconds: Option<u64>,
+    /// Original immutable submitted commit.
+    pub original_head: Option<String>,
+    /// Exact proposed tree, absent before native assembly.
+    pub assembled_tree: Option<String>,
+    /// Claimed operation ordinal; never a certification or success count.
+    pub effect_epoch: Option<u32>,
+    /// Concrete unresolved requirement.
+    pub next_action: String,
+}
+
+pub(crate) fn status_snapshot(
+    tx: &impl ReadOps,
+    project: crate::store::ProjectId,
+) -> Result<Vec<IntegrationRecoveryStatus>, StoreError> {
+    let prefix = crate::service::project_prefix(tx, project)?;
+    let mut result = Vec::new();
+    for record in tx.integration_recoveries(project)? {
+        let state = match decode(&record) {
+            Ok(state) => state,
+            Err(error) => {
+                result.push(IntegrationRecoveryStatus { id: record.id, story: record.story.to_id(&prefix), phase: "invalid".into(), started_at: None, elapsed_milliseconds: None, original_head: None, assembled_tree: None, effect_epoch: None, next_action: format!("Retained integration ownership is invalid; reconcile it without replaying effects: {error}") });
+                continue;
+            }
+        };
+        let (phase, next) = match state.phase {
+            IntegrationPhase::Reserved => (
+                "reserved",
+                "Fresh native source and current operator authority are required before claiming assembly.",
+            ),
+            IntegrationPhase::Assembling => (
+                "assembling",
+                "The original assembly operation owns its private resources; after interruption reconcile native custody before any further effect.",
+            ),
+            IntegrationPhase::Assembled => (
+                "assembled",
+                "A separately claimed native publication must prove original inputs and exact assembled objects; no gate has certified this tree.",
+            ),
+            IntegrationPhase::Publishing => (
+                "publishing",
+                "Reconcile each possibly begun push/PR effect from native remote identity; intents are not success receipts and must not be replayed.",
+            ),
+            IntegrationPhase::Held => (
+                "held",
+                "Resolve the recorded authority or semantic hold without replacing the original submission.",
+            ),
+        };
+        let started = chrono::DateTime::parse_from_rfc3339(&state.started_at)
+            .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        result.push(IntegrationRecoveryStatus {
+            id: record.id,
+            story: state.candidate.story_id,
+            phase: phase.into(),
+            elapsed_milliseconds: Some(
+                (chrono::Utc::now() - started.with_timezone(&chrono::Utc))
+                    .num_milliseconds()
+                    .max(0) as u64,
+            ),
+            started_at: Some(state.started_at),
+            original_head: Some(state.plan.head),
+            assembled_tree: state.assembly.map(|a| a.tree),
+            effect_epoch: Some(state.effect_epoch),
+            next_action: state.hold.unwrap_or_else(|| next.into()),
+        });
+    }
+    Ok(result)
+}
