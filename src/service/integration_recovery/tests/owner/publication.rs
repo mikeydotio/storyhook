@@ -1446,7 +1446,23 @@ fn managed_completed_owner_retains_cleanup_failure_without_reactivating_effects(
     native.settle().unwrap();
     let before = service.show(&id).unwrap();
     let residue = before.1.workspace.display().to_string();
-    service
+    let prior_status = f
+        .store
+        .read(|tx| crate::service::integration_recovery::status_snapshot(tx, f.candidate.project))
+        .unwrap();
+    let later_env = ctx
+        .env()
+        .clone()
+        .clock(crate::service::Clock::Fixed("2099-01-01T00:00:00Z".into()));
+    assert_ne!(later_env.now(), before.1.updated_at);
+    let later_ctx = Ctx::new(
+        &f.store,
+        f.candidate.project,
+        f.native.root.path(),
+        later_env,
+    )
+    .no_hooks(true);
+    IntegrationOwnerService::new(&later_ctx)
         .note_hold(
             &id,
             &format!("assembly cleanup incomplete; residue retained at {residue}"),
@@ -1457,6 +1473,15 @@ fn managed_completed_owner_retains_cleanup_failure_without_reactivating_effects(
     assert_eq!(after.1.phase, IntegrationPhase::Landed);
     assert_eq!(after.1.effect_epoch, before.1.effect_epoch);
     assert_eq!(after.1.landed, before.1.landed);
+    assert_eq!(after.1.updated_at, before.1.updated_at);
+    let later_status = f
+        .store
+        .read(|tx| crate::service::integration_recovery::status_snapshot(tx, f.candidate.project))
+        .unwrap();
+    assert_eq!(
+        later_status[0].elapsed_milliseconds,
+        prior_status[0].elapsed_milliseconds
+    );
     assert!(after.1.hold.as_deref().unwrap().contains(&residue));
     assert!(f.store.read(|tx| tx.landing_intents()).unwrap().is_empty());
     assert!(

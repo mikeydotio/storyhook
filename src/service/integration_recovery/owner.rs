@@ -192,7 +192,11 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
                     return Err(invalid("managed hold diagnostic is empty"));
                 }
                 state.hold = Some(detail.chars().take(4096).collect());
-                state.updated_at = now;
+                // The terminal completion instant anchors cumulative elapsed
+                // time. Later cleanup diagnostics must not extend it.
+                if state.phase != IntegrationPhase::Landed {
+                    state.updated_at = now;
+                }
                 save(tx, &mut record, &state)
             })
             .map_err(Into::into)
