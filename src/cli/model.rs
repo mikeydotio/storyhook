@@ -222,7 +222,7 @@ commands! {
     Publish ["publish"] Parsed Grammar::new("<id:stories>", "SH-1", FormKind::Command); (args) => parse_publish(args),
     Delete ["delete"] Parsed Grammar::new("<id:stories> [--force]", "SH-1", FormKind::Command); (args) => parse_delete_verb(args),
     Purge ["purge"] Parsed Grammar::new("", "", FormKind::Retired); (args) => parse_purge_verb(args),
-    Set ["set"] Parsed Grammar::new("<id:stories> [--title <title>] [--state <state:states>] [--priority <priority:priority>] [--complexity <complexity:complexity>] [--labels <csv:labels>] [--blocked <reason>] [--unblocked] [--json <json>] [--type <type:types>] [--description <text>]", "SH-1 --title example", FormKind::Command); (args) => parse_set(args),
+    Set ["set"] Parsed Grammar::new("<id:stories> [--title <title>] [--state <state:states>] [--priority <priority:priority>] [--complexity <complexity:complexity>] [--labels <csv:labels>] [--blocked <reason>] [--unblocked] [--input-json <object> | --json <object>] [--type <type:types>] [--description <text>]", "SH-1 --title example", FormKind::Command); (args) => parse_set(args),
     Relate ["relate", "link"] Parsed Grammar::new("<a:stories> <relation:relationships> <b:stories>", "SH-1 blocks SH-2", FormKind::Command); (args) => parse_relate(args),
     Unrelate ["unrelate", "unlink"] Parsed Grammar::new("<a:stories> <relation:relationships> <b:stories>", "SH-1 blocks SH-2", FormKind::Command); (args) => parse_unrelate(args),
     SessionStart ["session-start"] Parsed Grammar::new("", "", FormKind::Command); (args) => {
@@ -499,6 +499,7 @@ pub static FLAG_PATHS: &[FlagPath] = &[
             value("labels"),
             value("blocked"),
             value("json"),
+            value("input-json"),
             value("type"),
             value("description"),
             bare("unblocked"),
@@ -1368,7 +1369,7 @@ usages! {
     RELATE_1 (Relate) = "usage: story relate <a> <relationship-type> <b>";
     UNRELATE_1 (Unrelate) = "usage: story unrelate <a> <relationship-type> <b>";
     SET_1 (Set) = "usage: story set <id> [--field value ...]";
-    SET_2 (Set) = "usage: story set <id> [--title \"<title>\"] [--state <slug>] [--priority <level>] [--complexity low|medium|high] [--labels \"<csv>\"] [--blocked \"<reason>\"] [--unblocked] [--json \"<json>\"] [--type <slug>] [--description \"<text>\"]";
+    SET_2 (Set) = "usage: story set <id> [--title \"<title>\"] [--state <slug>] [--priority <level>] [--complexity low|medium|high] [--labels \"<csv>\"] [--blocked \"<reason>\"] [--unblocked] [--input-json \"<object>\" | --json \"<object>\"] [--type <slug>] [--description \"<text>\"]";
     RESET_1 (Reset) = "usage: story reset <id> [--force] [--dry-run]";
     SUMMARY_1 (Summary) = "usage: story summary";
     EXPORT_1 (Export) = "usage: story export";
