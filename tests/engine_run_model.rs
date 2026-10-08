@@ -74,13 +74,19 @@ fn migration_32_adds_nullable_run_configuration_without_inventing_defaults() {
     assert_eq!(report.from_version, 31);
     assert_eq!(report.to_version, 32);
     assert_eq!(report.applied, ["engine_run_options"]);
-    let stored = store
-        .read(|tx| tx.engine_run("run-before-options"))
-        .unwrap()
+    // Inspect exactly v32. The current run decoder also selects fields added
+    // by later migrations, which cannot be used to prove this historical step.
+    assert_eq!(store.schema_version().unwrap(), 32);
+    let stored: (Option<String>, Option<String>, Option<String>) = raw(&store)
+        .query_row(
+            "SELECT model, effort, speed FROM engine_runs WHERE id = ?1",
+            ["run-before-options"],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
         .unwrap();
-    assert_eq!(stored.model, None);
-    assert_eq!(stored.effort, None);
-    assert_eq!(stored.speed, None);
+    assert_eq!(stored.0, None);
+    assert_eq!(stored.1, None);
+    assert_eq!(stored.2, None);
 }
 
 fn lane(run_id: &str, lane_index: u32) -> EngineLaneRecord {
@@ -2131,9 +2137,20 @@ fn assert_reset_migration_preserves_v41_records(reset_sql: &'static str) {
     outstanding.reviewed_seq = None;
     outstanding.reviewed_head = None;
     let continuations = vec![completed, outstanding];
+    // Seed the historical run through its shipped columns. Modern writes
+    // include stop_origin_json (v58), absent from the v41 fixture under test.
+    insert_raw_run(
+        &raw(&store),
+        &prior.id,
+        "project",
+        None,
+        i64::from(prior.lanes),
+        prior.agent.as_str(),
+        prior.state.as_str(),
+    )
+    .unwrap();
     store
         .write(|tx| {
-            tx.create_engine_run(&prior)?;
             tx.put_engine_lane(&adopted)?;
             for record in &continuations {
                 tx.insert_continuation(record)?;
@@ -2143,8 +2160,10 @@ fn assert_reset_migration_preserves_v41_records(reset_sql: &'static str) {
         .unwrap();
 
     let conn = raw(&store);
-    // Typed equality covers the public records; raw equality also covers duplicate
-    // ownership keys/revisions and the exact serialized JSON in the backing rows.
+    // Historical raw equality covers the entire v41 run and exact serialized
+    // ownership keys/revisions/JSON. Lane and continuation decoders still match
+    // this schema, so their typed assertions retain the targeted mutant diagnoses.
+    // Modern run decoding is checked only after both historical passes below.
     let snapshots: Vec<_> = [
         "SELECT * FROM engine_runs ORDER BY id",
         "SELECT * FROM engine_lanes ORDER BY run_id,lane_index",
@@ -2155,10 +2174,6 @@ fn assert_reset_migration_preserves_v41_records(reset_sql: &'static str) {
     .map(|sql| (sql, migration_rows(&conn, sql)))
     .collect();
     let assert_retained = || {
-        assert_eq!(
-            store.read(|tx| tx.engine_run(&prior.id)).unwrap(),
-            Some(prior.clone())
-        );
         assert_eq!(
             store.read(|tx| tx.engine_lanes(&prior.id)).unwrap(),
             vec![adopted.clone()],
@@ -2202,6 +2217,14 @@ fn assert_reset_migration_preserves_v41_records(reset_sql: &'static str) {
             0
         );
     }
+    // Historical retention and all three mutation detectors have already run
+    // at v41/v42, including the idempotent v42 pass. Only now may today's Store
+    // decoder assert the original typed run survives the remaining migrations.
+    store.migrate().unwrap();
+    assert_eq!(
+        store.read(|tx| tx.engine_run(&prior.id)).unwrap(),
+        Some(prior)
+    );
 }
 
 fn migration_rows(conn: &Connection, sql: &str) -> Vec<Vec<rusqlite::types::Value>> {
