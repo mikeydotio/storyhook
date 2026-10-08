@@ -1926,25 +1926,30 @@ Related:
             r#"story set <id> (--title "<title>" | --state <slug> | --priority <level>
               | --complexity low|medium|high
               | --labels "<csv>" | --blocked "<reason>"
-              | --unblocked | --json "<json>" | --type <slug>
+              | --unblocked | --input-json "<object>" | --json "<object>" | --type <slug>
               | --description "<text>")
 
 Update multiple fields on a story in a single command. Accepts any
-combination of field flags. Use --json for arbitrary key-value data.
+combination of field flags. Use --input-json for a JSON object containing
+supported story fields. Unknown fields are rejected atomically.
+Legacy --json <object> input remains supported. Choose one input form;
+a separate --json with no value selects JSON output. No stdin/file input
+convention is implied. Explicit field flags apply before JSON fields.
 --labels adds to the story's existing labels; comma is always the
 delimiter, so a label can never contain one. Labels are stored
 lowercase; case variants name the same label.
 
 When to use:
   When you need to update more than one field at a time, or when
-  using the --json flag for structured metadata. For single-field
+  using --input-json for a structured field update. For single-field
   updates, the dedicated verb commands (move, prioritize,
   label, block, unblock) are more concise.
 
 Examples:
   story set SH-1 --priority high --state in-progress
   story set SH-1 --labels "backend,urgent"
-  story set SH-1 --json '{"estimate": "3d", "epic": "auth"}'
+  story --json set SH-1 --input-json '{"priority":"high","complexity":"medium"}'
+  story --json set SH-1 --json '{"priority":"high"}'   # legacy input
   story set SH-1 --blocked "waiting for deploy"
   story set SH-1 --unblocked
   story set SH-1 --description "Root cause: race condition in cache invalidation"

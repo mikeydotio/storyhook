@@ -129,7 +129,7 @@ Usage:
   story set <id> [--title "<title>"] [--state <slug>] [--priority <level>]
                  [--complexity low|medium|high]
                   [--labels "<csv>"] [--blocked "<reason>"]
-                  [--unblocked] [--json "<json>"] [--type <slug>]
+                  [--unblocked] [--input-json "<object>" | --json "<object>"] [--type <slug>]
                   [--description "<text>"]
   story relate <a> <relationship-type> <b>
   story unrelate <a> <relationship-type> <b>
