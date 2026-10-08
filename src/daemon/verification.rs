@@ -17,6 +17,8 @@ mod control;
 mod cost;
 mod diagnosis;
 pub use diagnosis::{RustDiagnosisRequest, RustDiagnosisResult};
+#[cfg(test)]
+mod authority_refresh_tests;
 pub(crate) mod evidence;
 #[cfg(test)]
 mod journal_retirement_tests;
@@ -3448,6 +3450,29 @@ enum AuthorityRefresh {
     Released,
 }
 
+/// Link metadata changes independently of submission authority. The queue has
+/// already checked registration and close-on-merge eligibility; the parsed
+/// host (including port), repository identity and number identify the PR.
+/// Keep invalid/missing submissions distinct, including their diagnostic facts.
+fn same_pull_request_authority(
+    current: &Result<PrLink, VerificationProblem>,
+    owned: &Result<PrLink, VerificationProblem>,
+) -> bool {
+    match (current, owned) {
+        (Ok(current), Ok(owned)) => {
+            current.owner == owned.owner
+                && current.repo == owned.repo
+                && current.number == owned.number
+                && matches!(
+                    (parse_pr_url(&current.url), parse_pr_url(&owned.url)),
+                    (Ok(current), Ok(owned)) if current == owned
+                )
+        }
+        (Err(current), Err(owned)) => current == owned,
+        _ => false,
+    }
+}
+
 fn candidate_authority(
     queue: &VerificationQueue<'_, impl Store>,
     candidate: &VerificationCandidate,
@@ -3457,7 +3482,7 @@ fn candidate_authority(
         Some(current)
             if current.verifying_generation == candidate.verifying_generation
                 && current.human_only_revision == candidate.human_only_revision
-                && current.pull_request == candidate.pull_request
+                && same_pull_request_authority(&current.pull_request, &candidate.pull_request)
                 && current.checkout == candidate.checkout
                 && current.project_slug == candidate.project_slug
                 && current.blocking_revision == candidate.blocking_revision =>
