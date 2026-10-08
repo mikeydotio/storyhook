@@ -1768,6 +1768,7 @@ dependencies = [
  "serde_json",
  "serde_yml",
  "sha2",
+ "shell-words",
  "ste-lint",
  "storyhook-test-support",
  "syn",
