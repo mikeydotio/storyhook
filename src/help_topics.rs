@@ -130,19 +130,19 @@ per line. Plain output uses color only at a terminal (NO_COLOR disables it).
 Each record labels its source, stream, process and story/request context.
 Use --store-path to inspect a different store, or --directory to read a project journal.
 
-The daemon maintains one verification window in each project-slug tmux session
-on the default server. The right pane follows the project journal. The left
-pane runs the Verifier Agent (claude --agent story:verifier, Opus, xhigh) in
+The daemon maintains two single-pane windows in each project-slug tmux session
+on the default server. The verification window follows the project journal.
+The verifier window runs the Verifier Agent (claude --agent story:verifier, Opus, xhigh) in
 the registered checkout. Closed or failed readers are repaired; a closed agent
-pane returns after a minute, and an exited agent waits for Enter. Project logs
+window returns after a minute, and an exited agent waits for Enter. Project logs
 live in the registered checkout at .storyhook/logs/YYYY-MM-DD.jsonl.
 That directory ignores itself: storyhook keeps a .gitignore with the rule *
 in it, so git never lists the journal. If a repository already tracks
 journal files, daemon status and verifier status name the command that
 untracks them; storyhook never changes the index.
 STORYHOOK_VERIFIER_MIRROR=0 disables these views without disabling the journal.
-STORYHOOK_VERIFIER_AGENT=0 keeps the reader and omits the agent pane. Without
-claude on the daemon's PATH, the window has no agent pane and the journal says so.
+STORYHOOK_VERIFIER_AGENT=0 keeps the reader and creates no agent window. Without
+claude on the daemon's PATH, there is no agent window and the journal says so.
 A missing tmux or Python 3 activity helper is non-fatal.
 
 Daily files live at <daemon state directory>/activity/YYYY-MM-DD.jsonl.

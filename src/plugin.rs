@@ -21,8 +21,8 @@ const CODEX_RULE_MARKER: &str = "# storyhook-managed: codex-rules-v1";
 const CODEX_LAUNCHER_RELATIVE: &str = ".codex/storyhook/story.sh";
 const CODEX_RULE_RELATIVE: &str = ".codex/rules/storyhook.rules";
 
-/// The Claude Code plugin agent that runs in the left pane of each project's
-/// `verification` tmux window (SH-822): `plugins/story/agents/verifier.md`,
+/// The Claude Code plugin agent that runs in each project's
+/// `verifier` tmux window (SH-861): `plugins/story/agents/verifier.md`,
 /// scoped by the plugin's name as Claude Code scopes plugin agents. Codex
 /// plugins cannot declare agents, so the definition is Claude-only.
 pub const VERIFIER_AGENT: &str = "story:verifier";
