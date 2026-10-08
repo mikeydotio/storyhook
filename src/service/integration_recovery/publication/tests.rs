@@ -176,11 +176,22 @@ fn sh871_publication_revalidates_private_objects_and_committed_policy() {
             .to_owned()
     };
     run(&["init", "--bare", "--quiet"]);
-    storyhook_test_support::approve_fixture_identity(
-        &root,
-        "Publication Fixture",
-        "publication@example.test",
-    );
+    for (key, value) in [
+        ("user.name", "Publication Fixture"),
+        ("user.email", "publication@example.test"),
+        ("storyhookIdentity.fixture.name", "Publication Fixture"),
+        (
+            "storyhookIdentity.fixture.email",
+            "publication@example.test",
+        ),
+        ("storyhookIdentity.fixture.role", "both"),
+        (
+            "storyhookIdentity.fixture.reason",
+            "Isolated real-Git test fixture identity",
+        ),
+    ] {
+        run(&["config", "--local", key, value]);
+    }
     let pointer = b"schema = 1\nuuid = \"fixture\"\nprefix = \"SH\"\n[integration]\nversion = 1\nenabled = true\npublication = \"managed-pr\"\nsmooth = [\"docs/\"]\n";
     let file = root.join("pointer-fixture");
     std::fs::write(&file, pointer).unwrap();

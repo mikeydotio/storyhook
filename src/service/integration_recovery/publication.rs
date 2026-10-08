@@ -90,6 +90,7 @@ pub fn publish_owned<S: Store>(
         let repo = Repository::resolve_publication(
             &original.checkout,
             service.environment(),
+            &claim.submission().repository,
             deadline,
             &cancelled,
         )?;
@@ -127,6 +128,7 @@ pub fn publish_owned<S: Store>(
         let repo = Repository::resolve_publication(
             &original.checkout,
             service.environment(),
+            &claim.submission().repository,
             deadline,
             &cancelled,
         )?;
@@ -143,6 +145,7 @@ pub fn publish_owned<S: Store>(
         let repo = Repository::resolve_publication(
             &original.checkout,
             service.environment(),
+            &claim.submission().repository,
             deadline,
             &cancelled,
         )?;
@@ -222,6 +225,7 @@ fn observe<S: Store>(
     let repo = Repository::resolve_publication(
         &expected.checkout,
         service.environment(),
+        &claim.submission().repository,
         deadline,
         &cancelled,
     )?;
@@ -272,6 +276,7 @@ fn remote_head<S: Store>(
     let repo = Repository::resolve_publication(
         &claim.submission().checkout,
         service.environment(),
+        &claim.submission().repository,
         deadline,
         &cancelled,
     )?;
@@ -373,10 +378,16 @@ fn private_git(
         .env("GIT_OBJECT_DIRECTORY", root.join("objects"))
         .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", "")
         .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_NO_LAZY_FETCH", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .args(["--bare", "--no-replace-objects"])
+        .args([
+            "--bare",
+            "--no-replace-objects",
+            "-c",
+            "protocol.allow=never",
+        ])
         .args(args);
     capture(command, deadline, cancelled)
 }
@@ -386,7 +397,7 @@ fn capture(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>, AppError> {
     let output = run_captured_query_quiescent(command, deadline, cancelled, 64 * 1024, &[])
-        .map_err(|e| refuse(&format!("native observation failed: {}", e.error.detail())))?;
+        .map_err(|e| refuse(&format!("native observation failed: {}", e.detail())))?;
     if !output.status.success() || output.stdout_truncated {
         return Err(refuse("native object observation failed or was truncated"));
     }

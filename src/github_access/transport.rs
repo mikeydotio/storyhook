@@ -25,7 +25,6 @@ impl PublicationControl<'_> {
             64 * 1024,
             &[],
         )
-        .map_err(|failure| failure.error)
     }
     pub(super) fn read(self, checkout: &Path, arguments: &[&str]) -> Result<String, AppError> {
         let mut command = git_env::command(checkout);
@@ -56,6 +55,7 @@ impl Repository {
     pub(crate) fn resolve_publication(
         checkout: &Path,
         env: &crate::env::Environment,
+        expected_repository: &str,
         deadline: Instant,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Self, AppError> {
@@ -63,11 +63,17 @@ impl Repository {
             deadline,
             cancelled,
         };
-        Self::resolve_reading(
+        let repository = Self::resolve_reading(
             checkout,
             super::Bounds::for_environment(env),
             |path, args| control.read(path, args),
-        )
+        )?;
+        if repository.qualified() != expected_repository {
+            return Err(AppError::Validation(
+                "publication origin differs from immutable submission".into(),
+            ));
+        }
+        Ok(repository)
     }
 
     /// Protected transport retaining normal source hooks and configuration.
@@ -404,7 +410,74 @@ mod publication_tests {
         };
         assert!(matches!(
             control.capture(never_spawn()),
-            Err(crate::process::CaptureError::Timeout(_))
+            Err(crate::process::CaptureError::Wait(error)) if error.kind() == std::io::ErrorKind::TimedOut
         ));
+    }
+    #[test]
+    fn sh871_publication_rejects_origin_swap_before_effect_resolution() {
+        let scratch = storyhook_test_support::scratch_dir();
+        let root = scratch.path().canonicalize().unwrap();
+        let env = crate::env::Environment::at(&root);
+        let deadline = Instant::now()
+            + storyhook_test_support::load_grace::graced_now(Duration::from_secs(60));
+        let cancelled = || false;
+        let control = PublicationControl {
+            deadline,
+            cancelled: &cancelled,
+        };
+        control.read(&root, &["init", "--quiet"]).unwrap();
+        control
+            .read(
+                &root,
+                &[
+                    "config",
+                    "remote.origin.url",
+                    "https://github.example/org/original.git",
+                ],
+            )
+            .unwrap();
+        assert!(
+            Repository::resolve_publication(
+                &root,
+                &env,
+                "github.example/org/original",
+                deadline,
+                &cancelled
+            )
+            .is_ok()
+        );
+        // The fresh resolver must bind the immutable identity, not merely find
+        // a self-consistent replacement origin before push or PR creation.
+        control
+            .read(
+                &root,
+                &[
+                    "config",
+                    "remote.origin.url",
+                    "https://github.example/org/replacement.git",
+                ],
+            )
+            .unwrap();
+        assert!(
+            Repository::resolve_publication(
+                &root,
+                &env,
+                "github.example/org/original",
+                deadline,
+                &cancelled
+            )
+            .is_err()
+        );
+        // Prove refusal is identity-specific, not a broken repository fixture.
+        assert!(
+            Repository::resolve_publication(
+                &root,
+                &env,
+                "github.example/org/replacement",
+                deadline,
+                &cancelled
+            )
+            .is_ok()
+        );
     }
 }
