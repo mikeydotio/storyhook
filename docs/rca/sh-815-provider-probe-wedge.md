@@ -79,5 +79,6 @@ is outside storyhook.
 
 Local `git` queries on daemon paths remain without a deadline. They follow the
 documented `env::git_env` rule: a caller that can reach a remote adds one.
-Engine reconciles and the dispatch-options endpoint still ask Codex's registry
-for each Codex call. That is now bounded, and caching it is SH-816.
+SH-816 subsequently added short, shared result caching for engine reconciles
+and dispatch options while retaining the bounded authoritative registry probe.
+See [Codex helper resolution](../spec/codex-helper-resolution.md).
