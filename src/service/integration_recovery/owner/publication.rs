@@ -38,9 +38,9 @@ pub struct PublicationClaim {
 /// let _: PublishedIntegration = serde_json::from_str("{}").unwrap();
 /// ```
 pub struct PublishedIntegration {
-    record: IntegrationRecovery,
-    owner: IntegrationOwner,
-    native: NativeAssembly,
+    pub(super) record: IntegrationRecovery,
+    pub(super) owner: IntegrationOwner,
+    pub(super) native: NativeAssembly,
 }
 impl PublishedIntegration {
     /// Durable original owner identity.
@@ -326,7 +326,10 @@ pub(super) fn validate_state(
 ) -> Result<(), StoreError> {
     let assembled = matches!(
         state.phase,
-        IntegrationPhase::Assembled | IntegrationPhase::Publishing | IntegrationPhase::Published
+        IntegrationPhase::Assembled
+            | IntegrationPhase::Publishing
+            | IntegrationPhase::Published
+            | IntegrationPhase::Gating
     );
     if assembled && state.assembly.is_none()
         || matches!(
@@ -335,9 +338,17 @@ pub(super) fn validate_state(
         ) && state.assembly.is_some()
         || !matches!(
             state.phase,
-            IntegrationPhase::Publishing | IntegrationPhase::Published
+            IntegrationPhase::Publishing | IntegrationPhase::Published | IntegrationPhase::Gating
         ) && !state.publication_effects.is_empty()
-        || (state.phase == IntegrationPhase::Published) != state.publication.is_some()
+        || matches!(
+            state.phase,
+            IntegrationPhase::Published | IntegrationPhase::Gating
+        ) != state.publication.is_some()
+        || (state.phase == IntegrationPhase::Gating) != state.gate_attempt.is_some()
+        || state
+            .gate_attempt
+            .as_ref()
+            .is_some_and(|id| id.is_empty() || id == &state.attribution.attempt)
         || !matches!(
             state.publication_effects.as_slice(),
             [] | [PublicationEffect::PushBranch]
@@ -355,9 +366,15 @@ pub(super) fn validate_state(
         validate_assembly(record, state, evidence)?;
         let epoch = if matches!(
             state.phase,
-            IntegrationPhase::Publishing | IntegrationPhase::Published
+            IntegrationPhase::Publishing | IntegrationPhase::Published | IntegrationPhase::Gating
         ) {
-            evidence.epoch.checked_add(1)
+            evidence
+                .epoch
+                .checked_add(if state.phase == IntegrationPhase::Gating {
+                    2
+                } else {
+                    1
+                })
         } else {
             Some(evidence.epoch)
         };
@@ -396,7 +413,10 @@ fn validate_publication(
         .map_err(|e| invalid(&e.to_string()))?;
     if evidence.version != 1
         || evidence.owner != record.id
-        || evidence.epoch != state.effect_epoch
+        || Some(evidence.epoch)
+            != state
+                .effect_epoch
+                .checked_sub(u32::from(state.phase == IntegrationPhase::Gating))
         || evidence.original != state.submission
         || evidence.branch != state.branch
         || evidence.commit != assembly.commit

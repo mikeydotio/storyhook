@@ -11,6 +11,7 @@ use crate::{
     },
 };
 
+pub(super) mod gate;
 pub(super) mod publication;
 
 /// An integration phase never borrows a batch's identity or authority.
@@ -27,6 +28,8 @@ pub enum IntegrationPhase {
     Publishing,
     /// Native publication is observed; the exact tree still needs a fresh gate.
     Published,
+    /// The original central slot owns a distinct physical integration gate.
+    Gating,
     /// Authority, semantic ambiguity, or uncertain effects require reconciliation.
     Held,
 }
@@ -78,6 +81,9 @@ pub struct IntegrationOwner {
     /// Exact managed PR observation, never a gate or original PR merge receipt.
     #[serde(default)]
     pub publication: Option<PublicationEvidence>,
+    /// Physical admission identity, never a certificate or replay permission.
+    #[serde(default)]
+    pub gate_attempt: Option<String>,
 }
 
 /// One native assembly claim, minted only by the durable compare-and-swap.
@@ -204,7 +210,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
                 started_at: attempt.admitted_at, reserved_at: now.clone(), updated_at: now.clone(),
                 label_revision: crate::service::project_recovery::recovery_label_revision(tx, candidate.project, story)?,
                 control_revision, phase: IntegrationPhase::Reserved, effect_epoch: 0, effect_started_at: None, hold: None,
-                assembly: None, publication_effects: Vec::new(), publication: None,
+                assembly: None, publication_effects: Vec::new(), publication: None, gate_attempt: None,
             };
             let record = IntegrationRecovery { id, project: candidate.project, story, generation: candidate.verifying_generation.ok_or_else(|| invalid("submission has no generation"))?, revision: 0, active: true, state: encode(&state)? };
             decode(&record)?;
@@ -443,10 +449,24 @@ fn check_authority(
     state: &IntegrationOwner,
     proof: &BoundIntegrationProposal,
 ) -> Result<(), StoreError> {
+    check_retained_authority(tx, record, state)?;
+    if proof.plan() != &state.plan || proof.submission() != &state.submission {
+        return Err(invalid(
+            "native source, policy, original head, diagnostic evidence or operator epoch changed",
+        ));
+    }
+    Ok(())
+}
+
+// Current policy/lineage checks shared by distinct operations. Native input
+// inspection is required separately before each new operation is admitted.
+fn check_retained_authority(
+    tx: &impl ReadOps,
+    record: &IntegrationRecovery,
+    state: &IntegrationOwner,
+) -> Result<(), StoreError> {
     check_candidate(tx, &state.candidate)?;
-    if proof.plan() != &state.plan
-        || proof.submission() != &state.submission
-        || tx.verification_control_revision(record.project)? != state.control_revision
+    if tx.verification_control_revision(record.project)? != state.control_revision
         || crate::service::project_recovery::recovery_label_revision(
             tx,
             record.project,
@@ -457,7 +477,7 @@ fn check_authority(
             .contains(&state.attribution)
     {
         return Err(invalid(
-            "native source, policy, original head, diagnostic evidence or operator epoch changed",
+            "original diagnostic, labels or operator epoch changed",
         ));
     }
     Ok(())
@@ -561,6 +581,10 @@ pub(crate) fn status_snapshot(
             IntegrationPhase::Published => (
                 "published",
                 "The separate managed PR needs a fresh central gate on the exact assembled tree and proven native landing; the original PR remains unchanged.",
+            ),
+            IntegrationPhase::Gating => (
+                "gating",
+                "The central slot must finish and settle its exact managed gate; stored admission metadata grants no certificate or restart replay.",
             ),
             IntegrationPhase::Held => (
                 "held",

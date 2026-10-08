@@ -25,6 +25,7 @@ pub use publication::{NativePublication, PublicationEvidence, publish_owned};
 mod submission;
 pub use assembly::{AssemblyEvidence, NativeAssembly, assemble_owned};
 pub use owner::IntegrationRecoveryStatus;
+pub use owner::gate::IntegrationGateClaim;
 pub use owner::publication::{
     AssembledIntegration, PublicationClaim, PublicationEffect, PublishedIntegration,
 };

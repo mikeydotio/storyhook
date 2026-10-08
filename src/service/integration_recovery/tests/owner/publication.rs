@@ -343,3 +343,189 @@ fn native_publication_acceptance_retains_original_story_and_requires_exact_owned
         proof.settle().unwrap();
     }
 }
+
+fn published(f: &OwnedFixture, proof: &BoundIntegrationProposal) -> PublishedIntegration {
+    let ready = assembled(f, proof);
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let mut claim = service.claim_publication(ready, proof).unwrap().unwrap();
+    for effect in [
+        PublicationEffect::PushBranch,
+        PublicationEffect::CreatePullRequest,
+    ] {
+        assert!(
+            service
+                .claim_publication_effect(&mut claim, proof, effect)
+                .unwrap()
+        );
+    }
+    let native = crate::service::integration_recovery::publication::fixture_publication(
+        publication_evidence(&claim),
+    );
+    service
+        .accept_publication(claim, native, proof)
+        .unwrap()
+        .unwrap()
+}
+
+fn gate_admission(f: &OwnedFixture, changed: &str) -> String {
+    let original = f
+        .store
+        .read(|tx| tx.gate_attempts(f.candidate.project))
+        .unwrap()
+        .into_iter()
+        .find(|a| a.id == "original-conflict")
+        .unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut attempt = GateAttempt::new(id.clone(), original.submission, AT);
+    attempt.control_revision = original.control_revision;
+    match changed {
+        "skipped" => attempt.mode = crate::domain::landing::VerificationMode::VerificationSkipped,
+        "control" => attempt.control_revision = Some(999),
+        "generation" => attempt.submission.generation = None,
+        _ => {}
+    }
+    f.store
+        .write(|tx| tx.insert_gate_attempt(&attempt))
+        .unwrap();
+    if changed == "finished" {
+        attempt.revision = 1;
+        attempt.finished_at = Some(AT.into());
+        attempt.verdict = Some("certified".into());
+        assert!(
+            f.store
+                .write(|tx| tx.update_gate_attempt(&attempt, 0))
+                .unwrap()
+        );
+    }
+    id
+}
+
+#[test]
+fn managed_gate_claim_requires_live_gated_original_admission_and_preserves_lineage() {
+    for changed in [
+        "none",
+        "missing",
+        "skipped",
+        "control",
+        "generation",
+        "finished",
+        "original",
+    ] {
+        let f = OwnedFixture::new(true);
+        let proof = proof(&f);
+        let ready = published(&f, &proof);
+        let id = ready.id().to_string();
+        let ctx = f.ctx();
+        let service = IntegrationOwnerService::new(&ctx);
+        let before = service.show(&id).unwrap();
+        let attempt = match changed {
+            "missing" => "missing".into(),
+            "original" => "original-conflict".into(),
+            _ => gate_admission(&f, changed),
+        };
+        let cancellation = Cancellation::default();
+        let result = service.claim_gate(ready, &proof, &attempt, proof.deadline, &cancellation);
+        if changed == "none" {
+            let claim = result.unwrap().unwrap();
+            assert!(service.gate_permitted(&claim).unwrap());
+            assert_eq!(claim.candidate(), &f.candidate);
+            assert_eq!(claim.attempt(), attempt);
+            assert_eq!(claim.publication().original.head, f.native.head);
+            assert_eq!(
+                claim.publication().pull_request,
+                "https://github.com/acme/widgets/pull/99"
+            );
+            let after = service.show(&id).unwrap();
+            assert_eq!(after.1.phase, IntegrationPhase::Gating);
+            assert_eq!(after.1.started_at, before.1.started_at);
+            assert_eq!(after.1.attribution, before.1.attribution);
+            assert_eq!(after.1.effect_epoch, before.1.effect_epoch + 1);
+            let reopened = SqliteStore::open(f.store.path()).unwrap();
+            assert_eq!(
+                reopened
+                    .read(|tx| tx.integration_recoveries(f.candidate.project))
+                    .unwrap(),
+                vec![after.0]
+            );
+        } else {
+            assert!(result.is_err(), "accepted {changed} admission");
+            assert_eq!(service.show(&id).unwrap(), before);
+        }
+        proof.settle().unwrap();
+    }
+}
+
+#[test]
+fn managed_gate_operation_retains_cancellation_and_rechecks_operator_before_effect() {
+    for changed in ["cancel", "stop", "finished"] {
+        let f = OwnedFixture::new(true);
+        let proof = proof(&f);
+        let ready = published(&f, &proof);
+        let attempt = gate_admission(&f, "none");
+        let ctx = f.ctx();
+        let service = IntegrationOwnerService::new(&ctx);
+        let cancellation = Cancellation::default();
+        let claim = service
+            .claim_gate(ready, &proof, &attempt, proof.deadline, &cancellation)
+            .unwrap()
+            .unwrap();
+        assert!(service.gate_permitted(&claim).unwrap());
+        let before = service.show(claim.id()).unwrap();
+        match changed {
+            "cancel" => cancellation.cancel(),
+            "stop" => f
+                .store
+                .write(|tx| tx.put_verification_enabled(f.candidate.project, false))
+                .unwrap(),
+            _ => {
+                let mut record = f
+                    .store
+                    .read(|tx| tx.gate_attempts(f.candidate.project))
+                    .unwrap()
+                    .into_iter()
+                    .find(|a| a.id == attempt)
+                    .unwrap();
+                record.finished_at = Some(AT.into());
+                record.verdict = Some("interrupted".into());
+                record.revision = 1;
+                assert!(
+                    f.store
+                        .write(|tx| tx.update_gate_attempt(&record, 0))
+                        .unwrap()
+                );
+            }
+        }
+        assert!(
+            service.gate_permitted(&claim).is_err(),
+            "retained {changed} authority"
+        );
+        assert_eq!(service.show(claim.id()).unwrap(), before);
+        proof.settle().unwrap();
+    }
+}
+
+#[test]
+fn managed_gate_expired_operation_cannot_claim_a_published_receipt() {
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let ready = published(&f, &proof);
+    let id = ready.id().to_string();
+    let attempt = gate_admission(&f, "none");
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let before = service.show(&id).unwrap();
+    assert!(
+        service
+            .claim_gate(
+                ready,
+                &proof,
+                &attempt,
+                Instant::now(),
+                &Cancellation::default()
+            )
+            .is_err()
+    );
+    assert_eq!(service.show(&id).unwrap(), before);
+    proof.settle().unwrap();
+}
