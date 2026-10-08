@@ -433,6 +433,8 @@ story engine stop [--run <run-id>] [--now]
 story engine ack [--run <run-id>]
 story verifier status
 story verifier evidence <story-id> [--json]
+story verifier landing show [--json]
+story verifier landing release <intent-id> --reason <reason> [--json]
 story verifier start
 story verifier stop
 story verifier drain
@@ -519,6 +521,15 @@ the same label on write, removal, filtering, and queue exclusion.
 Global flags — `--json`, `--quiet`, `--no-hooks`, `--store-path <file>`, `--project <slug>`,
 `--deadline <secs>` — precede the verb and work on any command; see
 [Automation and scripting](#automation-and-scripting).
+
+`story verifier landing show` lists pending landing intents for the current
+project. `story verifier landing release` is operator-only recovery for an exact
+intent: it requires a reason and a fresh remote observation of the admitted head
+in OPEN or CLOSED state. It records that observation and reason on every affected
+story, releasing all remaining batch members together. Stories stay Verifying;
+the command does not merge, certify or complete them. An earlier remote request
+may still complete after an OPEN observation; see `story help verifier` for the
+admission and reconciliation safeguards.
 
 ### Story reset
 
