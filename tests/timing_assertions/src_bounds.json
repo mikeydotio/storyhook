@@ -358,5 +358,33 @@
       "kind": "delegated",
       "reason": "The local publication fixture derives one absolute command deadline from load_grace::graced_now(30 seconds), retaining that deadline through owned process-group settlement. Only remote replies are modeled; local Git uses the normal bounded capture."
     }
+  },
+  "src/service/integration_recovery/tests/owner/workflow.rs": {
+    "test run_captured_query_quiescent(deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The new managed-worker fixture uses one load-graced 30-second scratch-process allowance. Production gate supervision remains unchanged; cancellation is the actual central owner token and quiescent capture settles the owned group."
+    }
+  },
+  "src/service/private_objects/native.rs": {
+    "production run_captured_query_quiescent(deadline": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "Controlled native namespace setup and each later query spend the original caller absolute deadline and cancellation, with owned-group quiescence. The capture path may shorten but never renew that deadline."
+    }
+  },
+  "src/service/private_objects/native/tests.rs": {
+    "test run_captured_query_quiescent(Instant::now()+allowance()": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Scratch bare-repository initialization uses allowance(), a load-graced 30-second fixture allowance; production ownership deadlines are unchanged."
+    }
+  },
+  "src/service/integration_recovery/submission/clean/tests.rs": {
+    "test run_captured_query_quiescent(deadline()": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Native clean inspection Git fixture setup uses deadline(), which derives a load-graced 120-second fixture progress allowance. It does not alter production caller deadlines."
+    }
   }
 }

@@ -618,5 +618,11 @@ fn sh871_publication_transport_cancelled_owner_makes_no_remote_request() {
     assert!(remote.snapshot().requests.is_empty());
     assert!(claim.effects().is_empty());
     assert_eq!(service.show(claim.id()).unwrap(), before);
-    proof.settle().unwrap();
+    // Cleanup of known-quiescent private objects still occurs, but cancelled
+    // native inspection cannot be returned as a successful proof receipt.
+    let error = proof.settle().unwrap_err().to_string();
+    assert!(
+        error.contains("expired or cancelled after explicit cleanup"),
+        "{error}"
+    );
 }

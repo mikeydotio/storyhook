@@ -399,6 +399,11 @@ impl VerificationGuard {
         self.cancellation.is_cancelled()
     }
 
+    #[cfg(test)]
+    pub(crate) fn cancellation_for_fixture(&self) -> Cancellation {
+        self.cancellation.clone()
+    }
+
     /// When this worker acquired the generation it currently owns.
     #[must_use]
     pub fn started_at(&self) -> &str {

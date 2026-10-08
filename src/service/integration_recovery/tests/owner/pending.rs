@@ -257,7 +257,9 @@ fn incomplete_physical_conflict_custody_keeps_hold_without_automatic_enrollment(
     }
 }
 
-fn settled_subject(f: &OwnedFixture) -> crate::service::integration_recovery::PendingIntegration {
+pub(super) fn settled_subject(
+    f: &OwnedFixture,
+) -> crate::service::integration_recovery::PendingIntegration {
     retain(f);
     f.store
         .write(|tx| {

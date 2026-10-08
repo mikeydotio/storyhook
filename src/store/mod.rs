@@ -68,7 +68,7 @@ pub mod project_recovery;
 pub use block_delivery::{BlockAction, BlockDelivery, DeliveryStatus};
 pub use continuation::{Continuation, ContinuationPhase, ContinuationStatus};
 pub use host_recovery::{HostRecovery, HostRecoveryPending};
-pub use integration_recovery::{IntegrationPending, IntegrationRecovery};
+pub use integration_recovery::{IntegrationPending, IntegrationReadmission, IntegrationRecovery};
 pub use project_recovery::{ProjectRecovery, ProjectRecoveryObservation};
 pub mod conformance;
 mod dropped_cleanup;
@@ -333,6 +333,11 @@ pub trait ReadOps {
         &self,
         project: ProjectId,
     ) -> Result<Vec<IntegrationPending>, StoreError>;
+    /// Immutable native clean-input releases, retaining head and control fences.
+    fn integration_readmissions(
+        &self,
+        project: ProjectId,
+    ) -> Result<Vec<IntegrationReadmission>, StoreError>;
     /// Project-fault coordinators in creation order, including retained history.
     fn project_recoveries(&self, project: ProjectId) -> Result<Vec<ProjectRecovery>, StoreError>;
     /// Immutable observations belonging to this project and recovery identity.
@@ -715,6 +720,11 @@ pub trait WriteOps: ReadOps {
     /// Record immutable conflict custody; exact replay is idempotent.
     fn insert_integration_pending(&mut self, record: &IntegrationPending)
     -> Result<(), StoreError>;
+    /// Persist one exact clean-input receipt; replacement is forbidden.
+    fn insert_integration_readmission(
+        &mut self,
+        record: &IntegrationReadmission,
+    ) -> Result<(), StoreError>;
     /// Advance state once, preserving project, story and original generation.
     fn update_integration_recovery(
         &mut self,

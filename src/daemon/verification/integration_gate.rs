@@ -4,7 +4,7 @@
 use super::*;
 use crate::service::integration_recovery::{
     IntegrationGateClaim, IntegrationGateInputsEvidence, IntegrationOwnerService,
-    NativeIntegrationGateInputs, observe_gate_inputs,
+    NativeIntegrationGateInputs,
 };
 
 pub(crate) struct NativeIntegrationCertification {
@@ -54,7 +54,7 @@ pub(super) enum ManagedGateResult {
 // Only the serialized central worker can call this; the borrowed guard stays
 // alive through native process settlement and the post-run input observation.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn run<S: Store>(
+pub(super) fn run_with_inputs<S: Store>(
     store: &S,
     env: &Environment,
     bus: &ChangeBus,
@@ -62,6 +62,12 @@ pub(super) fn run<S: Store>(
     active: &VerificationGuard,
     service: &IntegrationOwnerService<'_, S>,
     claim: &IntegrationGateClaim,
+    observe: impl FnOnce(
+        &IntegrationOwnerService<'_, S>,
+        &IntegrationGateClaim,
+        Instant,
+        &Cancellation,
+    ) -> Result<NativeIntegrationGateInputs, AppError>,
 ) -> Result<ManagedGateResult, AppError> {
     let inputs = claim.inputs().ok_or_else(|| {
         AppError::Validation("managed gate lacks a consumed native input proof".into())
@@ -136,7 +142,7 @@ pub(super) fn run<S: Store>(
     // Native control observation is separately bounded; the progressing test
     // runner above retains its existing idle supervision with no new total cap.
     let deadline = Instant::now() + env.subprocess_bound(Duration::from_secs(30));
-    let observed = observe_gate_inputs(service, claim, deadline, &active.cancellation)?;
+    let observed = observe(service, claim, deadline, &active.cancellation)?;
     if observed.evidence() != inputs {
         return Err(AppError::Validation(
             "managed gate inputs changed before certification consumption".into(),

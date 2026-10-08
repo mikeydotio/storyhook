@@ -1,6 +1,8 @@
 //! Real local Git proposals and durable store boundaries; no remote effects.
 mod pending;
 mod publication;
+mod readmission;
+mod workflow;
 use super::*;
 use crate::{
     env::Environment,

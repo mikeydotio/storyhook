@@ -28,6 +28,11 @@ pub use landed_observation::{
 mod owner;
 mod pending;
 mod publication;
+mod retained_branch;
+pub use retained_branch::{
+    RetainedBranchObservation, RetainedBranchOutcome, observe_retained_branch,
+};
+pub(crate) mod readmission;
 pub(crate) use pending::{
     PendingIntegration, retain as retain_conflict_observation, subjects as pending_subjects,
 };
@@ -46,7 +51,8 @@ pub use owner::publication::{
 pub(crate) use owner::status_snapshot;
 pub use owner::{AssemblyClaim, IntegrationOwner, IntegrationOwnerService, IntegrationPhase};
 pub use submission::{
-    BoundInspection, BoundIntegrationProposal, SubmissionObservation, inspect_submission,
+    BoundInspection, BoundIntegrationProposal, CleanIntegrationEvidence, NativeCleanIntegration,
+    SubmissionObservation, inspect_submission, observe_clean_submission,
 };
 
 /// No single-submission integration is enabled by default or by `[batch]`.

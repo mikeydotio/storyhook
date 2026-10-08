@@ -143,6 +143,33 @@ pub(crate) fn subjects(
     Ok(result)
 }
 
+/// Mandatory original custody for native clean readmission; absence grants nothing.
+pub(super) fn required_original(
+    tx: &impl ReadOps,
+    subject: &PendingIntegration,
+) -> Result<AttributionRecord, StoreError> {
+    let record = tx
+        .integration_pending(subject.candidate.project)?
+        .into_iter()
+        .find(|r| r.id == subject.attribution)
+        .ok_or_else(|| invalid("original pending custody is missing"))?;
+    let observation = decode(&record)?;
+    if observation.candidate != subject.candidate
+        || observation.attribution.inputs.head.as_deref() != Some(subject.retained_head.as_str())
+        || !observation
+            .attribution
+            .components
+            .iter()
+            .any(|c| c.id == subject.component && c.observed_cause == FailureCause::Integration)
+    {
+        return Err(invalid(
+            "clean readmission differs from original pending subject",
+        ));
+    }
+    validate_current(tx, &observation)?;
+    Ok(observation.attribution)
+}
+
 pub(super) fn validate_retained(
     tx: &impl ReadOps,
     candidate: &VerificationCandidate,

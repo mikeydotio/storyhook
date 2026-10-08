@@ -1,10 +1,12 @@
 //! Managed integration uses the existing serialized per-project verifier.
 //! Restart can observe an exact pending merge, never replay its old effects.
 use super::*;
+pub(crate) mod native;
 use crate::service::integration_recovery::{
     IntegrationLandingObservation, IntegrationOwnerService, NativeIntegrationLanded,
     observe_landed_owned,
 };
+use native::NativeOperations;
 
 pub(super) fn reconcile<S: Store>(
     store: &S,
@@ -233,18 +235,29 @@ fn proposed<T>(
     head: &str,
     env: &Environment,
     cancel: &Cancellation,
+    operations: &impl NativeOperations,
     run: impl FnOnce(
         &crate::service::integration_recovery::BoundIntegrationProposal,
         Instant,
     ) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
-    use crate::service::integration_recovery::{BoundInspection, inspect_submission};
+    use crate::service::integration_recovery::BoundInspection;
     let deadline = Instant::now() + env.subprocess_bound(Duration::from_secs(30));
-    let proof=match inspect_submission(candidate,head,env,deadline,cancel.clone())? {
+    let proof=match operations.inspect(candidate,head,env,deadline,cancel)? {
         BoundInspection::Proposed(proof)=>proof,
         BoundInspection::Held(reason)=>return Err(AppError::Validation(reason)),
         BoundInspection::Clean=>return Err(AppError::Validation("original conflict no longer needs integration; retain its diagnostic until fresh ordinary gate readmission is proved".into())),
     };
+    with_proposal(proof, deadline, run)
+}
+fn with_proposal<T>(
+    proof: crate::service::integration_recovery::BoundIntegrationProposal,
+    deadline: Instant,
+    run: impl FnOnce(
+        &crate::service::integration_recovery::BoundIntegrationProposal,
+        Instant,
+    ) -> Result<T, AppError>,
+) -> Result<T, AppError> {
     let result = run(&proof, deadline);
     let settled = proof.settle();
     match (result, settled) {
@@ -274,40 +287,98 @@ fn run_native<S: Store>(
     active: &VerificationGuard,
     subject: &crate::service::integration_recovery::PendingIntegration,
 ) -> Result<TickResult, AppError> {
+    run_with_native(
+        store,
+        env,
+        bus,
+        actuator,
+        service,
+        active,
+        subject,
+        &native::Native,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_with_native<S: Store>(
+    store: &S,
+    env: &Environment,
+    bus: &ChangeBus,
+    actuator: &impl VerificationActuator,
+    service: &IntegrationOwnerService<'_, S>,
+    active: &VerificationGuard,
+    subject: &crate::service::integration_recovery::PendingIntegration,
+    operations: &impl NativeOperations,
+) -> Result<TickResult, AppError> {
     use crate::service::integration_recovery as integration;
     let candidate = &subject.candidate;
     let cancel = &active.cancellation;
     let mut owner = None;
     let run = (|| {
-        let assembled = proposed(
+        let first_deadline = Instant::now() + env.subprocess_bound(Duration::from_secs(30));
+        let first = operations.inspect(
             candidate,
             &subject.retained_head,
             env,
+            first_deadline,
             cancel,
-            |proof, deadline| {
-                let record =
-                    service.reserve(candidate, &subject.attribution, &subject.component, proof)?;
-                owner = Some(record.id.clone());
-                let claim = owned(
-                    service.claim_assembly(&record.id, record.revision, proof)?,
-                    "assembly",
-                )?;
-                let native = integration::assemble_owned(service, &claim, proof, deadline, cancel)?;
-                owned(
-                    service.accept_assembly(claim, native, proof)?,
-                    "assembly acceptance",
-                )
-            },
         )?;
+        let first = match first {
+            integration::BoundInspection::Proposed(proof) => proof,
+            integration::BoundInspection::Held(reason) => return Err(AppError::Validation(reason)),
+            integration::BoundInspection::Clean => {
+                let clean = operations.clean(
+                    candidate,
+                    &subject.retained_head,
+                    env,
+                    first_deadline,
+                    cancel,
+                )?;
+                // Registry-before-Store lock order, matching private gate input
+                // admission. A replaced slot cannot consume a clean proof.
+                let slots = active
+                    .registry
+                    .active
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if !slots.get(&candidate.project).is_some_and(|slot| {
+                    slot.active == active.active
+                        && slot.cancellation.same_owner(cancel)
+                        && !slot.cancellation.is_cancelled()
+                }) {
+                    return Err(AppError::Validation(
+                        "clean readmission lost its central slot".into(),
+                    ));
+                }
+                service.readmit_clean(subject, &clean, &active.active.attempt_id, cancel)?;
+                // No certification or Done transition: next ordinary gate must
+                // recheck the retained head and run under certification mode.
+                return Ok(TickResult::RetryLater);
+            }
+        };
+        let assembled = with_proposal(first, first_deadline, |proof, deadline| {
+            let record =
+                service.reserve(candidate, &subject.attribution, &subject.component, proof)?;
+            owner = Some(record.id.clone());
+            let claim = owned(
+                service.claim_assembly(&record.id, record.revision, proof)?,
+                "assembly",
+            )?;
+            let native = integration::assemble_owned(service, &claim, proof, deadline, cancel)?;
+            owned(
+                service.accept_assembly(claim, native, proof)?,
+                "assembly acceptance",
+            )
+        })?;
         let published = proposed(
             candidate,
             &subject.retained_head,
             env,
             cancel,
+            operations,
             |proof, deadline| {
                 let mut claim = owned(service.claim_publication(assembled, proof)?, "publication")?;
-                let native =
-                    integration::publish_owned(service, &mut claim, proof, deadline, cancel)?;
+                let native = operations.publish(service, &mut claim, proof, deadline, cancel)?;
                 owned(
                     service.accept_publication(claim, native, proof)?,
                     "publication acceptance",
@@ -319,6 +390,7 @@ fn run_native<S: Store>(
             &subject.retained_head,
             env,
             cancel,
+            operations,
             |proof, deadline| {
                 Ok((
                     owned(
@@ -335,10 +407,19 @@ fn run_native<S: Store>(
                 ))
             },
         )?;
-        let inputs = integration::observe_gate_inputs(service, &claim, deadline, cancel)?;
+        let inputs = operations.gate_inputs(service, &claim, deadline, cancel)?;
         let running = owned(service.start_gate(claim, inputs)?, "gate start")?;
-        let native = match super::integration_gate::run(
-            store, env, bus, actuator, active, service, &running,
+        let native = match super::integration_gate::run_with_inputs(
+            store,
+            env,
+            bus,
+            actuator,
+            active,
+            service,
+            &running,
+            |service, claim, deadline, cancellation| {
+                operations.gate_inputs(service, claim, deadline, cancellation)
+            },
         )? {
             super::integration_gate::ManagedGateResult::Certified(native) => native,
             super::integration_gate::ManagedGateResult::Uncertified(outcome) => {
@@ -356,6 +437,7 @@ fn run_native<S: Store>(
             &subject.retained_head,
             env,
             cancel,
+            operations,
             |proof, _| {
                 owned(
                     service.claim_landing(certified, proof)?,
@@ -386,7 +468,7 @@ fn run_native<S: Store>(
         }
         let deadline = Instant::now() + env.subprocess_bound(Duration::from_secs(30));
         let query = service.observe_landing(landing.id(), deadline, cancel)?;
-        let native = integration::observe_landed_owned(service, query, deadline, cancel)?;
+        let native = operations.landed(service, query, deadline, cancel)?;
         let completion = service.complete_landing(&native);
         let cleanup = native.settle();
         let complete = match (completion, cleanup) {
@@ -409,8 +491,27 @@ fn run_native<S: Store>(
         // Effects returned through quiescent native boundaries while this exact
         // central slot remained held. Only original open assembly custody can
         // be settled; a restart never adopts its historical pathname.
-        landing.settle_assembly()?;
-        Ok(TickResult::Completed)
+        // This is only a branch resource diagnostic, never deletion or landing
+        // authority. Bind it to the exact durable owner around the native read.
+        let (record, _) = service.show(landing.id())?;
+        let branch = operations.branch(
+            env,
+            landing.assembly(),
+            Instant::now() + env.subprocess_bound(Duration::from_secs(30)),
+            cancel,
+        );
+        let recorded = service.record_branch_observation(&record.id, record.revision, &branch);
+        let settled = landing.settle_assembly();
+        match (recorded, settled) {
+            (Ok(true), Ok(())) => Ok(TickResult::Completed),
+            (Ok(false), Ok(())) => Err(AppError::Storage(
+                "managed completion recorded; branch diagnostic owner changed".into(),
+            )),
+            (Err(error), Ok(())) => Err(error),
+            (recorded, Err(cleanup)) => Err(AppError::Storage(format!(
+                "managed completion recorded; branch diagnostic={recorded:?}; {cleanup}"
+            ))),
+        }
     })();
     if let Err(error) = &run
         && let Some(id) = owner
@@ -422,4 +523,33 @@ fn run_native<S: Store>(
         }
     }
     run
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_observed_fixture<S: Store>(
+    store: &S,
+    env: &Environment,
+    bus: &ChangeBus,
+    actuator: &impl VerificationActuator,
+    activity: &VerificationActivity,
+    inflight: &InFlight,
+    subject: &crate::service::integration_recovery::PendingIntegration,
+    operations: &impl NativeOperations,
+) -> Result<TickResult, AppError> {
+    cost::observe(store, env, activity, subject.candidate.project, || {
+        start_one_with(
+            store,
+            env,
+            activity,
+            inflight,
+            bus,
+            subject,
+            |service, guard| {
+                run_with_native(
+                    store, env, bus, actuator, service, guard, subject, operations,
+                )
+            },
+        )
+    })
 }

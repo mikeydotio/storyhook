@@ -38,3 +38,20 @@ pub struct IntegrationPending {
     /// Strict retained candidate/operator/evidence observation.
     pub evidence: serde_json::Value,
 }
+
+/// Immutable native clean-input readmission of an original held generation.
+/// The receipt constrains later gates; it is neither a certificate nor an effect capability.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntegrationReadmission {
+    /// Exact retained attribution identity; one release per original diagnostic.
+    pub id: String,
+    /// Original owning project.
+    pub project: ProjectId,
+    /// Original submitted story.
+    pub story: StoryNo,
+    /// Original submitted generation, never renewed by readmission.
+    pub generation: GlobalSeq,
+    /// Strict service evidence retained with the original attribution CAS.
+    pub evidence: serde_json::Value,
+}

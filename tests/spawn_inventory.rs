@@ -134,6 +134,25 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
         "\"sh\"",
         Kind::Waited,
     ),
+    // SH-871: one scratch gate workload under the real central accounting
+    // boundary; file-backed quiescent capture settles its owned process group.
+    (
+        "src/service/integration_recovery/tests/owner/workflow.rs",
+        "\"python3\"",
+        Kind::Waited,
+    ),
+    // Controlled native inspection fixtures: an absent executable and finite
+    // scratch writers are supervised through the same quiescent capture.
+    (
+        "src/service/private_objects/native/tests.rs",
+        "&missing",
+        Kind::Waited,
+    ),
+    (
+        "src/service/private_objects/native/tests.rs",
+        "\"sh\"",
+        Kind::Waited,
+    ),
     // SH-870: metadata-only refresh; owned control supervisor enforces its deadline,
     // cancellation and process-group cleanup before the causal return transaction.
     (

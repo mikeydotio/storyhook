@@ -1492,3 +1492,64 @@ fn managed_completed_owner_retains_cleanup_failure_without_reactivating_effects(
     );
     proof.settle().unwrap();
 }
+
+#[test]
+fn retained_branch_diagnostic_cannot_replace_owner_custody_or_claim_landing() {
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let ready = assembled(&f, &proof);
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let before = service.show(ready.id()).unwrap();
+    let assembly = before.1.assembly.as_ref().unwrap();
+    let observed = RetainedBranchObservation {
+        version: 1,
+        owner: assembly.owner.clone(),
+        assembly_epoch: assembly.epoch,
+        repository: assembly.submission.repository.clone(),
+        reference: format!("refs/heads/{}", assembly.branch),
+        expected_head: assembly.commit.clone(),
+        observed_at: AT.into(),
+        outcome: RetainedBranchOutcome::Absent,
+    };
+    for changed in ["owner", "epoch", "origin", "ref", "tip"] {
+        let mut other = observed.clone();
+        match changed {
+            "owner" => other.owner = uuid::Uuid::new_v4().to_string(),
+            "epoch" => other.assembly_epoch += 1,
+            "origin" => other.repository = "other.example/acme/widgets".into(),
+            "ref" => other.reference = "refs/heads/author".into(),
+            "tip" => other.expected_head = "f".repeat(40),
+            _ => unreachable!(),
+        }
+        assert!(
+            service
+                .record_branch_observation(ready.id(), before.0.revision, &other)
+                .is_err(),
+            "{changed}"
+        );
+        assert_eq!(service.show(ready.id()).unwrap(), before);
+    }
+    assert!(
+        service
+            .record_branch_observation(ready.id(), before.0.revision, &observed)
+            .unwrap()
+    );
+    let after = service.show(ready.id()).unwrap();
+    assert!(after.0.active);
+    assert_eq!(after.1.phase, before.1.phase);
+    assert_eq!(after.1.effect_epoch, before.1.effect_epoch);
+    assert_eq!(after.1.updated_at, before.1.updated_at);
+    assert!(after.1.landed.is_none());
+    assert!(
+        !service
+            .record_branch_observation(ready.id(), before.0.revision, &observed)
+            .unwrap()
+    );
+    let status = f
+        .store
+        .read(|tx| crate::service::integration_recovery::status_snapshot(tx, f.candidate.project))
+        .unwrap();
+    assert_eq!(status[0].retained_branch, Some(observed));
+    proof.settle().unwrap();
+}

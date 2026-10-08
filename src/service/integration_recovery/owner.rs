@@ -81,6 +81,9 @@ pub struct IntegrationOwner {
     pub effect_started_at: Option<String>,
     /// A concrete held reason; no hold itself releases native resource ownership.
     pub hold: Option<String>,
+    /// Point-in-time remote resource diagnostic; never merge or cleanup authority.
+    #[serde(default)]
+    pub retained_branch: Option<RetainedBranchObservation>,
     /// Native assembly receipt; deserialization does not restore custody.
     #[serde(default)]
     pub assembly: Option<AssemblyEvidence>,
@@ -164,7 +167,7 @@ impl AssemblyClaim {
 
 /// Uses the selected project's normal transactional story/event boundary.
 pub struct IntegrationOwnerService<'a, S: Store> {
-    ctx: &'a Ctx<'a, S>,
+    pub(super) ctx: &'a Ctx<'a, S>,
 }
 
 impl<'a, S: Store> IntegrationOwnerService<'a, S> {
@@ -256,7 +259,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
                 workspace: self.ctx.env().daemon_state_dir().join("integrations").join(&id),
                 started_at: attempt.admitted_at, reserved_at: now.clone(), updated_at: now.clone(),
                 label_revision: crate::service::project_recovery::recovery_label_revision(tx, candidate.project, story)?,
-                control_revision, phase: IntegrationPhase::Reserved, effect_epoch: 0, effect_started_at: None, hold: None,
+                control_revision, phase: IntegrationPhase::Reserved, effect_epoch: 0, effect_started_at: None, hold: None, retained_branch: None,
                 assembly: None, publication_effects: Vec::new(), publication: None, gate_attempt: None, gate_inputs: None, gate: None, landing: None, landing_started: false, landed: None,
             };
             let record = IntegrationRecovery { id, project: candidate.project, story, generation: candidate.verifying_generation.ok_or_else(|| invalid("submission has no generation"))?, revision: 0, active: true, state: encode(&state)? };
@@ -426,10 +429,16 @@ pub(super) fn decode(record: &IntegrationRecovery) -> Result<IntegrationOwner, S
     }
     state.attribution.validate()?;
     publication::validate_state(record, &state)?;
+    if let Some(observation) = &state.retained_branch {
+        validate_branch_observation(&state, observation)?;
+    }
     Ok(state)
 }
 
-fn same_original_pr(candidate: &VerificationCandidate, submission: &SubmissionObservation) -> bool {
+pub(super) fn same_original_pr(
+    candidate: &VerificationCandidate,
+    submission: &SubmissionObservation,
+) -> bool {
     let Ok(link) = &candidate.pull_request else {
         return false;
     };
@@ -595,6 +604,8 @@ pub struct IntegrationRecoveryStatus {
     pub assembled_tree: Option<String>,
     /// Claimed operation ordinal; never a certification or success count.
     pub effect_epoch: Option<u32>,
+    /// Observed retained/absent/moved/unknown managed branch, independently of landing.
+    pub retained_branch: Option<RetainedBranchObservation>,
     /// Concrete unresolved requirement.
     pub next_action: String,
 }
@@ -609,7 +620,7 @@ pub(crate) fn status_snapshot(
         let state = match decode(&record) {
             Ok(state) => state,
             Err(error) => {
-                result.push(IntegrationRecoveryStatus { id: record.id, story: record.story.to_id(&prefix), phase: "invalid".into(), started_at: None, elapsed_milliseconds: None, original_head: None, assembled_tree: None, effect_epoch: None, next_action: format!("Retained integration ownership is invalid; reconcile it without replaying effects: {error}") });
+                result.push(IntegrationRecoveryStatus { id: record.id, story: record.story.to_id(&prefix), phase: "invalid".into(), started_at: None, elapsed_milliseconds: None, original_head: None, assembled_tree: None, effect_epoch: None, retained_branch: None, next_action: format!("Retained integration ownership is invalid; reconcile it without replaying effects: {error}") });
                 continue;
             }
         };
@@ -681,8 +692,73 @@ pub(crate) fn status_snapshot(
             original_head: Some(state.plan.head),
             assembled_tree: state.assembly.map(|a| a.tree),
             effect_epoch: Some(state.effect_epoch),
+            retained_branch: state.retained_branch,
             next_action: state.hold.unwrap_or_else(|| next.into()),
         });
     }
     Ok(result)
+}
+
+fn validate_branch_observation(
+    state: &IntegrationOwner,
+    observation: &RetainedBranchObservation,
+) -> Result<(), StoreError> {
+    let assembly = state
+        .assembly
+        .as_ref()
+        .ok_or_else(|| invalid("branch diagnostic has no retained assembly identity"))?;
+    if observation.version != 1
+        || observation.owner != assembly.owner
+        || observation.assembly_epoch != assembly.epoch
+        || observation.repository != assembly.submission.repository
+        || observation.reference != format!("refs/heads/{}", assembly.branch)
+        || observation.expected_head != assembly.commit
+    {
+        return Err(invalid(
+            "branch observation belongs to another owner, epoch, origin, reference or tip",
+        ));
+    }
+    chrono::DateTime::parse_from_rfc3339(&observation.observed_at)
+        .map_err(|e| invalid(&e.to_string()))?;
+    match &observation.outcome {
+        RetainedBranchOutcome::MovedPreserved { observed_head }
+            if !crate::service::project_fault::is_pinned_oid(observed_head)
+                || observed_head == &observation.expected_head =>
+        {
+            return Err(invalid(
+                "moved branch diagnostic lacks a distinct pinned tip",
+            ));
+        }
+        RetainedBranchOutcome::Unknown { detail }
+            if detail.trim().is_empty() || detail.len() > 8192 =>
+        {
+            return Err(invalid("unknown branch diagnostic lacks a bounded reason"));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+impl<S: Store> IntegrationOwnerService<'_, S> {
+    /// Bind a read-only observation to the exact owner revision observed before
+    /// native capture. It cannot complete/release an owner or alter any phase.
+    pub(crate) fn record_branch_observation(
+        &self,
+        id: &str,
+        expected: i64,
+        observation: &RetainedBranchObservation,
+    ) -> Result<bool, AppError> {
+        self.ctx
+            .store()
+            .write(|tx| {
+                let (mut record, mut state) = find(tx, self.ctx.project(), id)?;
+                if record.revision != expected {
+                    return Ok(false);
+                }
+                validate_branch_observation(&state, observation)?;
+                state.retained_branch = Some(observation.clone());
+                save(tx, &mut record, &state)?;
+                Ok(true)
+            })
+            .map_err(Into::into)
+    }
 }

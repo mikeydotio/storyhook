@@ -143,6 +143,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                 }
                 super::shared::readmit::check_input(tx, candidate, &input.head)?;
                 crate::service::host_recovery::check_input(tx, candidate, &input.head)?;
+                crate::service::integration_recovery::readmission::check_input(tx, candidate, &input.head)?;
                 let Some(mut view) = owner(tx, candidate.project, story)? else {
                     return Ok(RepairAdmission::Proceed { recovery_id: None });
                 };

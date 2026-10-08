@@ -365,5 +365,9 @@ pub(crate) fn requires_certification(
         .map(|(_, generation)| generation);
     Ok(attempts::owner(tx, project, story)?.is_some()
         || shared::readmit::expected_head(tx, project, story, generation)?.is_some()
-        || crate::service::host_recovery::expected_head(tx, project, story, generation)?.is_some())
+        || crate::service::host_recovery::expected_head(tx, project, story, generation)?.is_some()
+        || crate::service::integration_recovery::readmission::expected_head(
+            tx, project, story, generation,
+        )?
+        .is_some())
 }

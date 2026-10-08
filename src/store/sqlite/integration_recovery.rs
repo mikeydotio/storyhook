@@ -140,3 +140,62 @@ pub(super) fn insert_pending(
     conn.execute("INSERT INTO integration_pending(id,project_id,story_no,generation,evidence) VALUES(?1,?2,?3,?4,?5)",params![record.id,record.project.get(),record.story,record.generation,record.evidence.to_string()]).map_err(|e|StoreError::from_sqlite(e,"retaining pending integration custody"))?;
     Ok(())
 }
+
+pub(super) fn readmissions(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<Vec<crate::store::IntegrationReadmission>, StoreError> {
+    if !crate::store::migrate::has_columns(
+        conn,
+        "integration_readmissions",
+        &["id", "project_id", "story_no", "generation", "evidence"],
+    )? {
+        return Ok(Vec::new());
+    }
+    let mut statement = conn.prepare("SELECT id,story_no,generation,evidence FROM integration_readmissions WHERE project_id=?1 ORDER BY rowid").map_err(|e| StoreError::from_sqlite(e,"reading clean integration readmission"))?;
+    let rows = statement
+        .query_map([project.get()], |row| {
+            let raw: String = row.get(3)?;
+            let evidence = serde_json::from_str(&raw).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+            Ok(crate::store::IntegrationReadmission {
+                id: row.get(0)?,
+                project,
+                story: row.get(1)?,
+                generation: row.get(2)?,
+                evidence,
+            })
+        })
+        .map_err(|e| StoreError::from_sqlite(e, "querying clean integration readmission"))?;
+    rows.collect::<Result<_, _>>()
+        .map_err(|e| StoreError::from_sqlite(e, "decoding clean integration readmission"))
+}
+pub(super) fn insert_readmission(
+    conn: &Connection,
+    record: &crate::store::IntegrationReadmission,
+) -> Result<(), StoreError> {
+    if record.id.is_empty() || !record.evidence.is_object() {
+        return Err(StoreError::Validation(
+            "clean integration readmission lacks identity/evidence".into(),
+        ));
+    }
+    if let Some(previous) = readmissions(conn, record.project)?
+        .iter()
+        .find(|p| p.id == record.id)
+    {
+        return if previous == record {
+            Ok(())
+        } else {
+            Err(StoreError::Validation(
+                "clean integration readmission cannot be replaced".into(),
+            ))
+        };
+    }
+    conn.execute("INSERT INTO integration_readmissions(id,project_id,story_no,generation,evidence) VALUES(?1,?2,?3,?4,?5)",params![record.id,record.project.get(),record.story,record.generation,record.evidence.to_string()]).map_err(|e|StoreError::from_sqlite(e,"retaining clean integration readmission"))?;
+    Ok(())
+}
