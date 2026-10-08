@@ -48,6 +48,12 @@ pub(crate) fn retain_failed_pressure<S: Store>(
         // not enough even for this observational host-specific disposition.
         let (_,raw)=match Archive::capture(Path::new(&gate.journal_path)){Ok(value)=>value,Err(_)=>return Ok(false)};
         if derive_request(attempt_id,gate,candidate.verifying_generation.map(GlobalSeq::get),&raw).is_err() {return Ok(false)};
+        // Attribution and pending custody are committed in this same transaction.
+        // A genuine retry returned above with its exact retained record; another
+        // hold at this attempt is not a partial insert we can adopt or overwrite.
+        if tx.attributions(candidate.project)?.iter().any(|record| record.attempt==attempt_id && record.submission.same_generation(&attempt.submission)) {
+            return Err(invalid("existing attribution lacks exact pending host custody; preserve the hold without replacing it"));
+        }
         let id=uuid::Uuid::new_v4().to_string();
         let record=AttributionRecord {
             version:1,id:id.clone(),revision:0,submission:attempt.submission.clone(),attempt:attempt_id.into(),inputs:gate.inputs.clone(),created_at:now.clone(),

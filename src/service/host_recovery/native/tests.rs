@@ -18,11 +18,19 @@ struct Fixture {
     subject: Subject,
     raw: Vec<u8>,
 }
-impl Fixture {
-    fn new() -> Self {
-        Self::with_attempt(true)
-    }
-    fn with_attempt(settled: bool) -> Self {
+// Share authentic physical-gate setup while letting the producer own its
+// first attribution. Native proof fixtures explicitly request a prior hold.
+struct HostSeed {
+    fixture: storyhook_test_support::ServiceFixture,
+    store: SqliteStore,
+    candidate: VerificationCandidate,
+    record: AttributionRecord,
+    gate: GateExecution,
+    raw: Vec<u8>,
+    root: std::path::PathBuf,
+}
+impl HostSeed {
+    fn new(settled: bool, attributed: bool) -> Self {
         let fixture = storyhook_test_support::ServiceFixture::new();
         let root = fixture.github_checkout("https://github.com/acme/widgets");
         let store = SqliteStore::open(fixture.store().path()).unwrap();
@@ -130,9 +138,46 @@ impl Fixture {
                 tx.insert_gate_attempt(&live)?;
                 attempt.revision = 1;
                 assert!(tx.update_gate_attempt(&attempt, 0)?);
-                tx.insert_attribution(&record)
+                if attributed {
+                    tx.insert_attribution(&record)?;
+                }
+                Ok(())
             })
             .unwrap();
+        Self {
+            fixture,
+            store,
+            candidate,
+            record,
+            gate,
+            raw,
+            root,
+        }
+    }
+    fn ctx(&self) -> Ctx<'_, SqliteStore> {
+        Ctx::new(
+            &self.store,
+            self.candidate.project,
+            self.fixture.cwd(),
+            Environment::at(self.fixture.cwd()).with_subprocess_patience(),
+        )
+        .no_hooks(true)
+    }
+}
+impl Fixture {
+    fn new() -> Self {
+        Self::with_attempt(true)
+    }
+    fn with_attempt(settled: bool) -> Self {
+        let HostSeed {
+            fixture,
+            store,
+            candidate,
+            record,
+            gate,
+            raw,
+            root,
+        } = HostSeed::new(settled, true);
         let mut subject = store
             .read(|tx| {
                 capture_with_phase(
@@ -552,20 +597,44 @@ fn native_host_pause_fences_other_project_queue_and_cached_direct_admission() {
 
 #[test]
 fn pending_native_host_custody_survives_restart_without_granting_owner_authority() {
-    let f = Fixture::with_attempt(false);
+    let f = HostSeed::new(false, false);
     let ctx = f.ctx();
-    assert!(retain_failed_pressure(&ctx, &f.subject.candidate, "host-attempt").unwrap());
+    assert!(
+        f.store
+            .read(|tx| tx.attributions(f.candidate.project))
+            .unwrap()
+            .is_empty(),
+        "producer fixture pre-created the attribution it must own"
+    );
+    assert!(retain_failed_pressure(&ctx, &f.candidate, "host-attempt").unwrap());
+    let original_attribution = f
+        .store
+        .read(|tx| tx.attributions(f.candidate.project))
+        .unwrap();
+    assert_eq!(original_attribution.len(), 1);
+    assert_eq!(original_attribution[0].attempt, "host-attempt");
+    assert_eq!(
+        original_attribution[0].components[0].id,
+        "native-host-pressure"
+    );
     let before = f
         .store
-        .read(|tx| tx.host_recovery_pending(f.subject.candidate.project))
+        .read(|tx| tx.host_recovery_pending(f.candidate.project))
         .unwrap();
     assert_eq!(before.len(), 1);
-    assert!(retain_failed_pressure(&ctx, &f.subject.candidate, "host-attempt").unwrap());
+    assert!(retain_failed_pressure(&ctx, &f.candidate, "host-attempt").unwrap());
     assert_eq!(
         f.store
-            .read(|tx| tx.host_recovery_pending(f.subject.candidate.project))
+            .read(|tx| tx.host_recovery_pending(f.candidate.project))
             .unwrap(),
         before
+    );
+    assert_eq!(
+        f.store
+            .read(|tx| tx.attributions(f.candidate.project))
+            .unwrap(),
+        original_attribution,
+        "idempotent retry replaced or duplicated the producer's attribution"
     );
     assert!(
         f.store.read(|tx| tx.host_recoveries()).unwrap().is_empty(),
@@ -573,11 +642,11 @@ fn pending_native_host_custody_survives_restart_without_granting_owner_authority
     );
     let restarted = SqliteStore::open(f.store.path()).unwrap();
     let waiting = restarted
-        .read(|tx| pending_subjects(tx, f.subject.candidate.project))
+        .read(|tx| pending_subjects(tx, f.candidate.project))
         .unwrap();
     assert_eq!(waiting.len(), 1);
     let pending = &waiting[0];
-    assert_eq!(pending.candidate, f.subject.candidate);
+    assert_eq!(pending.candidate, f.candidate);
     assert!(
         restarted
             .read(|tx| capture(
@@ -592,10 +661,7 @@ fn pending_native_host_custody_survives_restart_without_granting_owner_authority
     );
     restarted
         .write(|tx| {
-            let mut attempt = tx
-                .gate_attempts(f.subject.candidate.project)?
-                .pop()
-                .unwrap();
+            let mut attempt = tx.gate_attempts(f.candidate.project)?.pop().unwrap();
             let previous = attempt.revision;
             attempt.revision += 1;
             attempt.finished_at = Some(AT.into());
@@ -614,7 +680,7 @@ fn pending_native_host_custody_survives_restart_without_granting_owner_authority
             )
         })
         .unwrap();
-    assert_eq!(retained.candidate, f.subject.candidate);
+    assert_eq!(retained.candidate, f.candidate);
     assert_eq!(retained.admitted_at, AT);
     fs::write(
         &retained.archive.path,
@@ -634,7 +700,7 @@ fn pending_native_host_custody_survives_restart_without_granting_owner_authority
     );
     assert_eq!(
         restarted
-            .read(|tx| tx.host_recovery_pending(f.subject.candidate.project))
+            .read(|tx| tx.host_recovery_pending(f.candidate.project))
             .unwrap(),
         before,
         "raw failure erased pending original identity"
@@ -954,4 +1020,53 @@ fn host_recovery_status_refuses_mixed_candidate_and_attribution_binding() {
         );
         assert_eq!(f.store.read(|tx| tx.host_recoveries()).unwrap(), before);
     }
+}
+
+#[test]
+fn pending_native_host_refuses_existing_attribution_without_adopting_or_replacing_hold() {
+    let f = HostSeed::new(false, true);
+    let ctx = f.ctx();
+    let before = f
+        .store
+        .read(|tx| tx.attributions(f.candidate.project))
+        .unwrap();
+    assert_eq!(before, vec![f.record.clone()]);
+    let events = f
+        .store
+        .read(|tx| {
+            tx.events_for(
+                f.candidate.project,
+                f.record.submission.story_number().unwrap(),
+            )
+        })
+        .unwrap();
+    let error = retain_failed_pressure(&ctx, &f.candidate, "host-attempt").unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("existing attribution lacks exact pending host custody"),
+        "{error}"
+    );
+    assert_eq!(
+        f.store
+            .read(|tx| tx.attributions(f.candidate.project))
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        f.store
+            .read(|tx| tx.events_for(
+                f.candidate.project,
+                f.record.submission.story_number().unwrap()
+            ))
+            .unwrap(),
+        events
+    );
+    assert!(
+        f.store
+            .read(|tx| tx.host_recovery_pending(f.candidate.project))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(f.store.read(|tx| tx.host_recoveries()).unwrap().is_empty());
 }
