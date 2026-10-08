@@ -1,6 +1,47 @@
 //! Git object transport pinned to the validated HTTPS destination.
 
-use super::{Repository, git_read_with_bound, parse_origin};
+use super::{Repository, parse_origin};
+use std::{
+    path::Path,
+    process::Command,
+    time::{Duration, Instant},
+};
+
+#[derive(Clone, Copy)]
+pub(super) struct PublicationControl<'a> {
+    pub deadline: Instant,
+    pub cancelled: &'a dyn Fn() -> bool,
+}
+
+impl PublicationControl<'_> {
+    pub(super) fn capture(
+        self,
+        command: Command,
+    ) -> Result<crate::process::Captured, crate::process::CaptureError> {
+        crate::process::run_captured_query_quiescent(
+            command,
+            self.deadline,
+            self.cancelled,
+            64 * 1024,
+            &[],
+        )
+        .map_err(|failure| failure.error)
+    }
+    pub(super) fn read(self, checkout: &Path, arguments: &[&str]) -> Result<String, AppError> {
+        let mut command = git_env::command(checkout);
+        command.args(arguments);
+        let output = self.capture(command).map_err(|e| {
+            AppError::Validation(format!("publication origin read: {}", e.detail()))
+        })?;
+        if !output.status.success() || output.stdout_truncated || output.stdout.len() >= 64 * 1024 {
+            return Err(AppError::Validation(
+                "publication origin read failed or exceeded capture limit".into(),
+            ));
+        }
+        String::from_utf8(output.stdout)
+            .map_err(|_| AppError::Validation("publication origin read is not UTF-8".into()))
+    }
+}
 use crate::env::{git_env, spawn_env};
 use crate::error::AppError;
 use crate::process::run_captured_private;
@@ -8,13 +49,73 @@ use crate::process::run_captured_private;
 impl Repository {
     /// Runs clone, fetch, push or ls-remote for origin with gh's credential helper.
     pub fn git(&self, arguments: &[String]) -> Result<Vec<u8>, AppError> {
+        self.git_with_control(arguments, None, None)
+    }
+
+    /// Resolve a publication origin using the same absolute, quiescent lifetime.
+    pub(crate) fn resolve_publication(
+        checkout: &Path,
+        env: &crate::env::Environment,
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, AppError> {
+        let control = PublicationControl {
+            deadline,
+            cancelled,
+        };
+        Self::resolve_reading(
+            checkout,
+            super::Bounds::for_environment(env),
+            |path, args| control.read(path, args),
+        )
+    }
+
+    /// Protected transport retaining normal source hooks and configuration.
+    /// The optional alternate is only a native-custody-validated private object
+    /// directory. This is not an arbitrary environment/configuration channel.
+    pub(crate) fn git_publication(
+        &self,
+        arguments: &[String],
+        objects: Option<&Path>,
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, AppError> {
+        self.git_with_control(
+            arguments,
+            Some(PublicationControl {
+                deadline,
+                cancelled,
+            }),
+            objects,
+        )
+    }
+
+    fn git_with_control(
+        &self,
+        arguments: &[String],
+        control: Option<PublicationControl<'_>>,
+        objects: Option<&Path>,
+    ) -> Result<Vec<u8>, AppError> {
+        let read = |_: Duration, path: &Path, args: &[&str]| match control {
+            Some(control) => control.read(path, args),
+            None => super::git_read_with_bound(self.bounds.read, path, args),
+        };
+        let capture = |command: Command, bound: Duration| match control {
+            Some(control) => control.capture(command),
+            None => run_captured_private(command, bound),
+        };
         let refuse = |detail: &str| {
             AppError::Validation(format!(
                 "GitHub transport destination for {}: {detail}",
                 self.qualified()
             ))
         };
-        if Self::resolve_with_bounds(&self.checkout, self.bounds)?.identity != self.identity {
+        if Self::resolve_reading(&self.checkout, self.bounds, |path, args| {
+            read(self.bounds.read, path, args)
+        })?
+        .identity
+            != self.identity
+        {
             return Err(refuse("origin changed; resolve again before retrying"));
         }
         let operation = arguments.first().map(String::as_str).unwrap_or_default();
@@ -44,6 +145,9 @@ impl Repository {
         };
         if arguments[1..remote].iter().any(|arg| {
             !allowed_flags.contains(&arg.as_str())
+                && !(control.is_some()
+                    && operation == "push"
+                    && matches!(arg.as_str(), "--no-follow-tags" | "--recurse-submodules=no"))
                 && !(operation == "fetch" && arg == "--no-write-fetch-head")
         }) {
             return Err(refuse("unsupported transport option"));
@@ -69,7 +173,7 @@ impl Repository {
             vec!["remote", "get-url", "--all", "origin"],
             vec!["remote", "get-url", "--push", "--all", "origin"],
         ] {
-            let answer = git_read_with_bound(self.bounds.read, &self.checkout, &flags)?;
+            let answer = read(self.bounds.read, &self.checkout, &flags)?;
             let urls: Vec<_> = answer.lines().collect();
             if urls.len() != 1
                 || parse_origin(urls[0])
@@ -80,7 +184,7 @@ impl Repository {
             }
         }
         let destination = self.transport_url();
-        let effective = git_read_with_bound(
+        let effective = read(
             self.bounds.read,
             &self.checkout,
             &["ls-remote", "--get-url", &destination],
@@ -97,7 +201,7 @@ impl Repository {
             "--get-regexp",
             "^url\\..*\\.pushinsteadof$",
         ]);
-        let rewrites = run_captured_private(rewrites, self.bounds.read).map_err(|error| {
+        let rewrites = capture(rewrites, self.bounds.read).map_err(|error| {
             refuse(&format!(
                 "cannot read push URL rewrites: {}",
                 error.detail()
@@ -134,7 +238,7 @@ impl Repository {
             // mappings also work on Git 2.25, which cannot clear URL lists with
             // empty values. Validate the mapped fetch and push destinations;
             // an existing competing rewrite must never win silently.
-            let configured = git_read_with_bound(
+            let configured = read(
                 self.bounds.read,
                 &self.checkout,
                 &[
@@ -167,7 +271,7 @@ impl Repository {
             ] {
                 let mut query: Vec<_> = pin.iter().map(String::as_str).collect();
                 query.extend(flags);
-                let effective = git_read_with_bound(self.bounds.read, &self.checkout, &query)?;
+                let effective = read(self.bounds.read, &self.checkout, &query)?;
                 if effective.lines().collect::<Vec<_>>() != [destination.as_str()] {
                     return Err(refuse(
                         "cannot pin origin to HTTPS; remove competing URL rewrites",
@@ -207,7 +311,13 @@ impl Repository {
                 self.identity.host
             ))
             .args(args);
-        let output = run_captured_private(command, self.bounds.operation).map_err(|error| {
+        if let Some(objects) = objects {
+            if operation != "push" || control.is_none() || !valid_private_objects(objects) {
+                return Err(refuse("invalid native private object directory"));
+            }
+            command.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", objects);
+        }
+        let output = capture(command, self.bounds.operation).map_err(|error| {
             AppError::GithubApi(format!(
                 "Git {operation} for {}: {}; operation was not retried",
                 self.qualified(),
@@ -235,5 +345,66 @@ impl Repository {
             return Err(refuse("transport answer exceeded the capture limit"));
         }
         Ok(output.stdout)
+    }
+}
+
+fn valid_private_objects(objects: &Path) -> bool {
+    objects.is_absolute()
+        && objects
+            .to_str()
+            .is_some_and(|path| !path.contains([':', '"']) && !path.chars().any(char::is_control))
+        && objects
+            .canonicalize()
+            .is_ok_and(|canonical| canonical == objects)
+        && std::fs::symlink_metadata(objects)
+            .is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+    #[test]
+    fn sh871_publication_alternate_requires_one_canonical_directory() {
+        let scratch = storyhook_test_support::scratch_dir();
+        let root = scratch.path().canonicalize().unwrap();
+        let objects = root.join("objects");
+        std::fs::create_dir(&objects).unwrap();
+        assert!(valid_private_objects(&objects));
+        for name in [
+            "objects:other",
+            "objects\nother",
+            "objects\tother",
+            "objects\"other",
+        ] {
+            let path = root.join(name);
+            std::fs::create_dir(&path).unwrap();
+            assert!(!valid_private_objects(&path), "{name:?}");
+        }
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink(&objects, &alias).unwrap();
+        assert!(!valid_private_objects(&alias));
+        assert!(!valid_private_objects(Path::new("objects")));
+    }
+    #[test]
+    fn sh871_publication_control_refuses_cancel_or_expiry_before_spawn() {
+        let never_spawn = || Command::new("/storyhook-fixture-command-must-not-spawn");
+        let cancelled = || true;
+        let control = PublicationControl {
+            deadline: Instant::now() + Duration::from_secs(60),
+            cancelled: &cancelled,
+        };
+        assert!(matches!(
+            control.capture(never_spawn()),
+            Err(crate::process::CaptureError::Cancelled)
+        ));
+        let live = || false;
+        let control = PublicationControl {
+            deadline: Instant::now(),
+            cancelled: &live,
+        };
+        assert!(matches!(
+            control.capture(never_spawn()),
+            Err(crate::process::CaptureError::Timeout(_))
+        ));
     }
 }
