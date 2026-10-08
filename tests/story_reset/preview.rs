@@ -222,10 +222,15 @@ fn native_dry_run_preserves_story_and_reports_structured_and_human_preview() {
             assert_eq!(v["dry_run"], true);
             assert_eq!(v["preview"]["story_id"], id);
             assert!(v["preview"]["existing_reset"].is_null());
+            assert!(v["preview"]["worktree"].is_null());
+            assert!(v["preview"]["worktree_registration"].is_null());
+            assert!(v["preview"]["branch"].is_null());
         } else {
             let text = String::from_utf8(out.stdout).unwrap();
             assert!(text.contains("DRY RUN story reset"));
             assert!(text.contains("no changes"));
+            assert!(!text.contains("Would discard worktree"));
+            assert!(!text.contains("Would delete local branch"));
         }
         assert_eq!(show(), before);
     }
@@ -282,6 +287,109 @@ fn preview_keeps_an_existing_resets_original_caller_worktree_protection() {
         origin
     );
     assert!(w.worktree.exists());
+}
+
+#[test]
+fn preview_pending_default_origin_uses_daemon_home_not_the_later_callers_worktree() {
+    let w = Workspace::new(true);
+    std::fs::write(w.worktree.join("keep-until-execution"), "local work").unwrap();
+    let ctx = w.fixture.ctx().no_hooks(true);
+    // Dashboard reservations carry no cwd; daemon/reset.rs executes them
+    // from env.home(), regardless of where a later preview is requested.
+    let reset = StoryResetService::new(&ctx).reserve(&w.id, &w.id).unwrap();
+    assert!(reset.origin.cwd.is_none());
+    let before = serde_json::to_value(&reset).unwrap();
+    let events = w
+        .fixture
+        .store()
+        .read(|tx| tx.events_for(w.fixture.project(), StoryNo::new(1)))
+        .unwrap();
+    let inside = Ctx::new(
+        w.fixture.store(),
+        w.fixture.project(),
+        &w.worktree,
+        w.fixture.env().clone(),
+    )
+    .no_hooks(true);
+    let preview = StoryResetService::new(&inside)
+        .preview(&w.id, &Default::default())
+        .unwrap();
+    assert_eq!(preview.worktree.as_ref(), Some(&w.worktree));
+    assert_eq!(preview.branch.as_deref(), Some("worktree-SH-1"));
+    assert!(preview.residue.is_empty(), "{:?}", preview.residue);
+    assert_eq!(
+        serde_json::to_value(
+            StoryResetService::new(&ctx)
+                .get(&w.id, &reset.token)
+                .unwrap()
+        )
+        .unwrap(),
+        before
+    );
+    assert_eq!(
+        w.fixture
+            .store()
+            .read(|tx| tx.events_for(w.fixture.project(), StoryNo::new(1)))
+            .unwrap(),
+        events
+    );
+    assert_eq!(
+        std::fs::read_to_string(w.worktree.join("keep-until-execution")).unwrap(),
+        "local work"
+    );
+    assert!(w.branch_exists("worktree-SH-1"));
+    let done = w.execute_from(w.fixture.env().home(), &reset);
+    assert!(done.completed);
+    assert!(!w.worktree.exists());
+    assert!(!w.branch_exists("worktree-SH-1"));
+}
+
+#[test]
+fn preview_partial_cleanup_reports_only_remaining_resources_and_keeps_the_receipt() {
+    for stale_registration in [false, true] {
+        let w = Workspace::new(true);
+        let reset = w.reserve_pinned();
+        if stale_registration {
+            std::fs::remove_dir_all(&w.worktree).unwrap();
+        } else {
+            git(
+                &w.repo,
+                &[
+                    "worktree",
+                    "remove",
+                    "--force",
+                    w.worktree.to_str().unwrap(),
+                ],
+            );
+            git(&w.repo, &["branch", "-D", "worktree-SH-1"]);
+        }
+        let before = serde_json::to_value(&reset).unwrap();
+        let ctx = w.fixture.ctx().no_hooks(true);
+        let service = StoryResetService::new(&ctx);
+        let preview = service.preview(&w.id, &Default::default()).unwrap();
+        assert!(preview.worktree.is_none());
+        assert_eq!(
+            preview.worktree_registration.as_ref(),
+            stale_registration.then_some(&w.worktree)
+        );
+        assert_eq!(
+            preview.branch.as_deref(),
+            stale_registration.then_some("worktree-SH-1")
+        );
+        assert!(!preview.display().contains("Would discard worktree"));
+        assert_eq!(
+            preview
+                .display()
+                .contains("Would remove stale worktree registration"),
+            stale_registration
+        );
+        assert_eq!(
+            serde_json::to_value(service.get(&w.id, &reset.token).unwrap()).unwrap(),
+            before
+        );
+        assert!(!w.worktree.exists());
+        assert_eq!(w.branch_exists("worktree-SH-1"), stale_registration);
+    }
 }
 
 #[test]

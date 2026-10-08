@@ -549,6 +549,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 existing_reset: None,
                 window: None,
                 worktree: Some("/repo/worktree".into()),
+                worktree_registration: None,
                 branch: Some("worktree-SH-1".into()),
                 recovery: Default::default(),
                 residue: Vec::new(),

@@ -37,6 +37,8 @@ pub struct ResetPreview {
     pub window: Option<ResetWindowPreview>,
     /// Worktree proven removable at observation time.
     pub worktree: Option<PathBuf>,
+    /// Stale Git registration to remove when its worktree directory is absent.
+    pub worktree_registration: Option<PathBuf>,
     /// Local branch proven removable at observation time.
     pub branch: Option<String>,
     /// Same discard counts and branch recovery facts used by execution.
@@ -110,7 +112,9 @@ impl<S: Store> StoryResetService<'_, S> {
             &report,
             &paths,
             &origin,
-            origin.cwd.as_deref().unwrap_or(self.ctx.cwd()),
+            // Pending dashboard/legacy receipts execute from daemon home when
+            // no cwd was recorded, never from this later preview's caller.
+            origin.cwd.as_deref().unwrap_or(self.ctx.env().home()),
             self.ctx.env(),
             &mut residue,
         );
@@ -135,16 +139,57 @@ impl<S: Store> StoryResetService<'_, S> {
             &mut residue,
             window.is_some(),
         );
+        // Authority permits an attempt; it does not prove the named resource
+        // exists. In particular, pinned reports survive partial cleanup.
+        let mut worktree = None;
+        let mut worktree_registration = None;
+        if (authority.worktree || authority.orphan_directory)
+            && let Some(path) = &report.worktree
+        {
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => worktree = Some(path.clone()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if let Some(repository) = &authority.repository {
+                        match crate::service::resources::git::inventory(repository) {
+                            Ok(records) if records.iter().any(|row| row.path == *path) => {
+                                worktree_registration = Some(path.clone());
+                            }
+                            Ok(_) => {}
+                            Err(error) => residue.blocks_dispatch(
+                                format!("worktree registration {}", path.display()),
+                                format!("cannot observe planned registration cleanup: {error}"),
+                            ),
+                        }
+                    }
+                }
+                Err(error) => residue.blocks_dispatch(
+                    format!("worktree {}", path.display()),
+                    format!("cannot observe planned worktree removal: {error}"),
+                ),
+            }
+        }
+        let mut branch = None;
+        if authority.branch
+            && let (Some(repository), Some(name)) = (&authority.repository, &report.branch)
+        {
+            match crate::service::resources::git::branch_exists(repository, name) {
+                Ok(true) => branch = Some(name.clone()),
+                Ok(false) => {}
+                Err(error) => residue.blocks_dispatch(
+                    format!("local branch {name}"),
+                    format!("cannot observe planned branch removal: {error}"),
+                ),
+            }
+        }
         Ok(ResetPreview {
             story_id: row.snapshot.id,
             original_state: row.state,
             awaiting: row.awaiting,
             existing_reset: existing.map(|reset| reset.token),
             window,
-            worktree: (authority.worktree || authority.orphan_directory)
-                .then_some(report.worktree)
-                .flatten(),
-            branch: authority.branch.then_some(report.branch).flatten(),
+            worktree,
+            worktree_registration,
+            branch,
             recovery,
             residue: residue.into_entries(),
         })
@@ -179,6 +224,12 @@ impl ResetPreview {
                 path.display(),
                 count(self.recovery.dirty),
                 count(self.recovery.untracked)
+            ));
+        }
+        if let Some(path) = &self.worktree_registration {
+            lines.push(format!(
+                "Would remove stale worktree registration {} (directory is absent)",
+                path.display()
             ));
         }
         if let Some(branch) = &self.branch {
