@@ -42,6 +42,10 @@ fn contended<T: Send + std::fmt::Debug>(
                 let observed = Instant::now()
                     + storyhook_test_support::load_grace::graced_now(Duration::from_secs(5));
                 loop {
+                    if let Ok(result) = receive.try_recv() {
+                        early = Some(Ok(result));
+                        break;
+                    }
                     match controller.store.try_write(|_| Ok(())) {
                         Err(StoreError::Busy(detail))
                             if detail == "project write admission is occupied" =>
@@ -59,13 +63,16 @@ fn contended<T: Send + std::fmt::Debug>(
                 }
                 // More than one SQLite busy timeout: an unpatient control returns
                 // Busy here. Release the transaction before reporting any failure.
-                early = Some(receive.recv_timeout(Duration::from_millis(150)));
+                if early.is_none() {
+                    early = Some(receive.recv_timeout(Duration::from_millis(150)));
+                }
                 change(tx)
             })
             .unwrap();
+        let early = early.unwrap();
         assert!(
-            matches!(early.unwrap(), Err(mpsc::RecvTimeoutError::Timeout)),
-            "the control must wait for admission instead of returning Busy"
+            matches!(early, Err(mpsc::RecvTimeoutError::Timeout)),
+            "the control must wait for admission instead of returning early: {early:?}"
         );
         receive
             .recv_timeout(storyhook_test_support::load_grace::PATIENCE_CEILING)
