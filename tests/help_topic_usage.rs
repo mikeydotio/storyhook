@@ -82,6 +82,8 @@ fn verifier_usage_covers_every_control() {
         "verifier drain",
         "verifier evidence SH-1",
         "verifier evidence SH-1 --json",
+        "verifier landing show",
+        "verifier landing show --json",
         "verifier ack 2:28821",
         "verifier ack 2:28821 --leave-stopped",
         "verifier gate-config /tmp/project 0123456789abcdef0123456789abcdef01234567 0123456789abcdef0123456789abcdef01234567 0123456789abcdef0123456789abcdef01234567 --json",
@@ -92,6 +94,24 @@ fn verifier_usage_covers_every_control() {
     .into_iter()
     .map(|command| command.split_whitespace().map(str::to_owned).collect())
     .collect();
+    // The placeholder expands to one argument even when its value has spaces.
+    for json in [false, true] {
+        let mut release: Vec<String> = [
+            "verifier",
+            "landing",
+            "release",
+            "a2cb702b-12e8-46c4-831b-c78bf57e944b",
+            "--reason",
+            "example reason",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        if json {
+            release.push("--json".into());
+        }
+        expected.push(release);
+    }
     expected.sort();
     assert_eq!(
         actual, expected,
