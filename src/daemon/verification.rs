@@ -768,6 +768,20 @@ pub trait VerificationActuator: Send + Sync {
     ) -> VerificationOutcome {
         self.verify(candidate, pull_request)
     }
+    /// Gate a separately owned integration PR under the original central
+    /// candidate. Adapters must explicitly opt in: an ordinary verification
+    /// fallback could incorrectly grant the original repair-admission callback.
+    fn verify_integration(
+        &self,
+        _candidate: &VerificationCandidate,
+        _managed: &PrLink,
+        _cancellation: &VerificationCancellation,
+    ) -> VerificationOutcome {
+        VerificationOutcome::InfrastructureFailure {
+            detail: "this verifier adapter cannot certify a managed integration PR".into(),
+            disposition: VerificationFailureDisposition::Permanent,
+        }
+    }
     /// Read the current open PR head before granting a causal repair return.
     /// Unsupported or unavailable metadata withholds the return.
     fn current_pr_head(&self, _candidate: &VerificationCandidate) -> Result<String, AppError> {
@@ -1944,6 +1958,21 @@ impl VerificationActuator for ShellVerificationActuator {
             pull_request,
             cancellation,
             RepairAdmission::Owned,
+            VerificationMode::Gated,
+        )
+    }
+
+    fn verify_integration(
+        &self,
+        candidate: &VerificationCandidate,
+        managed: &PrLink,
+        cancellation: &VerificationCancellation,
+    ) -> VerificationOutcome {
+        self.run_verify_pr(
+            candidate,
+            managed,
+            cancellation,
+            RepairAdmission::Withheld,
             VerificationMode::Gated,
         )
     }

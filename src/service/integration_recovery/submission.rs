@@ -102,8 +102,13 @@ pub(super) fn read_submission(
     })?;
     let expected = parse_pr_url(&original.url)?;
     let cancelled = || cancellation.is_cancelled();
-    let repository =
-        Repository::resolve_controlled(&candidate.checkout, environment, deadline, &cancelled)?;
+    let repository = Repository::resolve_publication(
+        &candidate.checkout,
+        environment,
+        &format!("{}/{}/{}", expected.host, expected.owner, expected.repo),
+        deadline,
+        &cancelled,
+    )?;
     let identity = repository.identity();
     if !expected.host.eq_ignore_ascii_case(&identity.host)
         || !expected.owner.eq_ignore_ascii_case(&identity.owner)
@@ -113,7 +118,7 @@ pub(super) fn read_submission(
             "integration PR differs from current registered origin".into(),
         ));
     }
-    let raw = repository.gh_controlled(&[
+    let raw = repository.gh_publication(&[
         "api".into(), format!("repos/{}/{}/pulls/{}", identity.owner, identity.repo, expected.number),
         "--jq".into(), "{number,html_url,state,merged,base:{sha:.base.sha,ref:.base.ref},head:{sha:.head.sha,ref:.head.ref}}".into(),
     ], deadline, &cancelled)?;
