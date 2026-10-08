@@ -72,6 +72,7 @@ fn engine_control_never_retries_busy_after_the_transaction_closure_runs() {
     assert_eq!(calls, 2);
 }
 
+#[cfg(feature = "fault-injection")]
 #[test]
 fn engine_control_never_replays_busy_before_commit_or_after_durable_commit() {
     use crate::store::fault::{FaultAction, FaultPoint, arm};
