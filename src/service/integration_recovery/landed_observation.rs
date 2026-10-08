@@ -98,7 +98,7 @@ pub fn observe_landed_owned<S: Store>(
     )?;
     let private = PrivateFetch::create(&repository, deadline, &cancelled)?;
     let result = (|| {
-        let guarded = || cancelled() || private.validate().is_err();
+        let guarded = || cancelled() || private.validate_live_custody().is_err();
         let reader = NativeReader {
             repository,
             private: &private,

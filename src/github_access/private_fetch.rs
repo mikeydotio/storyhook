@@ -125,7 +125,9 @@ impl PrivateFetch {
         &self.path
     }
 
-    pub(crate) fn validate(&self) -> Result<(), AppError> {
+    /// Stable pins only while the exclusively owned Git writer is running.
+    /// Do not traverse its transient pack files inside the cancellation poll.
+    pub(crate) fn validate_live_custody(&self) -> Result<(), AppError> {
         for (path, held) in &self.directories {
             let observed = fs::symlink_metadata(path).map_err(storage)?;
             let pinned = held.metadata().map_err(storage)?;
@@ -183,6 +185,12 @@ impl PrivateFetch {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Full namespace proof only before/after settled commands and consumption.
+    pub(crate) fn validate(&self) -> Result<(), AppError> {
+        self.validate_live_custody()?;
         let mut pending = vec![self.path.clone()];
         let mut seen = 0;
         while let Some(path) = pending.pop() {
@@ -499,13 +507,22 @@ mod tests {
         let cancelled = || false;
         let c = control(until, &cancelled);
         c.read(&remote, &["init", "-q"]).unwrap();
+        for (key, value) in [
+            ("user.name", "Landed Fixture"),
+            ("user.email", "landed@example.test"),
+            ("storyhookIdentity.fixture.name", "Landed Fixture"),
+            ("storyhookIdentity.fixture.email", "landed@example.test"),
+            ("storyhookIdentity.fixture.role", "both"),
+            (
+                "storyhookIdentity.fixture.reason",
+                "Isolated real-Git landed observation fixture",
+            ),
+        ] {
+            c.read(&remote, &["config", "--local", key, value]).unwrap();
+        }
         c.read(
             &remote,
             &[
-                "-c",
-                "user.name=Fixture",
-                "-c",
-                "user.email=fixture@example.invalid",
                 "-c",
                 "commit.gpgsign=false",
                 "commit",
@@ -555,6 +572,21 @@ mod tests {
         private
             .read(&["cat-file", "-e", head.trim()], until, &cancelled)
             .unwrap();
+        private.settle().unwrap();
+    }
+    #[test]
+    fn sh871_private_fetch_live_pins_do_not_replace_settled_namespace_proof() {
+        let scratch = storyhook_test_support::scratch_dir();
+        let private = PrivateFetch::create_at(scratch.path(), "sha1").unwrap();
+        // An in-flight callback must inspect stable ownership, not recurse into
+        // Git's changing pack namespace. Acceptance still requires the full
+        // settled scan, which refuses this deliberately substituted entry.
+        let path = private.path.join("objects/pack/redirect");
+        std::os::unix::fs::symlink(scratch.path(), &path).unwrap();
+        private.validate_live_custody().unwrap();
+        assert!(private.validate().is_err());
+        fs::remove_file(path).unwrap();
+        private.validate().unwrap();
         private.settle().unwrap();
     }
     #[test]
