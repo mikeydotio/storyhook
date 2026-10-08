@@ -449,6 +449,96 @@ fn integration_claim_rejects_same_generation_cleanup_lease_replacement() {
 }
 
 #[test]
+fn integration_leased_claim_allows_replay_but_rejects_conflicting_custody_and_aba() {
+    let mut f = OwnedFixture::new(true);
+    let original: crate::domain::StoryCleanupLease = serde_json::from_value(serde_json::json!({
+        "version":1,"project_slug":f.candidate.project_slug,"story_id":f.candidate.story_id,
+        "repository_path":f.native.root.path(),"worktree_path":f.native.root.path().join("original"),
+        "branch":"original-work","tmux":{"socket_path":f.native.root.path().join("fixture-socket"),"revivify":null}
+    })).unwrap();
+    // No story event follows the original Verifying transition yet, so this
+    // is the generation's actual adjacent lease, not a late replacement.
+    f.fixture
+        .append_cleanup_lease(&f.candidate.story_id, original.clone());
+    f.candidate = VerificationQueue::new(&f.store)
+        .with_environment(f.ctx().env().clone())
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_eq!(f.candidate.cleanup_lease.as_ref(), Some(&original));
+    let proof = f.proof();
+    let record = f.reserve(&proof);
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let claim = service
+        .claim_assembly(&record.id, 0, &proof)
+        .unwrap()
+        .unwrap();
+    assert!(service.assembly_permitted(&claim, &proof).unwrap());
+    f.fixture
+        .append_cleanup_lease(&f.candidate.story_id, original.clone());
+    assert!(
+        service.assembly_permitted(&claim, &proof).unwrap(),
+        "identical custody replay revoked the claim"
+    );
+    let mut replacement = original.clone();
+    replacement.worktree_path = f.native.root.path().join("replacement");
+    replacement.branch = "replacement-work".into();
+    f.fixture
+        .append_cleanup_lease(&f.candidate.story_id, replacement);
+    assert!(service.assembly_permitted(&claim, &proof).is_err());
+    f.fixture
+        .append_cleanup_lease(&f.candidate.story_id, original.clone());
+    assert!(
+        service.assembly_permitted(&claim, &proof).is_err(),
+        "ABA restored revoked custody"
+    );
+    assert_eq!(
+        service.show(&record.id).unwrap().1.candidate.cleanup_lease,
+        Some(original)
+    );
+    proof.settle().unwrap();
+}
+
+#[test]
+fn recovery_cleanup_history_does_not_adopt_prior_generation_lease() {
+    let f = OwnedFixture::new(true);
+    let old: crate::domain::StoryCleanupLease = serde_json::from_value(serde_json::json!({
+        "version":1,"project_slug":f.candidate.project_slug,"story_id":f.candidate.story_id,
+        "repository_path":f.native.root.path(),"worktree_path":f.native.root.path().join("old"),
+        "branch":"old-work","tmux":{"socket_path":f.native.root.path().join("fixture-socket"),"revivify":null}
+    })).unwrap();
+    f.fixture.append_cleanup_lease(&f.candidate.story_id, old);
+    let ctx = f.ctx();
+    let stories = StoryService::new(&ctx);
+    stories
+        .set_state(&f.candidate.story_id, "in-progress", None, None, None)
+        .unwrap();
+    stories
+        .set_state(&f.candidate.story_id, "verifying", None, None, None)
+        .unwrap();
+    let current = VerificationQueue::new(&f.store)
+        .with_environment(ctx.env().clone())
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        current.verifying_generation,
+        f.candidate.verifying_generation
+    );
+    assert_eq!(current.cleanup_lease, None);
+    assert!(
+        f.store
+            .read(
+                |tx| crate::service::verification::recovery_cleanup_history_is_current(
+                    tx, &current
+                )
+            )
+            .unwrap()
+    );
+}
+
+#[test]
 fn integration_native_claim_cannot_outlive_proposal_deadline_or_cancellation() {
     for cancelled in [false, true] {
         let f = OwnedFixture::new(true);

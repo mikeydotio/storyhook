@@ -386,6 +386,7 @@ fn check_candidate(tx: &impl ReadOps, candidate: &VerificationCandidate) -> Resu
         || row.awaiting.is_some()
         || !crate::service::verification::candidate_is_current(tx, &row, candidate)?
         || !crate::service::verification::submission_is_current(tx, &row, candidate)?
+        || !crate::service::verification::recovery_cleanup_history_is_current(tx, candidate)?
         || crate::service::project_recovery::recovery_resource_hold(tx, candidate.project, story)?
         || tx.checkout_path(candidate.project)?.as_ref() != Some(&candidate.checkout)
         || links.iter().filter(|link| link.close_on_merge).count() != 1

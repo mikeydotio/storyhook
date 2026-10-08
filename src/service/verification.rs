@@ -1217,6 +1217,40 @@ pub(super) fn submission_is_current(
     })
 }
 
+/// A recovery capability cannot adopt contradictory resource custody recorded
+/// after its pinned submission, even if the original lease later reappears.
+/// Identical replays and prior-generation history do not challenge custody.
+///
+/// This supplements current-generation/state and physical inode/pane checks;
+/// a late lease event is a custody conflict, not proof of physical replacement.
+/// Ordinary verification's adjacent generation-lease selection is unchanged.
+pub(crate) fn recovery_cleanup_history_is_current(
+    tx: &impl ReadOps,
+    candidate: &VerificationCandidate,
+) -> Result<bool, StoreError> {
+    let Some(generation) = candidate.verifying_generation else {
+        return Ok(false);
+    };
+    let prefix = super::project_prefix(tx, candidate.project)?;
+    let story = StoryNo::parse_id(&prefix, &candidate.story_id)?;
+    let events = tx.events_for(candidate.project, story)?;
+    let Some(boundary) = events.iter().position(|event| {
+        event.global_seq == generation
+            && matches!(event.known(), Some(StoryEvent::StoryStateChanged { state, .. })
+                if state == VERIFYING_STATE)
+    }) else {
+        return Ok(false);
+    };
+    Ok(events[boundary + 1..]
+        .iter()
+        .all(|event| match event.known() {
+            Some(StoryEvent::StoryCleanupLeaseRecorded { lease, .. }) => {
+                candidate.cleanup_lease.as_ref() == Some(lease.as_ref())
+            }
+            _ => true,
+        }))
+}
+
 pub(super) fn candidate_is_current(
     tx: &impl ReadOps,
     row: &StoryRow,
