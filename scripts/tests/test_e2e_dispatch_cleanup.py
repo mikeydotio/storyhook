@@ -44,6 +44,9 @@ class DispatchCleanupTests(unittest.TestCase):
         self.executable("tmux", '#!/bin/bash\ntouch "$FAKE_TMUX_STATE/accessed"\n')
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"])
         self.budget = patience(8, contention())
+        # These waits deliberately exhaust custody refusal, not await progress.
+        # Preserve their half-second idle allowance while granting host-load grace.
+        self.refusal_budget = patience(0.5, contention())
         self.processes = []
         self.identities = []
 
@@ -284,7 +287,7 @@ while :; do sleep 0.01; done
     def test_escaped_session_writer_preserves_root_until_custody_released(self):
         writer, _ = self.escaped_writer()
         with self.assertRaisesRegex(owners.UnsafeCleanup, "writer custody remains"):
-            owners.cleanup(self.registry, self.root, "unused", False, time.monotonic() + 0.5)
+            owners.cleanup(self.registry, self.root, "unused", False, time.monotonic() + self.refusal_budget)
         self.assertTrue(self.root.exists())
         self.assertTrue(owners.same(writer), "unknown session must not be signalled")
         self.assertTrue((self.state / "escaped-input").exists())
@@ -409,7 +412,7 @@ while :; do sleep 0.01; done
         self.wait_for(lambda: not owners.same(pane), "placeholder did not exit")
         try:
             with self.assertRaisesRegex(owners.UnsafeCleanup, "writer custody remains"):
-                owners.cleanup(self.registry, self.root, "unused", False, time.monotonic() + 0.5)
+                owners.cleanup(self.registry, self.root, "unused", False, time.monotonic() + self.refusal_budget)
             self.assertTrue(self.root.exists())
         finally:
             release.touch()
