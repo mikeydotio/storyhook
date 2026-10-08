@@ -441,7 +441,14 @@ fn final_surface_keeps_assignment_retired_and_later_capabilities_reachable() {
         ],
     );
     assert_eq!(dependent["story"]["story"]["complexity_assessed"], true);
-    let ready = value(&env, dir, &["next", "--count", "2"]);
+    let ordered = value(&env, dir, &["next", "--count", "2"]);
+    assert_eq!(ordered["stories"].as_array().unwrap().len(), 2);
+    assert_eq!(ordered["stories"][0]["story"]["id"], blocker);
+    assert_eq!(
+        ordered["stories"][1]["story"]["id"],
+        dependent["story"]["story"]["id"]
+    );
+    let ready = value(&env, dir, &["list", "--ready"]);
     assert_eq!(ready["stories"].as_array().unwrap().len(), 1);
     assert_eq!(ready["stories"][0]["story"]["id"], blocker);
     ok(

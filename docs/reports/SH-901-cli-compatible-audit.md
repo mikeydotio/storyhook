@@ -105,7 +105,9 @@ restores assignment or changes dispatch policy.
 Legacy `new -- --help` still returns help instead of creating literal text.
 Legacy `next --count 1` returns a single-story envelope when available; a
 requested count greater than one returns a stories array even when only one is
-available. An empty queue returns the existing message envelope. Package B's
+available. Multi-item `next` orders dependencies and can include a dependent
+after its blocker; use `list --ready` for the strict readiness filter. An empty
+queue returns the existing message envelope. Package B's
 literal termination and stable queue schema changes remain deferred. There is
 no `--cli-contract 2` implementation or silent default flip.
 
