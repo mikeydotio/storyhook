@@ -65,6 +65,11 @@
       "count": 1,
       "kind": "delegated",
       "reason": "Origin reads receive an explicit 30s default or the owning Environment's read allowance. The bound survives revalidation; no command is retried by this leaf."
+    },
+    "production run_captured_private_until(deadline.min(std::time::Instant::now()+bound)": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Native submission inspection preserves the caller absolute deadline, further capped by the existing repository read/operation bound; it never renews the original deadline."
     }
   },
   "src/github_access/command.rs": {
@@ -72,6 +77,11 @@
       "count": 1,
       "kind": "delegated",
       "reason": "The shared routed capture receives the Repository operation allowance from ordinary execution or the single protected merge. Release-source execution retains its existing 120s default. Captured refusal diagnostics and mutation non-retry semantics are preserved."
+    },
+    "production run_captured_private_until(deadline.min(std::time::Instant::now()+bound)": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Native submission inspection preserves the caller absolute deadline, further capped by the existing repository read/operation bound; it never renews the original deadline."
     }
   },
   "src/github_access/observation.rs": {
@@ -247,6 +257,20 @@
       "count": 1,
       "kind": "delegated",
       "reason": "The restoration proof consumes the remaining caller-owned tmux deadline. It shares that budget with target selection and never renews it for the helper."
+    }
+  },
+  "src/service/integration_recovery/assembly.rs": {
+    "production run_captured_query_quiescent(self.deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Each native assembly command and its process-group settlement share the original owner deadline and cancellation; no per-command allowance is renewed."
+    }
+  },
+  "src/service/integration_recovery/assembly/tests.rs": {
+    "test run_captured_query_quiescent(deadline()": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The private index substitution fixture obtains its deadline from the test-local deadline helper, which applies load_grace to a 60-second progress allowance."
     }
   },
   "src/service/isolated_merge.rs": {

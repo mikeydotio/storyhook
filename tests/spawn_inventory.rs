@@ -106,6 +106,20 @@ enum Kind {
 /// classification for "git, run from this module" has not changed. A new
 /// program, or a new file, does.
 const INVENTORY: &[(&str, &str, Kind)] = &[
+    // SH-871: native broker proof uses private file-backed input/output and
+    // bounded quiescent capture. Public JSON alone confers no authority.
+    (
+        "src/service/host_recovery/native.rs",
+        "\"bash\"",
+        Kind::Waited,
+    ),
+    // A finite scratch writer proves that leader success is insufficient;
+    // the owned process group must settle within the original deadline.
+    (
+        "src/service/integration_recovery/assembly/tests.rs",
+        "\"sh\"",
+        Kind::Waited,
+    ),
     // SH-870: metadata-only refresh; owned control supervisor enforces its deadline,
     // cancellation and process-group cleanup before the causal return transaction.
     (
