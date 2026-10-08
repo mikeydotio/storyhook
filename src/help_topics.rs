@@ -966,7 +966,6 @@ Related:
   story summary — Story counts per state
 "#,
         );
-        m.insert("states", m["state"]);
 
         m.insert(
             "summary",
@@ -1829,7 +1828,6 @@ Related:
         );
 
         // Redirect old "is" name to "move"
-        m.insert("is", m["move"]);
 
         m.insert(
             "block",
@@ -1890,7 +1888,6 @@ Related:
         );
 
         // Redirect old "awaits" name to "block"
-        m.insert("awaits", m["block"]);
 
         m.insert(
             "unblock",
@@ -2025,7 +2022,6 @@ Related:
         );
 
         // Redirect old "priority" name
-        m.insert("priority", m["prioritize"]);
 
         // The criteria behind the four levels, and the reason there is a
         // rubric at all: a priority is `story next`'s sort key, so every level
@@ -3527,6 +3523,9 @@ Related:
             crate::env::test_environment::HELP_TOPIC.as_str(),
         );
 
+        for alias in crate::cli::model::HELP_ALIASES {
+            m.insert(alias.name, m[alias.command.help_topic()]);
+        }
         m
     },
 );

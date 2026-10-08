@@ -107,7 +107,7 @@ commands! {
                 .to_string(),
         )),
     Project ["project"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_project(args),
-    DispatchPolicy ["dispatch-policy"] Parsed Grammar::new("[--global]", "", FormKind::Command); (args) => dispatch_policy::parse(args),
+    DispatchPolicy ["dispatch-policy"] Parsed Grammar::new("", "", FormKind::Command); (args) => dispatch_policy::parse(args),
     New ["new"] Parsed Grammar::new("<title>... [--state <state:states>] [--type <type:types>] [--description <text>] [--priority <priority:priority>] [--complexity <complexity:complexity>] [--label <label:labels>]... [--labels <csv:labels>] [--blocked-by <id:stories>]... [--draft]", "example", FormKind::Command); (args) => parse_new(args),
     State ["state"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_state(args),
     List ["list"] Parsed Grammar::new("[--state <state:states>] [--priority <csv:priority>] [--label <csv:labels>] [--created-after <date>] [--updated-after <date>] [--stale <duration>] [--phase <phase:phases>] [--type <type:types>] [--flagged] [--blocked] [--ready] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]", "", FormKind::Command); (args) => parse_list(args),
@@ -1165,7 +1165,7 @@ subcommands! {
         Install = "install" => Grammar::new("<provider:providers>", "codex", FormKind::Command),
         Uninstall = "uninstall" => Grammar::new("<provider:providers>", "codex", FormKind::Command),
         Reinstall = "reinstall" => Grammar::new("", "", FormKind::Command),
-        Run = "run" => Grammar::new("<provider:providers> -- <helper-command> [<argument>...]", "codex -- example", FormKind::Command),
+        Run = "run" => Grammar::new("<provider:providers> [--] <helper-command> [<argument>...]", "codex -- example", FormKind::Command),
     }
     StoreVerb (Store []) {
         New = "new" => Grammar::new("<path>", "/tmp/example.db", FormKind::Command),
@@ -1532,3 +1532,27 @@ pub fn path(words: &[&str]) -> Option<CommandPath> {
         .into_iter()
         .find(|entry| entry.command == command && entry.words[1..] == words[1..])
 }
+
+/// Topic aliases are help-only and never enter command dispatch.
+pub struct HelpAlias {
+    pub name: &'static str,
+    pub command: CommandId,
+}
+pub const HELP_ALIASES: &[HelpAlias] = &[
+    HelpAlias {
+        name: "states",
+        command: CommandId::State,
+    },
+    HelpAlias {
+        name: "is",
+        command: CommandId::Move,
+    },
+    HelpAlias {
+        name: "awaits",
+        command: CommandId::Block,
+    },
+    HelpAlias {
+        name: "priority",
+        command: CommandId::Prioritize,
+    },
+];

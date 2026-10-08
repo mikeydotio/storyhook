@@ -98,7 +98,23 @@ fn command_vocabulary(root: &Path) -> BTreeSet<String> {
     let source = std::fs::read_to_string(root.join("src/cli.rs"))
         .expect("reading src/cli.rs, the file this scan is derived from");
 
-    let mut words = BTreeSet::new();
+    // SH-898 moved command selectors into the typed registry. Keep the old
+    // literal scan for argument choices while deriving every command spelling
+    // directly from the selectors the parser now uses.
+    let mut words = storyhook::cli::model::paths()
+        .into_iter()
+        .flat_map(|path| path.words.into_iter().map(str::to_string))
+        .filter(|word| !word.starts_with('-'))
+        .collect::<BTreeSet<_>>();
+    for command in storyhook::cli::model::CommandId::ALL {
+        words.extend(
+            command
+                .names()
+                .iter()
+                .filter(|name| !name.starts_with('-'))
+                .map(|name| (*name).to_string()),
+        );
+    }
     for line in source.lines() {
         let Some(pattern) = line.split_once("=>").map(|(before, _)| before) else {
             continue;

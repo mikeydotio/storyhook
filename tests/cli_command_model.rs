@@ -288,5 +288,96 @@ fn structured_syntax_exposes_multiplicity_alternatives_and_dynamic_sources() {
     for value in ["low", "medium", "high"] {
         assert!(parse_invocation(&argv(&["new", "example", "--complexity", value])).is_ok());
     }
-    assert!(parse_invocation(&argv(&["new", "example", "--complexity", "invented"])).is_err());
+    // Story field values are validated by the service's domain layer; the
+    // compatible parser must continue to carry them unchanged to that layer.
+    assert!(parse_invocation(&argv(&["new", "example", "--complexity", "invented"])).is_ok());
+    assert!(storyhook::domain::Complexity::parse("invented").is_err());
+}
+
+#[test]
+fn option_metadata_covers_the_validation_gate_without_inventing_leaf_options() {
+    for flags in model::FLAG_PATHS {
+        if matches!(flags.command, CommandId::Purge)
+            || matches!(flags.subcommand, Some("init" | "deinit"))
+        {
+            continue;
+        }
+        let applicable: Vec<_> = model::paths()
+            .into_iter()
+            .filter(|path| {
+                path.command == flags.command
+                    && flags
+                        .subcommand
+                        .is_none_or(|sub| path.words.get(1) == Some(&sub))
+            })
+            .collect();
+        for flag in flags.flags {
+            let spelling = format!("--{}", flag.name);
+            assert!(
+                applicable
+                    .iter()
+                    .any(|path| path.grammar.syntax.contains(&spelling)
+                        || path.words.contains(&spelling.as_str())),
+                "missing grammar for {:?} {:?} {spelling}",
+                flags.command,
+                flags.subcommand
+            );
+        }
+    }
+    for (words, forbidden, example) in [
+        (
+            vec!["daemon", "status"],
+            "--force",
+            vec!["daemon", "status", "--force"],
+        ),
+        (
+            vec!["attachment", "list"],
+            "--name",
+            vec!["attachment", "list", "SH-1", "--name", "example"],
+        ),
+        (
+            vec!["project", "unlink", "checkout"],
+            "--dry-run",
+            vec!["project", "unlink", "checkout", "--dry-run"],
+        ),
+        (
+            vec!["verifier", "status"],
+            "--input",
+            vec!["verifier", "status", "--input", "file"],
+        ),
+    ] {
+        assert!(
+            !model::path(&words)
+                .unwrap()
+                .grammar
+                .syntax
+                .contains(forbidden)
+        );
+        assert!(parse_invocation(&argv(&example)).is_err(), "{example:?}");
+    }
+}
+
+#[test]
+fn static_domains_and_help_only_aliases_use_real_runtime_definitions() {
+    use model::grammar::{Domain, domain};
+    let Domain::Static { values, .. } = domain("relationships").unwrap() else {
+        panic!()
+    };
+    for value in values {
+        assert!(storyhook::domain::is_relation_input(&value), "{value}");
+    }
+    let Domain::Static { values, .. } = domain("complexity").unwrap() else {
+        panic!()
+    };
+    for value in values {
+        assert!(storyhook::domain::Complexity::parse(&value).is_ok());
+    }
+    for alias in model::HELP_ALIASES {
+        assert_eq!(
+            storyhook::help_topics::get_help_topic(alias.name),
+            storyhook::help_topics::get_help_topic(alias.command.help_topic())
+        );
+        assert!(model::path(&[alias.name]).is_none());
+        assert!(parse_invocation(&argv(&[alias.name])).is_err());
+    }
 }
