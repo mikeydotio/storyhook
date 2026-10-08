@@ -1,5 +1,6 @@
 use super::super::{IntegrationPlan, assembly::AssemblyPathIdentity};
 use super::*;
+use crate::store::ReadOps;
 
 fn assembly() -> AssemblyEvidence {
     let original = SubmissionObservation {
@@ -240,4 +241,382 @@ fn sh871_publication_revalidates_private_objects_and_committed_policy() {
     // by a successful commit-header read. fsck must prove the private closure.
     std::fs::remove_file(root.join("objects").join(&blob[..2]).join(&blob[2..])).unwrap();
     assert!(verify_objects(&a, deadline, &|| false).is_err());
+}
+
+// Real local Git and Store ownership; only remote byte responses are replaced.
+// The fixture never calls claim_publication_effect itself.
+fn local_git(root: &Path, args: &[&str]) -> String {
+    let mut command = git_env::command(root);
+    command.args(args);
+    let deadline = Instant::now()
+        + storyhook_test_support::load_grace::graced_now(std::time::Duration::from_secs(30));
+    let output = run_captured_query_quiescent(command, deadline, &|| false, 1024 * 1024, &[])
+        .expect("owned fixture Git query");
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output.stdout_truncated);
+    String::from_utf8(output.stdout).unwrap().trim().into()
+}
+
+fn native_publication_fixture() -> (
+    storyhook_test_support::ServiceFixture,
+    crate::store::SqliteStore,
+    crate::service::VerificationCandidate,
+    BoundIntegrationProposal,
+) {
+    use crate::{
+        service::{
+            Ctx, NewStoryInput, PrLinkService, StoryService, VerificationQueue,
+            attribution::{AttributionRecord, FailureCause, FailureComponent},
+        },
+        store::{GateAttempt, GateInputs, GateSubmission, ProjectId, ReadOps, WriteOps},
+    };
+    use std::io::Write;
+    let fixture = storyhook_test_support::ServiceFixture::new();
+    let root = fixture.github_checkout("https://github.com/acme/widgets.git");
+    local_git(&root, &["config", "user.name", "Publication fixture"]);
+    local_git(&root, &["config", "user.email", "publication@example.test"]);
+    storyhook_test_support::approve_fixture_identity(
+        &root,
+        "Publication fixture",
+        "publication@example.test",
+    );
+    let mut pointer = std::fs::OpenOptions::new()
+        .append(true)
+        .open(root.join(".storyhook.toml"))
+        .unwrap();
+    writeln!(pointer, "\n[integration]\nversion = 1\nenabled = true\npublication = \"managed-pr\"\nsmooth = [\"docs/\"]").unwrap();
+    drop(pointer);
+    std::fs::create_dir(root.join("docs")).unwrap();
+    std::fs::write(root.join("docs/guide.md"), "start\nend\n").unwrap();
+    local_git(&root, &["add", "."]);
+    local_git(&root, &["commit", "-qm", "common"]);
+    let common = local_git(&root, &["rev-parse", "HEAD"]);
+    std::fs::write(root.join("docs/guide.md"), "start\nbase addition\nend\n").unwrap();
+    local_git(&root, &["commit", "-qam", "base"]);
+    let base = local_git(&root, &["rev-parse", "HEAD"]);
+    local_git(&root, &["checkout", "--detach", "-q", &common]);
+    std::fs::write(root.join("docs/guide.md"), "start\nauthor addition\nend\n").unwrap();
+    local_git(&root, &["commit", "-qam", "author"]);
+    let head = local_git(&root, &["rev-parse", "HEAD"]);
+    let store = crate::store::SqliteStore::open(fixture.store().path()).unwrap();
+    let project = ProjectId::new(fixture.project().get());
+    let environment = crate::env::Environment::at(fixture.cwd()).with_subprocess_patience();
+    let ctx = Ctx::new(&store, project, &root, environment).no_hooks(true);
+    let id = StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: "publication transport fixture".into(),
+            ..Default::default()
+        })
+        .unwrap()
+        .id;
+    PrLinkService::new(&ctx)
+        .link(&id, "https://github.com/acme/widgets/pull/7", true)
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_state(&id, "verifying", None, None, None)
+        .unwrap();
+    let candidate = VerificationQueue::new(&store)
+        .with_environment(ctx.env().clone())
+        .next()
+        .unwrap()
+        .unwrap();
+    let submission = GateSubmission {
+        project,
+        story_id: id,
+        generation: candidate.verifying_generation,
+        submitted_at: candidate.verifying_since.clone(),
+    };
+    const AT: &str = "2026-10-05T00:00:00Z";
+    let mut attempt = GateAttempt::new(
+        "publication-original-conflict".into(),
+        submission.clone(),
+        AT,
+    );
+    attempt.control_revision = Some(
+        store
+            .read(|tx| tx.verification_control_revision(project))
+            .unwrap(),
+    );
+    let attribution = AttributionRecord {
+        version: 1,
+        id: "publication-attribution".into(),
+        revision: 0,
+        submission,
+        attempt: attempt.id.clone(),
+        inputs: GateInputs {
+            head: Some(head.clone()),
+            base: Some(base.clone()),
+            ..Default::default()
+        },
+        created_at: AT.into(),
+        components: vec![FailureComponent {
+            id: "integration".into(),
+            check: "native-merge".into(),
+            signature: "insertions conflict".into(),
+            requirement: "preserve both parents".into(),
+            log: "real local fixture".into(),
+            observed_cause: FailureCause::Integration,
+        }],
+        preparation: None,
+        settlement: None,
+        plans: vec![],
+        probes: vec![],
+        assessments: vec![],
+        diagnosis_ms: 0,
+        held: true,
+        retired: None,
+    };
+    store
+        .write(|tx| {
+            tx.insert_gate_attempt(&attempt)?;
+            tx.insert_attribution(&attribution)
+        })
+        .unwrap();
+    attempt.revision = 1;
+    attempt.finished_at = Some(AT.into());
+    attempt.verdict = Some("conflict".into());
+    assert!(
+        store
+            .write(|tx| tx.update_gate_attempt(&attempt, 0))
+            .unwrap()
+    );
+    let deadline = Instant::now()
+        + ctx
+            .env()
+            .subprocess_bound(std::time::Duration::from_secs(90));
+    let cancellation = Cancellation::default();
+    let super::super::Inspection::Proposed(proposal) =
+        super::super::inspect(&root, &base, &head, deadline, cancellation.clone()).unwrap()
+    else {
+        panic!("real conflict did not produce a proposal");
+    };
+    let proof = BoundIntegrationProposal {
+        proposal,
+        deadline,
+        cancellation,
+        submission: SubmissionObservation {
+            checkout: root,
+            repository: "github.com/acme/widgets".into(),
+            pull_request: "https://github.com/acme/widgets/pull/7".into(),
+            base_branch: "dev".into(),
+            base,
+            head,
+        },
+    };
+    (fixture, store, candidate, proof)
+}
+
+fn publication_claim(
+    service: &IntegrationOwnerService<'_, crate::store::SqliteStore>,
+    candidate: &crate::service::VerificationCandidate,
+    proof: &BoundIntegrationProposal,
+) -> PublicationClaim {
+    let record = service
+        .reserve(candidate, "publication-attribution", "integration", proof)
+        .unwrap();
+    let claim = service
+        .claim_assembly(&record.id, record.revision, proof)
+        .unwrap()
+        .unwrap();
+    let native =
+        super::super::assemble_owned(service, &claim, proof, proof.deadline, &proof.cancellation)
+            .unwrap();
+    let assembled = service
+        .accept_assembly(claim, native, proof)
+        .unwrap()
+        .unwrap();
+    service
+        .claim_publication(assembled, proof)
+        .unwrap()
+        .unwrap()
+}
+
+#[test]
+fn sh871_publication_transport_runs_real_effect_order_and_native_acceptance() {
+    let (fixture, store, candidate, proof) = native_publication_fixture();
+    let ctx = crate::service::Ctx::new(
+        &store,
+        candidate.project,
+        &candidate.checkout,
+        crate::env::Environment::at(fixture.cwd()).with_subprocess_patience(),
+    )
+    .no_hooks(true);
+    let service = IntegrationOwnerService::new(&ctx);
+    let mut claim = publication_claim(&service, &candidate, &proof);
+    let before = local_git(&candidate.checkout, &["show-ref", "--head"]);
+    let remote =
+        worker_fixture::Remote::new(proof.submission().clone(), 99, worker_fixture::Fault::None)
+            .unwrap();
+    let native = remote
+        .publish(
+            &service,
+            &mut claim,
+            &proof,
+            proof.deadline,
+            &proof.cancellation,
+        )
+        .unwrap();
+    assert_eq!(
+        claim.effects(),
+        &[
+            PublicationEffect::PushBranch,
+            PublicationEffect::CreatePullRequest
+        ]
+    );
+    assert_eq!(native.evidence().commit, claim.assembly().commit);
+    assert_eq!(
+        native.evidence().parents,
+        [proof.plan().base.clone(), proof.plan().head.clone()]
+    );
+    let snapshot = remote.snapshot();
+    assert_eq!(snapshot.push_calls, 1);
+    assert_eq!(snapshot.create_calls, 1);
+    assert_eq!(
+        snapshot.requests,
+        [
+            "read-original-pr",
+            "read-branch",
+            "push",
+            "read-original-pr",
+            "read-branch",
+            "create-pr",
+            "read-managed-pr",
+            "read-original-pr",
+            "read-branch"
+        ]
+    );
+    let id = claim.id().to_string();
+    let accepted = service
+        .accept_publication(claim, native, &proof)
+        .unwrap()
+        .unwrap();
+    accepted.validate_custody().unwrap();
+    let state = service.show(&id).unwrap();
+    assert_eq!(state.1.phase, super::super::IntegrationPhase::Published);
+    let row = store
+        .read(|tx| tx.story(candidate.project, state.0.story))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "verifying", "publication claimed completion");
+    let links = store
+        .read(|tx| tx.open_pr_links_for_story(candidate.project, state.0.story))
+        .unwrap();
+    assert!(
+        links
+            .iter()
+            .any(|link| link.url == proof.submission().pull_request && link.close_on_merge),
+        "publication changed original PR custody"
+    );
+    assert_eq!(
+        local_git(&candidate.checkout, &["show-ref", "--head"]),
+        before
+    );
+    assert_eq!(
+        local_git(&candidate.checkout, &["rev-parse", "HEAD"]),
+        proof.plan().head
+    );
+    proof.settle().unwrap();
+}
+
+#[test]
+fn sh871_publication_transport_unknown_effects_retain_real_intents_without_replay() {
+    for fault in [
+        worker_fixture::Fault::PushReplyLost,
+        worker_fixture::Fault::CreateReplyLost,
+        worker_fixture::Fault::MovedAfterPush,
+        worker_fixture::Fault::MalformedManagedPr,
+    ] {
+        let (fixture, store, candidate, proof) = native_publication_fixture();
+        let ctx = crate::service::Ctx::new(
+            &store,
+            candidate.project,
+            &candidate.checkout,
+            crate::env::Environment::at(fixture.cwd()).with_subprocess_patience(),
+        )
+        .no_hooks(true);
+        let service = IntegrationOwnerService::new(&ctx);
+        let mut claim = publication_claim(&service, &candidate, &proof);
+        let remote = worker_fixture::Remote::new(proof.submission().clone(), 99, fault).unwrap();
+        assert!(
+            remote
+                .publish(
+                    &service,
+                    &mut claim,
+                    &proof,
+                    proof.deadline,
+                    &proof.cancellation
+                )
+                .is_err()
+        );
+        let before = remote.snapshot();
+        assert_eq!(before.push_calls, 1);
+        let created = matches!(
+            fault,
+            worker_fixture::Fault::CreateReplyLost | worker_fixture::Fault::MalformedManagedPr
+        );
+        assert_eq!(before.create_calls, usize::from(created));
+        assert_eq!(claim.effects().len(), if created { 2 } else { 1 });
+        let retained = service.show(claim.id()).unwrap();
+        assert!(retained.0.active);
+        assert_eq!(retained.1.phase, super::super::IntegrationPhase::Publishing);
+        assert_eq!(retained.1.publication_effects, claim.effects());
+        assert!(claim.assembly().workspace.path.exists());
+        assert!(
+            remote
+                .publish(
+                    &service,
+                    &mut claim,
+                    &proof,
+                    proof.deadline,
+                    &proof.cancellation
+                )
+                .is_err()
+        );
+        assert_eq!(
+            remote.snapshot(),
+            before,
+            "unknown effect was repeated: {fault:?}"
+        );
+        assert_eq!(service.show(claim.id()).unwrap(), retained);
+        proof.settle().unwrap();
+    }
+}
+
+#[test]
+fn sh871_publication_transport_cancelled_owner_makes_no_remote_request() {
+    let (fixture, store, candidate, proof) = native_publication_fixture();
+    let ctx = crate::service::Ctx::new(
+        &store,
+        candidate.project,
+        &candidate.checkout,
+        crate::env::Environment::at(fixture.cwd()).with_subprocess_patience(),
+    )
+    .no_hooks(true);
+    let service = IntegrationOwnerService::new(&ctx);
+    let mut claim = publication_claim(&service, &candidate, &proof);
+    let before = service.show(claim.id()).unwrap();
+    let remote =
+        worker_fixture::Remote::new(proof.submission().clone(), 99, worker_fixture::Fault::None)
+            .unwrap();
+    proof.cancellation.cancel();
+    assert!(
+        remote
+            .publish(
+                &service,
+                &mut claim,
+                &proof,
+                proof.deadline,
+                &proof.cancellation
+            )
+            .is_err()
+    );
+    assert!(remote.snapshot().requests.is_empty());
+    assert!(claim.effects().is_empty());
+    assert_eq!(service.show(claim.id()).unwrap(), before);
+    proof.settle().unwrap();
 }

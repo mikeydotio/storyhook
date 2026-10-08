@@ -16,7 +16,7 @@ use crate::{
     store::Store,
 };
 use serde::{Deserialize, Serialize};
-use std::{process::Command, time::Instant};
+use std::{path::Path, process::Command, time::Instant};
 
 /// Observable publication identity. JSON cannot acquire publication authority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +67,67 @@ pub fn publish_owned<S: Store>(
     deadline: Instant,
     cancellation: &Cancellation,
 ) -> Result<NativePublication, AppError> {
+    publish_with_transport(
+        service,
+        claim,
+        proof,
+        deadline,
+        cancellation,
+        &NativeTransport,
+    )
+}
+
+// Only transport is replaceable inside this module. Permission, effect intents,
+// native object checks and receipt construction stay in the production sequence.
+trait PublicationTransport {
+    fn git(
+        &self,
+        repository: &Repository,
+        arguments: &[String],
+        objects: Option<&Path>,
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, AppError>;
+    fn gh(
+        &self,
+        repository: &Repository,
+        arguments: &[String],
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, AppError>;
+}
+
+struct NativeTransport;
+impl PublicationTransport for NativeTransport {
+    fn git(
+        &self,
+        repository: &Repository,
+        arguments: &[String],
+        objects: Option<&Path>,
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, AppError> {
+        repository.git_publication(arguments, objects, deadline, cancelled)
+    }
+    fn gh(
+        &self,
+        repository: &Repository,
+        arguments: &[String],
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, AppError> {
+        repository.gh_publication(arguments, deadline, cancelled)
+    }
+}
+
+fn publish_with_transport<S: Store>(
+    service: &IntegrationOwnerService<'_, S>,
+    claim: &mut PublicationClaim,
+    proof: &BoundIntegrationProposal,
+    deadline: Instant,
+    cancellation: &Cancellation,
+    transport: &impl PublicationTransport,
+) -> Result<NativePublication, AppError> {
     if !claim.effects().is_empty() {
         return Err(refuse(
             "publication already has an effect intent; reconcile without replay",
@@ -80,8 +141,8 @@ pub fn publish_owned<S: Store>(
         claim.epoch(),
         assembly.stamp_sha256
     );
-    let original = observe(service, claim, proof, deadline, cancellation)?;
-    let remote = remote_head(service, claim, proof, deadline, cancellation)?;
+    let original = observe(service, claim, proof, deadline, cancellation, transport)?;
+    let remote = remote_head(service, claim, proof, deadline, cancellation, transport)?;
     if remote.is_some() {
         return Err(refuse(
             "managed remote branch already exists; reconcile ownership",
@@ -103,7 +164,8 @@ pub fn publish_owned<S: Store>(
             &cancelled,
         )?;
         claim.validate_custody()?;
-        repo.git_publication(
+        transport.git(
+            &repo,
             &strings(&[
                 "push",
                 "--porcelain",
@@ -119,8 +181,8 @@ pub fn publish_owned<S: Store>(
     }
     // Intent plus an exit status is insufficient. Both submission and exact
     // remote branch must be observed again before the independent PR effect.
-    observe(service, claim, proof, deadline, cancellation)?;
-    if remote_head(service, claim, proof, deadline, cancellation)?.as_deref()
+    observe(service, claim, proof, deadline, cancellation, transport)?;
+    if remote_head(service, claim, proof, deadline, cancellation, transport)?.as_deref()
         != Some(&assembly.commit)
     {
         return Err(refuse("push lacks fresh exact remote branch proof"));
@@ -141,7 +203,7 @@ pub fn publish_owned<S: Store>(
             &cancelled,
         )?;
         let endpoint = endpoint(&repo, "pulls");
-        let bytes = repo.gh_publication(&strings(&["api", &endpoint, "--method", "POST", "--raw-field", &format!("title=Managed integration {}", claim.id()), "--raw-field", &format!("head={}", assembly.branch), "--raw-field", &format!("base={}", original.base_branch), "--raw-field", &format!("body={marker}\n\nManaged integration of {} at {}. This PR requires independent certification and landing.", original.pull_request, original.head), "--jq", PR_FIELDS]), deadline, &cancelled)?;
+        let bytes = transport.gh(&repo, &strings(&["api", &endpoint, "--method", "POST", "--raw-field", &format!("title=Managed integration {}", claim.id()), "--raw-field", &format!("head={}", assembly.branch), "--raw-field", &format!("base={}", original.base_branch), "--raw-field", &format!("body={marker}\n\nManaged integration of {} at {}. This PR requires independent certification and landing.", original.pull_request, original.head), "--jq", PR_FIELDS]), deadline, &cancelled)?;
         decode_pr(&bytes)?
     };
     validate_managed(&created, &original, &assembly, &marker)?;
@@ -157,7 +219,8 @@ pub fn publish_owned<S: Store>(
             deadline,
             &cancelled,
         )?;
-        let bytes = repo.gh_publication(
+        let bytes = transport.gh(
+            &repo,
             &strings(&[
                 "api",
                 &endpoint(&repo, &format!("pulls/{}", created.number)),
@@ -173,8 +236,8 @@ pub fn publish_owned<S: Store>(
     if observed.number != created.number || observed.html_url != created.html_url {
         return Err(refuse("created PR identity changed on observation"));
     }
-    observe(service, claim, proof, deadline, cancellation)?;
-    if remote_head(service, claim, proof, deadline, cancellation)?.as_deref()
+    observe(service, claim, proof, deadline, cancellation, transport)?;
+    if remote_head(service, claim, proof, deadline, cancellation, transport)?.as_deref()
         != Some(&assembly.commit)
     {
         return Err(refuse("managed branch moved after PR creation"));
@@ -223,6 +286,7 @@ fn observe<S: Store>(
     proof: &BoundIntegrationProposal,
     deadline: Instant,
     cancellation: &Cancellation,
+    transport: &impl PublicationTransport,
 ) -> Result<SubmissionObservation, AppError> {
     check(service, claim, proof, deadline, cancellation)?;
     let cancelled = || {
@@ -241,7 +305,8 @@ fn observe<S: Store>(
         return Err(refuse("registered repository identity changed"));
     }
     let original = crate::domain::pr_url::parse_pr_url(&expected.pull_request)?;
-    let bytes = repo.gh_publication(
+    let bytes = transport.gh(
+        &repo,
         &strings(&[
             "api",
             &endpoint(&repo, &format!("pulls/{}", original.number)),
@@ -275,6 +340,7 @@ fn remote_head<S: Store>(
     proof: &BoundIntegrationProposal,
     deadline: Instant,
     cancellation: &Cancellation,
+    transport: &impl PublicationTransport,
 ) -> Result<Option<String>, AppError> {
     check(service, claim, proof, deadline, cancellation)?;
     let cancelled = || {
@@ -289,7 +355,8 @@ fn remote_head<S: Store>(
         &cancelled,
     )?;
     let branch = format!("refs/heads/{}", claim.assembly().branch);
-    let bytes = repo.git_publication(
+    let bytes = transport.git(
+        &repo,
         &strings(&["ls-remote", "--heads", "origin", &branch]),
         None,
         deadline,
@@ -509,3 +576,6 @@ fn refuse(message: &str) -> AppError {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) mod worker_fixture;
