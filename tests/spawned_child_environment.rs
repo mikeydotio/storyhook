@@ -102,7 +102,7 @@ fn the_verifier_tells_its_child_the_state_home_beside_the_store() {
     let record = scratch.path().join("env.txt");
     let helper = env_recording_helper(scratch.path(), &record);
     let actuator = ShellVerificationActuator::with_paths(
-        fixture.env().clone(),
+        storyhook_test_support::subprocess_patience(fixture.env().clone()),
         helper,
         story_binary().to_path_buf(),
     );
@@ -145,7 +145,7 @@ fn story_inside_a_verifier_child_finds_the_daemon_where_its_parent_does() {
     let record = scratch.path().join("status.txt");
     let helper = status_recording_helper(scratch.path(), &record);
     let actuator = ShellVerificationActuator::with_paths(
-        fixture.env().clone(),
+        storyhook_test_support::subprocess_patience(fixture.env().clone()),
         helper,
         story_binary().to_path_buf(),
     );
@@ -304,7 +304,7 @@ fn the_submit_door_hands_its_child_the_lease_and_the_github_credential_and_nothi
         let record = scratch.path().join("env.txt");
         let helper = env_recording_submit_helper(scratch.path(), &record);
         let actuator = ShellVerificationActuator::with_paths(
-            fixture.env().clone(),
+            storyhook_test_support::subprocess_patience(fixture.env().clone()),
             helper,
             story_binary().to_path_buf(),
         );

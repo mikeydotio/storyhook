@@ -113,6 +113,10 @@ pub struct Environment {
     parent: ParentContract,
     /// An explicit CLI fixture floor; default builds reject its declaration.
     test_subprocess_patience: Option<Duration>,
+    /// Fixture-local allowances keyed by the unchanged production duration.
+    /// Never compiled into a default build or inherited from process variables.
+    #[cfg(feature = "test-seam")]
+    test_subprocess_allowances: std::collections::BTreeMap<Duration, Duration>,
     /// Test builds only: how the lib test that built this environment
     /// declared the production subprocess bounds it reaches (SH-836).
     #[cfg(test)]
@@ -213,6 +217,8 @@ impl Environment {
                 std::env::var_os(TailnetPolicy::VARIABLE).as_deref(),
             )?,
             parent: ParentContract::from_process(),
+            #[cfg(feature = "test-seam")]
+            test_subprocess_allowances: Default::default(),
             #[cfg(test)]
             subprocess_policy: subprocess_policy::SubprocessPolicy::Undeclared,
         })
@@ -244,6 +250,8 @@ impl Environment {
             verifier_agent_enabled: false,
             tailnet: TailnetPolicy::LoopbackOnly,
             parent: ParentContract::Unwatched,
+            #[cfg(feature = "test-seam")]
+            test_subprocess_allowances: Default::default(),
             #[cfg(test)]
             subprocess_policy: subprocess_policy::SubprocessPolicy::Undeclared,
         }
@@ -396,6 +404,28 @@ impl Environment {
         self
     }
 
+    /// Gives one production bound fixture-local patience in a test-seam build.
+    /// The allowance cannot shorten that bound or exceed the shared fifteen-minute
+    /// harness ceiling. It is keyed by the original duration so configuring a
+    /// long operation never widens an unrelated short probe at idle. Clones carry
+    /// the declaration, but child processes do not inherit this in-process seam.
+    /// Lib-test proof/patience declarations retain priority over this map.
+    #[cfg(feature = "test-seam")]
+    pub fn with_test_subprocess_patience(
+        mut self,
+        production: Duration,
+        patience: Duration,
+    ) -> Result<Self, String> {
+        let milliseconds = patience.as_millis().to_string();
+        let parsed = subprocess_patience::parse(Some(OsStr::new(&milliseconds)))?
+            .expect("an explicit allowance was supplied");
+        if production.is_zero() || parsed < production || parsed != patience {
+            return Err("fixture subprocess patience must be whole positive milliseconds, at least its production bound and at most 900000ms".into());
+        }
+        self.test_subprocess_allowances.insert(production, parsed);
+        Ok(self)
+    }
+
     /// The variables a child that will run `story` needs in order to resolve
     /// **this** environment rather than its own process's (SH-633).
     ///
@@ -525,7 +555,20 @@ impl Environment {
     /// A CLI fixture may extend a bound, but cannot shorten production policy.
     #[cfg(not(test))]
     fn declared_bound(&self, production: Duration) -> Duration {
-        production.max(self.test_subprocess_patience.unwrap_or_default())
+        self.fixture_subprocess_bound(production)
+    }
+
+    #[cfg(any(not(test), feature = "test-seam"))]
+    fn fixture_subprocess_bound(&self, production: Duration) -> Duration {
+        let bound = production.max(self.test_subprocess_patience.unwrap_or_default());
+        #[cfg(feature = "test-seam")]
+        let bound = bound.max(
+            self.test_subprocess_allowances
+                .get(&production)
+                .copied()
+                .unwrap_or_default(),
+        );
+        bound
     }
 
     /// A lib test's bound: the production value under its declared policy.
@@ -1406,5 +1449,57 @@ mod tests {
         assert_eq!(env.busy_timeout_value(), DEFAULT_BUSY_TIMEOUT);
         let quick = env.busy_timeout(Duration::from_millis(250));
         assert_eq!(quick.busy_timeout_value(), Duration::from_millis(250));
+    }
+}
+
+#[cfg(all(test, feature = "test-seam"))]
+mod sh846_subprocess_allowance_tests {
+    use super::*;
+
+    #[test]
+    fn sh846_fixture_allowance_is_exact_local_cloned_and_not_a_proof_override() {
+        let short = Duration::from_secs(3);
+        let long = Duration::from_secs(180);
+        let patient = Duration::from_secs(360);
+        let plain = Environment::at("/fixture-local");
+        let env = plain
+            .clone()
+            .with_test_subprocess_patience(long, patient)
+            .unwrap();
+        assert_eq!(plain.fixture_subprocess_bound(long), long);
+        assert_eq!(env.fixture_subprocess_bound(short), short);
+        assert_eq!(env.fixture_subprocess_bound(long), patient);
+        assert_eq!(env.clone().fixture_subprocess_bound(long), patient);
+        assert_eq!(
+            env.child_vars(),
+            plain.child_vars(),
+            "no ambient or child policy mutation"
+        );
+        assert_eq!(env.with_subprocess_proof().subprocess_bound(long), long);
+    }
+
+    #[test]
+    fn sh846_fixture_allowance_keeps_idle_values_and_rejects_invalid_limits() {
+        let base = Duration::from_secs(3);
+        let env = Environment::at("/fixture-local")
+            .with_test_subprocess_patience(base, base)
+            .unwrap();
+        assert_eq!(env.fixture_subprocess_bound(base), base);
+        for value in [
+            Duration::ZERO,
+            Duration::from_secs(2),
+            Duration::from_secs(901),
+            Duration::from_nanos(3_000_000_001),
+        ] {
+            assert!(
+                env.clone()
+                    .with_test_subprocess_patience(base, value)
+                    .is_err()
+            );
+        }
+        assert!(
+            env.with_test_subprocess_patience(Duration::ZERO, base)
+                .is_err()
+        );
     }
 }

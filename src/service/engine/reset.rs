@@ -219,7 +219,10 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 // (SH-886): the lane then defers to it, exactly like a lane
                 // another owner already held, and nothing is recreated.
                 let result = (|| {
-                    let workspace = match WorkspaceLock::acquire(
+                    let workspace = match WorkspaceLock::acquire_with_bound(
+                        self.ctx
+                            .env()
+                            .subprocess_bound(std::time::Duration::from_secs(30)),
                         &reset.lease.repository_path,
                         &reset.lease.story_id,
                     ) {

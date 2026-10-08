@@ -833,7 +833,9 @@ mod tests {
         refuse(&mut accepted, limits.peer_io, 503, Some("1"));
 
         client
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(storyhook_test_support::load_grace::graced_now(
+                Duration::from_secs(5),
+            )))
             .unwrap();
         let mut reader = BufReader::new(&mut client);
         let mut status_line = String::new();
@@ -881,7 +883,9 @@ mod tests {
 
         let mut client = StdTcpStream::connect(addr).unwrap();
         client
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(storyhook_test_support::load_grace::graced_now(
+                Duration::from_secs(5),
+            )))
             .unwrap();
         let mut reader = BufReader::new(&mut client);
         let mut status_line = String::new();

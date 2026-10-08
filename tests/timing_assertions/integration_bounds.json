@@ -1,0 +1,674 @@
+{
+  "tests/closure_cleanup.rs": {
+    "a_closed_story_in_a_readable_non_git_root_completes_without_a_warning: tick_closures": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "a_closed_story_without_local_resources_completes_without_a_checkout: tick_closures": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "an_unobservable_or_damaged_root_retains_its_cleanup_request: ResourceService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "an_unobservable_or_damaged_root_retains_its_cleanup_request: tick_closures": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "computed_epic_closure_enqueues_parent_and_child: tick_closures": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/continuation.rs": {
+    "provider_transport_hands_the_helper_this_process_own_binary: PythonRuntime::at": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "subprocess_patience on the owning Environment before the single call",
+      "reason": "The fixture expects literal JSON transport or an invalid-reply answer, not a timeout. Runtime routes the operation allowance through this Environment; helper30/150s inner protocol budgets remain unchanged. No operation is retried."
+    },
+    "provider_transport_passes_literal_json_on_stdin_and_reports_invalid_replies: PythonRuntime::at": {
+      "count": 2,
+      "kind": "patience",
+      "mechanism": "subprocess_patience on the owning Environment before the single call",
+      "reason": "The fixture expects literal JSON transport or an invalid-reply answer, not a timeout. Runtime routes the operation allowance through this Environment; helper30/150s inner protocol budgets remain unchanged. No operation is retried."
+    }
+  },
+  "tests/daemon_engine.rs": {
+    "a_run_with_no_linked_checkout_still_reconciles_via_the_home_fallback: reconcile_restart_tick": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "ServiceFixture::with_subprocess_patience; exactly one tick",
+      "reason": "The fixture expects an answered missing-window observation through the real ShellDispatcher. Its Environment supplies measured per-bound patience before the call. The single restart/steady tick and same-tick cross-project assertions remain unchanged; the harness never retries the tick."
+    },
+    "a_tick_reconciles_every_live_run_across_every_project: reconcile_restart_tick": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "ServiceFixture::with_subprocess_patience; exactly one tick",
+      "reason": "The fixture expects an answered missing-window observation through the real ShellDispatcher. Its Environment supplies measured per-bound patience before the call. The single restart/steady tick and same-tick cross-project assertions remain unchanged; the harness never retries the tick."
+    },
+    "halted_intent_without_a_reservation_survives_restart_then_steady_tick_finishes: reconcile_restart_tick": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "ServiceFixture::with_subprocess_patience; exactly one tick",
+      "reason": "The fixture expects an answered missing-window observation through the real ShellDispatcher. Its Environment supplies measured per-bound patience before the call. The single restart/steady tick and same-tick cross-project assertions remain unchanged; the harness never retries the tick."
+    },
+    "halted_intent_without_a_reservation_survives_restart_then_steady_tick_finishes: reconcile_tick": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "ServiceFixture::with_subprocess_patience; exactly one tick",
+      "reason": "The fixture expects an answered missing-window observation through the real ShellDispatcher. Its Environment supplies measured per-bound patience before the call. The single restart/steady tick and same-tick cross-project assertions remain unchanged; the harness never retries the tick."
+    },
+    "reconcile_restart_tick_quarantines_the_same_lane_as_interrupted: reconcile_restart_tick": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "ServiceFixture::with_subprocess_patience; exactly one tick",
+      "reason": "The fixture expects an answered missing-window observation through the real ShellDispatcher. Its Environment supplies measured per-bound patience before the call. The single restart/steady tick and same-tick cross-project assertions remain unchanged; the harness never retries the tick."
+    },
+    "reconcile_tick_quarantines_a_dead_window_through_the_real_dispatcher: reconcile_tick": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "ServiceFixture::with_subprocess_patience; exactly one tick",
+      "reason": "The fixture expects an answered missing-window observation through the real ShellDispatcher. Its Environment supplies measured per-bound patience before the call. The single restart/steady tick and same-tick cross-project assertions remain unchanged; the harness never retries the tick."
+    }
+  },
+  "tests/daemon_execution_path.rs": {
+    "execution_path_gate_worker: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/dispatch_tmux_context.rs": {
+    "engine_probe_case: ShellDispatcher::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "SH-806 outer answered-observation Patience",
+      "reason": "SH-806 deliberately forces real production probe timeouts. The inner tmux allowance remains unchanged; answer_patience retries only Unanswered, while Gone fails immediately and Alive completes. Fixture server readiness requires an answered own-PID probe."
+    },
+    "verification_callback_delivers_only_to_the_default_server_agent: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/dropped_cleanup.rs": {
+    "a_helper_crash_is_reported_once_across_retries: CleanupService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "active_workspace_lock_preserves_resources: CleanupService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "calling_worktree_cannot_be_removed: CleanupService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "cleanup_is_local_and_does_not_require_origin: CleanupService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "closure_worker_runs_with_verification_and_periodic_cleanup_disabled: tick_closures": {
+      "count": 2,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "conflicting_and_misdirected_history_never_authorizes_cleanup: CleanupService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "direct_completion_before_submission_releases_workspace_but_retains_work: CleanupService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "dirty_work_does_not_even_close_the_terminal: CleanupService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "dropped_before_submission_removes_worktree_and_retains_unmerged_branch: CleanupService::new": {
+      "count": 3,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "dropped_dirty_worktree_is_preserved: CleanupService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "duplicate_windows_and_inactive_panes_are_preserved: CleanupService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "exact_window_and_worktree_are_removed_while_other_window_survives: CleanupService::new": {
+      "count": 3,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "failed_closure_cleanup_is_durable_and_comments_do_not_repeat: CleanupService::new": {
+      "count": 2,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "reopened_stories_and_locked_or_detached_worktrees_are_preserved: CleanupService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "verified_completion_reclaims_a_live_window_and_previews_branch_removal: CleanupService::new": {
+      "count": 2,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/dropped_cleanup/reservations.rs": {
+    "a_computed_closed_parent_cleans_its_lease_and_fences_child_reopening: CleanupService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "a_released_old_generation_cannot_remove_a_reopened_workspace: CleanupService::new": {
+      "count": 2,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "pinned_paths_cannot_be_replaced_during_a_retry: CleanupService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "reservation_prevents_reopen_delete_reset_and_project_transfer_but_allows_comments: CleanupService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "reserve: ResourceService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "restart_reconciles_each_absent_pane_stage_and_releases_the_reservation: CleanupService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "retry_after_worktree_removal_before_receipt_is_idempotent: CleanupService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "settled_dirty_refusal_releases_ownership_without_discarding_work: CleanupService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/engine_adoption_identity.rs": {
+    "inspect: LiveDispatchInspector::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "production_invocation_canonicalizes_adoption_and_detects_a_respawned_pane: ShellDispatcher::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local allowances plus answered_probe",
+      "reason": "Positive identity observations receive fixture-local patience. answered_probe repeats only Unanswered; a real Alive or Gone answer returns immediately, including Gone after respawn. Readiness is observed before expiry and exhausted diagnostics preserve the last actual error."
+    }
+  },
+  "tests/engine_dispatcher.rs": {
+    "shell_dispatcher_appends_the_run_configuration_to_every_lane: ShellDispatcher::new": {
+      "count": 2,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "shell_dispatcher_fails_only_when_the_helper_does_not_answer_with_json: ShellDispatcher::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "shell_dispatcher_hands_every_engine_lane_the_tool_call_ceiling: ShellDispatcher::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "shell_dispatcher_invokes_the_autonomous_project_contract_and_relays_success: ShellDispatcher::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "shell_dispatcher_invokes_the_non_destructive_unclaim_contract: ShellDispatcher::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "shell_dispatcher_rejects_success_json_from_a_failed_process: ShellDispatcher::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "shell_dispatcher_rejects_success_json_from_a_failed_unclaim_process: ShellDispatcher::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "shell_dispatcher_rejects_success_without_a_cleanup_lease: ShellDispatcher::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "shell_dispatcher_relays_a_nonzero_refusal_instead_of_reclassifying_it_as_failure: ShellDispatcher::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/engine_reconcile/reset_ownership.rs": {
+    "reserve: ResourceService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "ctx_with_subprocess_patience for resource reservation observations",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/engine_reset/quiescent.rs": {
+    "successful_helper_waits_for_its_effect_child_before_releasing_reset_authority: ShellDispatcher::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/engine_shell_dispatcher_claim_reuse.rs": {
+    "full_auto_shell_dispatcher_signals_reuse_of_the_engine_owned_claim: ShellDispatcher::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/github_access.rs": {
+    "a_directory_inside_an_unrelated_checkout_is_not_a_checkout: fixture_repository": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "a_multistep_operation_refuses_to_reinterpret_identity_after_origin_changes: run_local_for_fixture": {
+      "count": 2,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "changed_origin_is_read_again_instead_of_registered_or_cached_identity: fixture_repository": {
+      "count": 2,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "fixture_repository: Repository::resolve_for_fixture": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "generic_observations_keep_filesystem_origins_off_the_network: fixture_repository": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "https_port_is_preserved_and_ssh_port_is_not_guessed: fixture_repository": {
+      "count": 2,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "linked_worktree_uses_its_actual_shared_origin: fixture_repository": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "missing_checkout_missing_origin_and_multiple_origins_fail_closed: fixture_repository": {
+      "count": 3,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "observations_pin_origin_and_cannot_write_remotes: OriginObservation::resolve_for_fixture": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "public_and_enterprise_origins_keep_their_destination: fixture_repository": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "raw_origin_is_not_changed_by_transport_rewrites: fixture_repository": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "unsupported_and_credential_bearing_origins_are_refused_without_secrets: fixture_repository": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/github_client.rs": {
+    "fixture_repository: Repository::resolve_for_fixture": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "production_pr_observation_validates_identity_and_response_shape: fixture_repository": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/project_recovery/worker.rs": {
+    "helper: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/repair_publication.rs": {
+    "malformed_receipt_is_retained_reported_and_not_retried_on_each_tick: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "missing_worktree_does_not_acknowledge_an_unpublished_commit: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "reassigned_worktree_cannot_publish_an_old_stories_request: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/resource_resolution.rs": {
+    "a_checkout_below_a_git_root_keeps_its_repository_and_branch_identity: ResourceService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "recorded_engine_provider_survives_a_custom_worktree_without_a_pane: ResourceService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/spawned_child_environment.rs": {
+    "story_inside_a_verifier_child_finds_the_daemon_where_its_parent_does: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "the_submit_door_hands_its_child_the_lease_and_the_github_credential_and_nothing_else: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "the_verifier_tells_its_child_the_state_home_beside_the_store: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/story_cleanup.rs": {
+    "an_open_story_is_refused_before_any_git_work: CleanupService::new": {
+      "count": 1,
+      "kind": "fixture",
+      "mechanism": "no subprocess invoked by the asserted path",
+      "reason": "The constructor is used for start/status without a dispatch, or for the explicit open-story refusal before Git work. The test asserts state/preflight behavior; constructing the object itself starts no subprocess."
+    },
+    "run: CleanupService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/story_reset/workspace.rs": {
+    "reserve_pinned_with: ResourceService::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "ctx_with_subprocess_patience for resource reservation observations",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/verification_control.rs": {
+    "real_shell_cancellation_reaches_the_owned_process_and_preserves_the_queue: ShellVerificationActuator::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/verification_progress_timeout.rs": {
+    "exercise: ShellVerificationActuator::with_paths_and_timing": {
+      "count": 1,
+      "kind": "proof",
+      "mechanism": "explicit injected deadline and cleanup proof",
+      "reason": "This helper deliberately injects idle/control/termination durations to exercise timeout, progress renewal or whole-group termination. Its timing arguments and related assertions remain unchanged; it does not inherit the new Environment patient declarations."
+    }
+  },
+  "tests/verification_queue.rs": {
+    "real_shell_actuator_reaps_the_leased_original_from_a_clean_replacement_checkout: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "shell_actuator: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "shell_cleanup_accepts_only_an_exact_complete_typed_receipt: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "shell_cleanup_rejects_nonzero_identity_version_and_postcondition_receipts: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "shell_cleanup_requires_a_latest_generation_lease_before_spawning: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "shell_notification_classifies_absence_by_the_helpers_reason_slug: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "shell_notification_passes_its_own_lease_to_the_helper: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "shell_notification_rejects_success_json_from_a_failed_process: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "shell_redispatch_asks_the_helper_for_a_resume_of_the_same_story: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "submit_actuator: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "the_shell_actuator_refuses_a_different_checkout_origin_before_running_github: ShellVerificationActuator::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    },
+    "the_shell_actuator_times_out_the_whole_group_after_allowing_cleanup: ShellVerificationActuator::with_paths_and_timing": {
+      "count": 1,
+      "kind": "proof",
+      "mechanism": "explicit injected deadline and cleanup proof",
+      "reason": "This helper deliberately injects idle/control/termination durations to exercise timeout, progress renewal or whole-group termination. Its timing arguments and related assertions remain unchanged; it does not inherit the new Environment patient declarations."
+    },
+    "time_out_hanging_helper: ShellVerificationActuator::with_paths_and_timing": {
+      "count": 1,
+      "kind": "proof",
+      "mechanism": "explicit injected deadline and cleanup proof",
+      "reason": "This helper deliberately injects idle/control/termination durations to exercise timeout, progress renewal or whole-group termination. Its timing arguments and related assertions remain unchanged; it does not inherit the new Environment patient declarations."
+    }
+  },
+  "tests/verification_queue/completed_capture.rs": {
+    "interrupted_capture_preserves_completed_cleanup_results: ShellVerificationActuator::with_paths_and_timing": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "explicit caller-owned timing arguments",
+      "reason": "The caller already computes graced idle/control/cleanup allowances before constructing this actuator. Any separately supplied cleanup proof value remains literal. This census does not overwrite or rescale explicit with_paths_and_timing arguments."
+    }
+  },
+  "tests/verification_queue/reconcile_hold.rs": {
+    "the_shell_probe_reads_a_real_story_window: ShellVerificationActuator::new": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/verification_retry_shell.rs": {
+    "retry_shell_worker: ShellVerificationActuator::with_paths_and_timing": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "explicit caller-owned timing arguments",
+      "reason": "The caller already computes graced idle/control/cleanup allowances before constructing this actuator. Any separately supplied cleanup proof value remains literal. This census does not overwrite or rescale explicit with_paths_and_timing arguments."
+    }
+  },
+  "tests/verification_withdrawal.rs": {
+    "a_verifier_killed_by_signal_before_answering_is_retryable_and_named_by_signal: ShellVerificationActuator::with_paths_and_timing": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "explicit caller-owned timing arguments",
+      "reason": "The caller already computes graced idle/control/cleanup allowances before constructing this actuator. Any separately supplied cleanup proof value remains literal. This census does not overwrite or rescale explicit with_paths_and_timing arguments."
+    },
+    "run_with_gate: ShellVerificationActuator::with_paths_and_timing": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "explicit caller-owned timing arguments",
+      "reason": "The caller already computes graced idle/control/cleanup allowances before constructing this actuator. Any separately supplied cleanup proof value remains literal. This census does not overwrite or rescale explicit with_paths_and_timing arguments."
+    }
+  },
+  "tests/verifier_foreign_checkout.rs": {
+    "a_checkout_with_no_scripts_tree_is_verified_from_the_daemons_own_bundle: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/verifier_mirror_isolation.rs": {
+    "record_actuator_children: ShellVerificationActuator::with_paths": {
+      "count": 1,
+      "kind": "patience",
+      "mechanism": "fixture-local exact-duration allowances",
+      "reason": "The caller expects its controlled subprocess protocol/identity answer. Its explicitly patient Environment is set before the single production invocation; effects are not retried. Individual production durations retain their idle values and receive only their own measured allowance. Transitive non-Environment helpers require explicit forwarded bounds, as reviewed alongside src_bounds.json."
+    }
+  },
+  "tests/verifier_observability.rs": {
+    "engine_status_preserves_run_and_exposes_the_halted_verifier: ShellDispatcher::new": {
+      "count": 1,
+      "kind": "fixture",
+      "mechanism": "no subprocess invoked by the asserted path",
+      "reason": "The constructor is used for start/status without a dispatch, or for the explicit open-story refusal before Git work. The test asserts state/preflight behavior; constructing the object itself starts no subprocess."
+    }
+  }
+}

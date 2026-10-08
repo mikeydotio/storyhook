@@ -32,16 +32,19 @@ fn full_auto_shell_dispatcher_signals_reuse_of_the_engine_owned_claim() {
     let script = root.path().join("story.sh");
     write_claim_guard_fixture(&script);
 
-    let outcome = ShellDispatcher::new(&script, Environment::at(home))
-        .dispatch(DispatchRequest {
-            project: "alpha".to_string(),
-            story: "ALPHA-7".to_string(),
-            agent: EngineAgent::Codex,
-            model: None,
-            effort: None,
-            speed: None,
-        })
-        .unwrap();
+    let outcome = ShellDispatcher::new(
+        &script,
+        storyhook_test_support::subprocess_patience(Environment::at(home)),
+    )
+    .dispatch(DispatchRequest {
+        project: "alpha".to_string(),
+        story: "ALPHA-7".to_string(),
+        agent: EngineAgent::Codex,
+        model: None,
+        effort: None,
+        speed: None,
+    })
+    .unwrap();
 
     assert_eq!(
         outcome.state,

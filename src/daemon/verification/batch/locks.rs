@@ -24,7 +24,20 @@ impl MemberLocks {
     /// Tries each member's lock in ascending story number, never waiting.
     /// Answers the locks it took and, in the same order, the members whose
     /// lock another operation holds.
+    #[cfg(test)]
     pub(super) fn acquire(
+        checkout: &Path,
+        members: &[(StoryNo, String)],
+    ) -> Result<(Self, Vec<String>), AppError> {
+        Self::acquire_with_bound(
+            storyhook_test_support::load_grace::graced_now(std::time::Duration::from_secs(30)),
+            checkout,
+            members,
+        )
+    }
+
+    pub(super) fn acquire_with_bound(
+        bound: std::time::Duration,
         checkout: &Path,
         members: &[(StoryNo, String)],
     ) -> Result<(Self, Vec<String>), AppError> {
@@ -33,7 +46,7 @@ impl MemberLocks {
         let mut held = BTreeMap::new();
         let mut busy = Vec::new();
         for (_, story_id) in ordered {
-            match WorkspaceLock::try_acquire(checkout, story_id)? {
+            match WorkspaceLock::try_acquire_with_bound(bound, checkout, story_id)? {
                 Some(lock) => {
                     held.insert(story_id.clone(), lock);
                 }

@@ -2169,7 +2169,9 @@ fn the_shell_actuator_refuses_a_different_checkout_origin_before_running_github(
         last_checked_at: None,
     };
     let env_root = scratch_dir();
-    let actuator = ShellVerificationActuator::new(Environment::at(env_root.path()));
+    let actuator = ShellVerificationActuator::new(storyhook_test_support::subprocess_patience(
+        Environment::at(env_root.path()),
+    ));
 
     for (origin_url, expected_origin) in [
         (
@@ -2839,7 +2841,7 @@ fn shell_cleanup_requires_a_latest_generation_lease_before_spawning() {
     let mut candidate = cleanup_candidate(&fixture, root.path());
     candidate.cleanup_lease = None;
     let actuator = ShellVerificationActuator::with_paths(
-        Environment::at(root.path()),
+        storyhook_test_support::subprocess_patience(Environment::at(root.path())),
         root.path().join("must-not-run"),
         PathBuf::from("/usr/bin/true"),
     );
@@ -2860,7 +2862,7 @@ fn shell_notification_passes_its_own_lease_to_the_helper() {
         captured.display()
     )).unwrap();
     let actuator = ShellVerificationActuator::with_paths(
-        Environment::at(root.path()),
+        storyhook_test_support::subprocess_patience(Environment::at(root.path())),
         helper,
         PathBuf::from("/usr/bin/true"),
     );
@@ -2894,7 +2896,7 @@ fn shell_notification_rejects_success_json_from_a_failed_process() {
     )
     .unwrap();
     let actuator = ShellVerificationActuator::with_paths(
-        Environment::at(root.path()),
+        storyhook_test_support::subprocess_patience(Environment::at(root.path())),
         helper,
         PathBuf::from("/usr/bin/true"),
     );
@@ -2921,7 +2923,7 @@ fn shell_notification_classifies_absence_by_the_helpers_reason_slug() {
     let candidate = cleanup_candidate(&fixture, root.path());
     let helper = root.path().join("notify-helper.sh");
     let actuator = ShellVerificationActuator::with_paths(
-        Environment::at(root.path()),
+        storyhook_test_support::subprocess_patience(Environment::at(root.path())),
         helper.clone(),
         PathBuf::from("/usr/bin/true"),
     );
@@ -3007,7 +3009,7 @@ fn shell_redispatch_asks_the_helper_for_a_resume_of_the_same_story() {
     )
     .unwrap();
     let actuator = ShellVerificationActuator::with_paths(
-        Environment::at(root.path()),
+        storyhook_test_support::subprocess_patience(Environment::at(root.path())),
         helper.clone(),
         PathBuf::from("/usr/bin/true"),
     );
@@ -3273,7 +3275,7 @@ fn write_refusing_submit_helper(root: &std::path::Path, body: &str) -> PathBuf {
 
 fn submit_actuator(root: &std::path::Path, helper: PathBuf) -> ShellVerificationActuator {
     ShellVerificationActuator::with_paths(
-        Environment::at(root),
+        storyhook_test_support::subprocess_patience(Environment::at(root)),
         helper,
         PathBuf::from("/usr/bin/true"),
     )
@@ -3446,7 +3448,7 @@ fn shell_cleanup_accepts_only_an_exact_complete_typed_receipt() {
     let candidate = cleanup_candidate(&fixture, root.path());
     let helper = write_receipt_helper(root.path(), ".", 0);
     let actuator = ShellVerificationActuator::with_paths(
-        Environment::at(root.path()),
+        storyhook_test_support::subprocess_patience(Environment::at(root.path())),
         helper,
         PathBuf::from("/usr/bin/true"),
     );
@@ -3471,7 +3473,7 @@ fn shell_cleanup_rejects_nonzero_identity_version_and_postcondition_receipts() {
         let candidate = cleanup_candidate(&fixture, root.path());
         let helper = write_receipt_helper(root.path(), mutation, status);
         let actuator = ShellVerificationActuator::with_paths(
-            Environment::at(root.path()),
+            storyhook_test_support::subprocess_patience(Environment::at(root.path())),
             helper,
             PathBuf::from("/usr/bin/true"),
         );
@@ -3577,7 +3579,7 @@ fn real_shell_actuator_reaps_the_leased_original_from_a_clean_replacement_checko
 
     let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/story/bin/story.sh");
     let actuator = ShellVerificationActuator::with_paths(
-        fixture.env().clone(),
+        storyhook_test_support::subprocess_patience(fixture.env().clone()),
         helper,
         story_binary().to_path_buf(),
     );
@@ -5424,7 +5426,7 @@ fn shell_actuator(
     tools: &Path,
 ) -> ShellVerificationActuator {
     ShellVerificationActuator::with_paths(
-        daemon_env.clone(),
+        storyhook_test_support::subprocess_patience(daemon_env.clone()),
         checkout.join("unused-helper"),
         PathBuf::from("/usr/bin/true"),
     )

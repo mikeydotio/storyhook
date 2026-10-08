@@ -81,6 +81,7 @@ struct Side {
 
 pub(super) fn read_submission(
     candidate: &VerificationCandidate,
+    environment: &crate::env::Environment,
     deadline: Instant,
     cancellation: &Cancellation,
 ) -> Result<SubmissionObservation, AppError> {
@@ -89,7 +90,8 @@ pub(super) fn read_submission(
     })?;
     let expected = parse_pr_url(&original.url)?;
     let cancelled = || cancellation.is_cancelled();
-    let repository = Repository::resolve_controlled(&candidate.checkout, deadline, &cancelled)?;
+    let repository =
+        Repository::resolve_controlled(&candidate.checkout, environment, deadline, &cancelled)?;
     let identity = repository.identity();
     if !expected.host.eq_ignore_ascii_case(&identity.host)
         || !expected.owner.eq_ignore_ascii_case(&identity.owner)
@@ -152,11 +154,12 @@ fn validate_metadata(
 pub fn inspect_submission(
     candidate: &VerificationCandidate,
     retained_head: &str,
+    environment: &crate::env::Environment,
     deadline: Instant,
     cancellation: Cancellation,
 ) -> Result<BoundInspection, AppError> {
     require_pinned(retained_head, "retained integration submission")?;
-    let submission = read_submission(candidate, deadline, &cancellation)?;
+    let submission = read_submission(candidate, environment, deadline, &cancellation)?;
     if submission.head != retained_head {
         return Ok(BoundInspection::Held(
             "the original submitted head changed; integration cannot adopt its replacement".into(),

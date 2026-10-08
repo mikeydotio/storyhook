@@ -1,10 +1,9 @@
 //! Git object transport pinned to the validated HTTPS destination.
 
-use super::{Repository, git_read, parse_origin};
+use super::{Repository, git_read_with_bound, parse_origin};
 use crate::env::{git_env, spawn_env};
 use crate::error::AppError;
 use crate::process::run_captured_private;
-use std::time::Duration;
 
 impl Repository {
     /// Runs clone, fetch, push or ls-remote for origin with gh's credential helper.
@@ -15,7 +14,7 @@ impl Repository {
                 self.qualified()
             ))
         };
-        if Self::resolve(&self.checkout)?.identity != self.identity {
+        if Self::resolve_with_bounds(&self.checkout, self.bounds)?.identity != self.identity {
             return Err(refuse("origin changed; resolve again before retrying"));
         }
         let operation = arguments.first().map(String::as_str).unwrap_or_default();
@@ -70,7 +69,7 @@ impl Repository {
             vec!["remote", "get-url", "--all", "origin"],
             vec!["remote", "get-url", "--push", "--all", "origin"],
         ] {
-            let answer = git_read(&self.checkout, &flags)?;
+            let answer = git_read_with_bound(self.bounds.read, &self.checkout, &flags)?;
             let urls: Vec<_> = answer.lines().collect();
             if urls.len() != 1
                 || parse_origin(urls[0])
@@ -81,7 +80,11 @@ impl Repository {
             }
         }
         let destination = self.transport_url();
-        let effective = git_read(&self.checkout, &["ls-remote", "--get-url", &destination])?;
+        let effective = git_read_with_bound(
+            self.bounds.read,
+            &self.checkout,
+            &["ls-remote", "--get-url", &destination],
+        )?;
         if effective.trim() != destination {
             return Err(refuse(
                 "an inherited URL rewrite changes the HTTPS destination",
@@ -94,13 +97,12 @@ impl Repository {
             "--get-regexp",
             "^url\\..*\\.pushinsteadof$",
         ]);
-        let rewrites =
-            run_captured_private(rewrites, Duration::from_secs(30)).map_err(|error| {
-                refuse(&format!(
-                    "cannot read push URL rewrites: {}",
-                    error.detail()
-                ))
-            })?;
+        let rewrites = run_captured_private(rewrites, self.bounds.read).map_err(|error| {
+            refuse(&format!(
+                "cannot read push URL rewrites: {}",
+                error.detail()
+            ))
+        })?;
         if !rewrites.status.success() && rewrites.status.code() != Some(1) {
             return Err(refuse("cannot read push URL rewrites"));
         }
@@ -132,7 +134,8 @@ impl Repository {
             // mappings also work on Git 2.25, which cannot clear URL lists with
             // empty values. Validate the mapped fetch and push destinations;
             // an existing competing rewrite must never win silently.
-            let configured = git_read(
+            let configured = git_read_with_bound(
+                self.bounds.read,
                 &self.checkout,
                 &[
                     "config",
@@ -164,7 +167,7 @@ impl Repository {
             ] {
                 let mut query: Vec<_> = pin.iter().map(String::as_str).collect();
                 query.extend(flags);
-                let effective = git_read(&self.checkout, &query)?;
+                let effective = git_read_with_bound(self.bounds.read, &self.checkout, &query)?;
                 if effective.lines().collect::<Vec<_>>() != [destination.as_str()] {
                     return Err(refuse(
                         "cannot pin origin to HTTPS; remove competing URL rewrites",
@@ -204,7 +207,7 @@ impl Repository {
                 self.identity.host
             ))
             .args(args);
-        let output = run_captured_private(command, Duration::from_secs(120)).map_err(|error| {
+        let output = run_captured_private(command, self.bounds.operation).map_err(|error| {
             AppError::GithubApi(format!(
                 "Git {operation} for {}: {}; operation was not retried",
                 self.qualified(),

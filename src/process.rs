@@ -46,7 +46,8 @@ const ORPHAN_REAP_WAIT: Duration = Duration::from_secs(5);
 /// that a timeout stopped a process this module's group kill reached.
 #[cfg(test)]
 pub(crate) fn pid_disappears(pid: libc::pid_t) -> bool {
-    let deadline = Instant::now() + ORPHAN_REAP_WAIT;
+    let deadline =
+        Instant::now() + storyhook_test_support::load_grace::graced_now(ORPHAN_REAP_WAIT);
     loop {
         // SAFETY: signal 0 only asks whether the pid exists.
         if unsafe { libc::kill(pid, 0) } != 0 {
@@ -884,7 +885,8 @@ mod tests {
             storyhook_test_support::load_grace::graced_now(Duration::from_secs(10)),
             TerminationPolicy::Kill,
             |pid| {
-                let deadline = Instant::now() + Duration::from_secs(5);
+                let deadline = Instant::now()
+                    + storyhook_test_support::load_grace::graced_now(Duration::from_secs(5));
                 // A zombie no longer answers `getpgid`; that is the condition
                 // the real registration trips over.
                 while unsafe { libc::getpgid(libc::pid_t::try_from(pid).unwrap()) } != -1 {

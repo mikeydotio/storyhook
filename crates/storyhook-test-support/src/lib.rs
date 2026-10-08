@@ -56,6 +56,7 @@ mod server;
 mod service;
 mod source_scan;
 mod store;
+mod subprocess;
 mod tailnet;
 mod workspace;
 
@@ -85,5 +86,6 @@ pub use server::{
 pub use service::{FIXTURE_NOW, ServiceFixture, default_states, default_types};
 pub use source_scan::without_rust_comments;
 pub use store::project_id_at;
+pub use subprocess::subprocess_patience;
 pub use tailnet::path_without_tailscale;
 pub use workspace::StoryWorkspace;

@@ -92,7 +92,8 @@ int main(int argc, char **argv) {
         self.root = Path(tempfile.mkdtemp(prefix="sh748-view-", dir="/tmp"))
         self.addCleanup(shutil.rmtree, self.root)
         self.socket = self.root / "tmux.sock"
-        self.env = dict(os.environ, HOME=str(self.root), STORYHOOK_VERIFIER_MIRROR="1")
+        self.env = dict(os.environ, HOME=str(self.root), STORYHOOK_VERIFIER_MIRROR="1",
+                        STORYHOOK_VERIFIER_AGENT="1")
         for key in ("TMUX", "TMUX_PANE", "STORYHOOK_ACTIVITY_LOG_DIR", "STORYHOOK_ACTIVITY_CONTEXT"):
             self.env.pop(key, None)
         tmux = shutil.which("tmux")
@@ -244,16 +245,17 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         """
         rows = self.panes(project)
         self.assertTrue(rows, "project verification window is absent")
-        reader = [row for row in rows if row["start"] == row["command"]] or rows
+        reader = [row for row in rows if row["name"] == "verification"
+                  and row["command"] and row["start"] == row["command"]] or rows
         return f"{reader[0]['window']}|{reader[0]['pane']}|{reader[0]['pid']}"
 
     def panes(self, project="one"):
-        """Every pane of the project's verification window, left to right."""
-        listing = self.tmux("list-panes", "-t", f"={project}:=verification", "-F",
+        """Every pane of the project session, including retained user windows."""
+        listing = self.tmux("list-panes", "-s", "-t", f"={project}", "-F",
                             "#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_left}\t#{pane_dead}"
-                            "\t#{pane_current_path}\t#{pane_start_command}\t#{@storyhook-command}",
+                            "\t#{pane_current_path}\t#{pane_start_command}\t#{@storyhook-command}\t#{window_name}",
                             check=False)
-        keys = ("window", "pane", "pid", "left", "dead", "path", "start", "command")
+        keys = ("window", "pane", "pid", "left", "dead", "path", "start", "command", "name")
         # The harness strips its output, so the last row may lose empty fields.
         rows = [dict(zip(keys, line.split("\t") + [""] * len(keys)))
                 for line in listing.splitlines() if line.startswith("@")]
@@ -422,6 +424,8 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         self.assertIn("verification-pending-", self.tmux("list-windows", "-t", "=one", "-F", "#{window_name}"))
         self.reconcile()
         self.assertNotEqual(first, self.identity())
+        self.assertIn("verification-pending-", self.tmux("list-windows", "-t", "=one", "-F", "#{window_name}"))
+        self.reconcile()  # Retirement of the interrupted allocation is a separate pass.
         self.assertEqual(self.tmux("list-windows", "-t", "=one", "-F", "#{window_name}"), "verification")
 
     def test_allocation_owns_only_the_new_window_before_mark_can_run(self):
@@ -457,6 +461,10 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         self.assertEqual(self.tmux("show-options", "-wv", "-t", allocated[0], "@storyhook-journal"), owner)
         after = self.tmux("list-windows", "-t", "=one", "-F", "#{window_id}|#{window_name}|#{@storyhook-journal}")
         self.assertEqual("\n".join(after.splitlines()[:2]), before)
+        self.reconcile()
+        after = self.tmux("list-windows", "-t", "=one", "-F", "#{window_id}|#{window_name}|#{@storyhook-journal}")
+        self.assertEqual("\n".join(after.splitlines()[:2]), before)
+        self.assertEqual(len(after.splitlines()), 4, "allocation does not also retire an old window")
         self.reconcile()
         after = self.tmux("list-windows", "-t", "=one", "-F", "#{window_id}|#{window_name}|#{@storyhook-journal}")
         self.assertEqual("\n".join(after.splitlines()[:2]), before)
@@ -561,7 +569,7 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         self.assertEqual(narration, [], "a healthy reconcile journals nothing")
 
     @unittest.skipUnless(os.environ.get("STORY_VIEW_TEST_BINARY"), "run via cargo test --test verify_window for production daemon")
-    def test_production_daemon_opens_the_verifier_agent_beside_the_reader(self):
+    def test_production_daemon_opens_the_verifier_agent_in_its_own_window(self):
         # SH-822: the daemon resolves `claude` on its own PATH and the plugin
         # root that carries agents/verifier.md, and hands the view the launch.
         import json
@@ -595,8 +603,9 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         self.assertIn("--model opus --effort xhigh", output)
         self.assertIn(f"--plugin-dir {plugin}", output)
         self.assertEqual(Path(agent["path"]).resolve(), project.resolve())
-        self.assertEqual([row["pane"] for row in self.panes(slug)][0], agent["pane"],
-                         "the agent is the leftmost pane")
+        self.assertEqual(agent["name"], "verifier")
+        self.assertEqual(len([row for row in self.panes(slug)
+                              if row["window"] == agent["window"]]), 1)
         self.stop_daemon(daemon)
         journal = [json.loads(line) for path in directory.glob("*.jsonl")
                    for line in path.read_text().splitlines() if line.strip()]
@@ -650,7 +659,7 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         self.assertIn("ownership", result.stderr)
         self.assertEqual(other, self.identity("other"))
 
-    # --- SH-822: the Verifier Agent pane beside the reader -------------------
+    # --- SH-861: reader and agent occupy separate owned windows -------------
 
     def launch(self):
         """The agent argv as the daemon composes it, with the fake provider."""
@@ -671,16 +680,25 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         self.assertEqual(len(self.panes()), 1)
         self.assertEqual(self.agents(), [])
 
-    def test_the_agent_opens_left_of_the_reader_in_the_checkout_on_the_next_pass(self):
+    def test_fresh_view_uses_two_detached_single_pane_windows(self):
+        self.tmux("new-session", "-d", "-s", "one", "-n", "personal", "sleep", "2147483647")
+        focused = self.tmux("display-message", "-p", "-t", "=one", "#{window_id}:#{pane_id}")
         self.reconcile(agent=self.launch())
-        self.assertEqual(len(self.panes()), 1, "one structural change per pass: the window first")
+        self.assertEqual(len(self.panes()), 2, "one structural change per pass: the reader first")
         reader = self.identity()
         self.reconcile(agent=self.launch())
         agent, after = self.with_agent()
         self.assertEqual(reader, after, "adding the agent never replaces the reader")
         panes = self.panes()
-        self.assertEqual([row["pane"] for row in panes], [agent["pane"], reader.split("|")[1]],
-                         "agent on the left, reader on the right")
+        owned = [row for row in panes if row["name"] in ("verification", "verifier")]
+        self.assertEqual({row["name"] for row in owned}, {"verification", "verifier"})
+        self.assertEqual(len(owned), 2)
+        self.assertNotEqual(agent["window"], reader.split("|")[0])
+        self.assertEqual(focused, self.tmux("display-message", "-p", "-t", "=one", "#{window_id}:#{pane_id}"))
+        owners = [self.tmux("show-option", "-w", "-v", "-t", row["window"],
+                            "@storyhook-journal") for row in owned]
+        self.assertTrue(owners[0])
+        self.assertEqual(owners[0], owners[1])
         self.assertEqual(Path(agent["path"]).resolve(), self.checkout.resolve())
         output = self.wait_for_output(agent["pane"], "AGENT")
         self.assertIn("AGENT --agent story:verifier --model opus --effort xhigh", output)
@@ -718,7 +736,7 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("ownership conflict", result.stderr)
 
-    def test_a_dead_reader_beside_a_live_agent_is_replaced_without_touching_the_agent(self):
+    def test_dead_reader_window_is_replaced_without_touching_the_agent(self):
         agent, reader = self.with_agent()
         window, pane, pid = reader.split("|")
         self.tmux("set-window-option", "-t", window, "remain-on-exit", "on")
@@ -730,12 +748,12 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         self.reconcile(agent=self.launch())
         replaced = self.identity()
         self.assertNotEqual(reader, replaced)
-        self.assertEqual(replaced.split("|")[0], window, "the window, and so the agent, survives")
+        self.assertNotEqual(replaced.split("|")[0], window, "only the reader window is replaced")
         self.assertEqual(self.agents(), [agent])
-        self.assertEqual([row["pane"] for row in self.panes()], [agent["pane"], replaced.split("|")[1]],
-                         "the dead reader is gone and the new one is right of the agent")
+        self.assertEqual({row["pane"] for row in self.panes()},
+                         {agent["pane"], replaced.split("|")[1]})
 
-    def test_a_closed_reader_beside_a_live_agent_returns_beside_it(self):
+    def test_closed_reader_returns_in_a_separate_window(self):
         agent, reader = self.with_agent()
         self.tmux("kill-pane", "-t", reader.split("|")[1])
         self.reconcile(agent=self.launch())
@@ -744,19 +762,21 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         self.assertEqual(self.agents(), [agent])
         self.assertEqual(len(self.panes()), 2)
 
-    def test_a_missing_agent_returns_only_after_the_cooldown(self):
+    def test_closed_agent_window_respects_persisted_cooldown(self):
         agent, reader = self.with_agent()
-        self.tmux("kill-pane", "-t", agent["pane"])
+        self.tmux("kill-window", "-t", agent["window"])
         self.reconcile(agent=self.launch())
         self.assertEqual(self.agents(), [], "a just-created agent is not restarted within the cooldown")
         window = reader.split("|")[0]
-        self.tmux("set-option", "-w", "-t", window, "@storyhook-agent-started",
+        owner = self.tmux("show-option", "-w", "-v", "-t", window, "@storyhook-journal")
+        session = self.tmux("display-message", "-p", "-t", "=one", "#{session_id}")
+        self.tmux("set-option", "-t", session, "@storyhook-agent-started-" + owner,
                   str(int(time.time()) - 61))
         self.reconcile(agent=self.launch())
         self.assertEqual(len(self.agents()), 1)
         self.assertEqual(reader, self.identity())
 
-    def test_an_interrupted_agent_creation_is_not_duplicated(self):
+    def test_duplicate_legacy_agents_are_a_conflict_and_never_killed(self):
         import hashlib
         self.reconcile(agent=self.launch())
         reader = self.identity()
@@ -768,11 +788,10 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
                       "/bin/sh", "-c", 'exec "$@"', "storyhook-verifier:" + owner, str(self.agent))
         agents = self.agents()
         self.assertEqual(len(agents), 2)
-        self.reconcile(agent=self.launch())
-        self.assertEqual([row["pane"] for row in self.agents()],
-                         [min((row["pane"] for row in agents), key=lambda pane: int(pane[1:]))])
-        self.reconcile(agent=self.launch())
-        self.assertEqual(len(self.agents()), 1, "a recognized agent is never created twice")
+        result = self.reconcile(agent=self.launch(), check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ownership conflict", result.stderr)
+        self.assertEqual(self.agents(), agents, "no live duplicate is killed")
 
     def test_the_agent_waits_for_enter_after_it_exits(self):
         self.agent.write_text('#!/bin/sh\nprintf "AGENT %s\\n" "$*"\nexit 3\n')
@@ -786,6 +805,188 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         self.assertEqual([row["pane"] for row in self.agents()], [pane], "the pane stays; no restart loop")
         self.tmux("send-keys", "-t", pane, "Enter")
         self.wait_for_output(pane, "AGENT --agent story:verifier", count=2)
+
+    def legacy_agent(self):
+        """An SH-822 reader + fake live agent, created only on our private server."""
+        self.reconcile()
+        reader = self.identity()
+        owner = self.tmux("show-option", "-w", "-v", "-t", reader.split("|")[0], "@storyhook-journal")
+        self.tmux("set-option", "-w", "-t", reader.split("|")[0], "@storyhook-agent-started",
+                  str(int(time.time())))
+        self.tmux("split-window", "-d", "-h", "-t", reader.split("|")[1],
+                  "/bin/sh", "-c", 'while :; do "$@"; read -r _ || exit; done',
+                  "storyhook-verifier:" + owner, *self.launch())
+        agent = self.agents()[0]
+        self.wait_for_output(agent["pane"], "AGENT")
+        return reader, agent
+
+    def test_legacy_split_migration_preserves_live_agent_pid(self):
+        reader, agent = self.legacy_agent()
+        start = self.process_start(agent["pid"])
+        self.assertTrue(start)
+        self.reconcile(agent=self.launch())
+        migrated = self.agents()[0]
+        self.assertEqual((migrated["pane"], migrated["pid"]), (agent["pane"], agent["pid"]))
+        self.assertEqual(self.process_start(agent["pid"]), start)
+        self.assertEqual(migrated["name"], "verifier")
+        self.assertNotEqual(migrated["window"], agent["window"])
+        self.assertEqual(self.identity(), reader)
+        self.assertEqual(len(self.panes()), 2)
+        self.reconcile(agent=self.launch())
+        self.assertEqual(self.agents(), [migrated])
+
+    def test_dead_reader_preserves_user_pane_in_released_window(self):
+        self.reconcile()
+        reader = self.identity()
+        window, pane, pid = reader.split("|")
+        user = self.tmux("split-window", "-d", "-t", pane, "-P", "-F", "#{pane_id}:#{pane_pid}",
+                         "sleep", "2147483647")
+        self.tmux("set-window-option", "-t", window, "remain-on-exit", "on")
+        os.kill(int(pid), 15)
+        end = time.monotonic() + self.deadline
+        while self.tmux("display-message", "-p", "-t", pane, "#{pane_dead}") != "1":
+            self.assertLess(time.monotonic(), end)
+            time.sleep(.02)
+        self.reconcile()
+        retained = self.tmux("display-message", "-p", "-t", window, "#{window_name}")
+        self.assertTrue(retained.startswith("verification-retained-"))
+        self.assertEqual(self.tmux("show-option", "-w", "-q", "-v", "-t", window, "@storyhook-journal"), "")
+        self.assertEqual(len(self.panes()), 2, "release is the only structural change this pass")
+        self.reconcile()
+        self.assertNotEqual(self.identity().split("|")[0], window)
+        self.assertEqual(self.tmux("display-message", "-p", "-t", user.split(":")[0],
+                                  "#{pane_id}:#{pane_pid}"), user)
+        self.assertEqual(self.tmux("display-message", "-p", "-t", pane, "#{pane_dead}"), "1")
+
+    def test_disabled_agent_preserves_legacy_agent_without_creation(self):
+        reader, agent = self.legacy_agent()
+        self.env["STORYHOOK_VERIFIER_AGENT"] = "0"
+        self.reconcile(agent=self.launch())
+        self.assertEqual(self.identity(), reader)
+        self.assertEqual(self.agents(), [agent])
+        self.assertEqual({row["name"] for row in self.panes()}, {"verification"})
+        self.reconcile("two", agent=self.launch())
+        self.reconcile("two", agent=self.launch())
+        self.assertEqual(len(self.panes("two")), 1)
+        self.assertEqual(self.agents("two"), [])
+
+    def test_verifier_name_conflicts_preserve_foreign_and_duplicate_windows(self):
+        self.reconcile()
+        foreign = self.tmux("new-window", "-d", "-t", "=one:", "-n", "verifier", "-P",
+                            "-F", "#{window_id}", "sleep", "2147483647")
+        before = self.panes()
+        result = self.reconcile(agent=self.launch(), check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ownership conflict", result.stderr)
+        self.assertEqual(before, self.panes())
+        self.tmux("rename-window", "-t", foreign, "personal")
+        self.reconcile(agent=self.launch())
+        agent = self.agents()[0]
+        owner = self.tmux("show-option", "-w", "-v", "-t", agent["window"], "@storyhook-journal")
+        duplicate = self.tmux("new-window", "-d", "-t", "=one:", "-n", "verifier", "-P",
+                              "-F", "#{window_id}", "sleep", "2147483647")
+        self.tmux("set-option", "-w", "-t", duplicate, "@storyhook-journal", owner)
+        before = self.panes()
+        result = self.reconcile(agent=self.launch(), check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ownership conflict", result.stderr)
+        self.assertEqual(before, self.panes())
+
+    def test_legacy_agent_without_reader_renames_without_restarting(self):
+        reader, agent = self.legacy_agent()
+        self.tmux("kill-pane", "-t", reader.split("|")[1])
+        self.reconcile(agent=self.launch())
+        moved = self.agents()[0]
+        self.assertEqual((moved["pane"], moved["pid"], moved["window"]),
+                         (agent["pane"], agent["pid"], agent["window"]))
+        self.assertEqual(moved["name"], "verifier")
+        self.assertEqual(len(self.panes()), 1)
+        self.reconcile(agent=self.launch())
+        self.assertEqual(len(self.panes()), 2)
+        self.assertNotEqual(self.identity().split("|")[0], agent["window"])
+
+    def test_disabled_legacy_agent_survives_reader_release_and_later_migration(self):
+        reader, agent = self.legacy_agent()
+        window, pane, pid = reader.split("|")
+        self.tmux("set-window-option", "-t", window, "remain-on-exit", "on")
+        os.kill(int(pid), 15)
+        end = time.monotonic() + self.deadline
+        while self.tmux("display-message", "-p", "-t", pane, "#{pane_dead}") != "1":
+            self.assertLess(time.monotonic(), end)
+            time.sleep(.02)
+        self.env["STORYHOOK_VERIFIER_AGENT"] = "0"
+        self.reconcile(agent=self.launch())
+        self.reconcile(agent=self.launch())
+        self.assertEqual(len(self.agents()), 1)
+        self.assertNotEqual(self.identity().split("|")[0], window)
+        self.assertFalse([row for row in self.panes() if row["name"] == "verifier"])
+        self.env["STORYHOOK_VERIFIER_AGENT"] = "1"
+        self.reconcile(agent=self.launch())
+        moved = self.agents()[0]
+        self.assertEqual((moved["pane"], moved["pid"]), (agent["pane"], agent["pid"]))
+        self.assertEqual(moved["name"], "verifier")
+        self.assertEqual(self.tmux("show-option", "-w", "-q", "-v", "-t", window,
+                                  "@storyhook-journal"), "")
+
+
+    def test_cleanup_retires_one_pending_window_before_agent_allocation(self):
+        self.reconcile()
+        window = self.identity().split("|")[0]
+        owner = self.tmux("show-option", "-w", "-v", "-t", window, "@storyhook-journal")
+        for suffix in ("first", "second"):
+            pending = self.tmux("new-window", "-d", "-t", "=one:", "-n", "verification-pending-" + suffix,
+                                "-P", "-F", "#{window_id}", "sleep", "2147483647")
+            self.tmux("set-option", "-w", "-t", pending, "@storyhook-journal", owner)
+        for expected in (2, 1):
+            self.reconcile(agent=self.launch())
+            self.assertEqual(len(self.panes()), expected)
+            self.assertEqual(self.agents(), [])
+        self.reconcile(agent=self.launch())
+        self.assertEqual(len(self.agents()), 1)
+
+
+class ReleasedViewTests(unittest.TestCase):
+    def test_restored_released_reader_requires_exact_release_witness(self):
+        # Exercise the restoration boundary without a server or process probe.
+        from types import SimpleNamespace
+        scope = {"__name__": "verification_view_test"}
+        exec(PROGRAM, scope)
+        owner = "fixture-owner"
+        row = ["@4", "verification-retained-fixture", "%7", "123", "1", "", "", "old", "", ""]
+        scope["restore_evidence"] = lambda *_: {"panes": {
+            "reader-uuid": {"pane_id": "%7", "window": {"options": {"@storyhook-journal": owner}}}
+        }}
+        scope["probe_run"] = lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr="")
+        commands = []
+        witness = owner
+
+        def tmux(*args):
+            commands.append(args)
+            if args[0] == "list-panes":
+                return "%7\treader-uuid"
+            self.assertEqual(args, ("show-option", "-w", "-q", "-v", "-t", "@4", "@storyhook-view-released"))
+            return witness
+
+        scope["tmux"] = tmux
+        self.assertFalse(scope["readopt_view"]([row], owner))
+        self.assertEqual(len(commands), 2)
+        witness = "different-owner"
+        with self.assertRaisesRegex(RuntimeError, "moved, duplicated or foreign"):
+            scope["readopt_view"]([row], owner)
+
+
+class NoSplitProductionTests(unittest.TestCase):
+    def test_production_sources_never_split_tmux_windows(self):
+        root = SCRIPT.parent.parent
+        offenders = []
+        for directory in ("src", "scripts", "plugins/story"):
+            for path in (root / directory).rglob("*"):
+                if (not path.is_file() or "tests" in path.relative_to(root).parts
+                        or path.name.startswith(("test_", "test-")) or "__pycache__" in path.parts):
+                    continue
+                if b"split-window" in path.read_bytes():
+                    offenders.append(str(path.relative_to(root)))
+        self.assertEqual(offenders, [], "production tmux creation must allocate whole windows")
 
 
 if __name__ == "__main__":

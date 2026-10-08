@@ -877,3 +877,41 @@ fn the_verifier_help_topic_names_the_running_batch_and_its_landing() {
     assert!(topic.contains("Verification batch <id> running"), "{topic}");
     assert!(topic.contains("done in one transaction"), "{topic}");
 }
+
+#[test]
+fn sh842_refused_batch_landing_releases_all_members_without_completing_them() {
+    for recover in [false, true] {
+        let board = board(&CLEAN, Some(3));
+        let mut batcher = landing_batcher(&board);
+        if recover {
+            batcher.landing = LandingOutcome::Uncertain {
+                detail: "response initially unavailable".into(),
+            };
+            assert_eq!(tick(&board, &batcher), TickResult::RetryLater);
+            batcher = landing_batcher(&board);
+            batcher.recovery = Some(LandingOutcome::Refused {
+                detail: "durable HTTP 405 refusal".into(),
+            });
+        } else {
+            batcher.landing = LandingOutcome::Refused {
+                detail: "synchronous HTTP 405 refusal".into(),
+            };
+        }
+        assert_eq!(tick(&board, &batcher), TickResult::RetryLater);
+        assert!(landing_intents(&board).is_empty());
+        assert_eq!(batches(&board)[0].phase, BatchPhase::Released);
+        for id in &board.stories {
+            assert_eq!(story_row(&board.fixture, id).state, "verifying");
+            assert_eq!(
+                comments_with(&board, id, "CENTRAL LANDING REFUSED").len(),
+                1
+            );
+        }
+        if recover {
+            assert_eq!(
+                batcher.calls(),
+                [format!("recover {} {BATCH_PR}", board.stories[0])]
+            );
+        }
+    }
+}

@@ -10,11 +10,14 @@ use std::time::Duration;
 
 mod command;
 mod local;
+mod merge;
 mod observation;
 pub use observation::OriginObservation;
 mod release;
 mod transport;
 pub use local::run_local;
+#[cfg(feature = "test-seam")]
+pub use local::run_local_for_fixture;
 pub use release::ReleaseSource;
 
 /// A checkout and its current, validated GitHub origin.
@@ -22,27 +25,92 @@ pub use release::ReleaseSource;
 pub struct Repository {
     checkout: PathBuf,
     identity: GithubRepo,
+    #[serde(skip)]
+    bounds: Bounds,
+}
+
+/// Explicit allowances carried with an operation; defaults remain production policy.
+#[derive(Clone, Copy, Debug)]
+struct Bounds {
+    read: Duration,
+    operation: Duration,
+}
+impl Default for Bounds {
+    fn default() -> Self {
+        Self {
+            read: Duration::from_secs(30),
+            operation: Duration::from_secs(120),
+        }
+    }
+}
+impl Bounds {
+    fn for_environment(env: &crate::env::Environment) -> Self {
+        let defaults = Self::default();
+        Self {
+            read: env.subprocess_bound(defaults.read),
+            operation: env.subprocess_bound(defaults.operation),
+        }
+    }
 }
 
 impl Repository {
     /// Reads the actual origin of an existing checkout, without cached routing.
     pub fn resolve(checkout: &Path) -> Result<Self, AppError> {
-        Self::resolve_with(checkout, git_read)
+        Self::resolve_with_bounds(checkout, Bounds::default())
     }
 
-    /// Resolve under one caller-owned deadline, including every origin query.
+    /// Resolves with the owning service's explicit subprocess allowances.
+    pub(crate) fn resolve_with_env(
+        checkout: &Path,
+        env: &crate::env::Environment,
+    ) -> Result<Self, AppError> {
+        Self::resolve_with_bounds(checkout, Bounds::for_environment(env))
+    }
+
+    /// Declares fixture patience before reading the first origin fact.
+    #[cfg(feature = "test-seam")]
+    pub fn resolve_for_fixture(
+        checkout: &Path,
+        env: &crate::env::Environment,
+    ) -> Result<Self, AppError> {
+        Self::resolve_with_env(checkout, env)
+    }
+
+    /// Resolve every native origin query under the same caller deadline.
     pub(crate) fn resolve_controlled(
         checkout: &Path,
+        env: &crate::env::Environment,
         deadline: std::time::Instant,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Self, AppError> {
-        Self::resolve_with(checkout, |checkout, arguments| {
-            git_read_controlled(checkout, arguments, deadline, cancelled)
+        Self::resolve_controlled_with_bounds(
+            checkout,
+            Bounds::for_environment(env),
+            deadline,
+            cancelled,
+        )
+    }
+
+    fn resolve_controlled_with_bounds(
+        checkout: &Path,
+        bounds: Bounds,
+        deadline: std::time::Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, AppError> {
+        Self::resolve_reading(checkout, bounds, |path, arguments| {
+            git_read_controlled(bounds.read, path, arguments, deadline, cancelled)
         })
     }
 
-    fn resolve_with(
+    fn resolve_with_bounds(checkout: &Path, bounds: Bounds) -> Result<Self, AppError> {
+        Self::resolve_reading(checkout, bounds, |path, arguments| {
+            git_read_with_bound(bounds.read, path, arguments)
+        })
+    }
+
+    fn resolve_reading(
         checkout: &Path,
+        bounds: Bounds,
         mut read: impl FnMut(&Path, &[&str]) -> Result<String, AppError>,
     ) -> Result<Self, AppError> {
         let checkout = checkout.canonicalize().map_err(|error| {
@@ -73,7 +141,11 @@ impl Repository {
         let identity = parse_origin(origins[0]).map_err(|error| {
             error.with_context(&format!("GitHub origin in {}", checkout.display()))
         })?;
-        Ok(Self { checkout, identity })
+        Ok(Self {
+            checkout,
+            identity,
+            bounds,
+        })
     }
 
     /// The explicit host, owner and repository for every operation.
@@ -96,6 +168,7 @@ impl Repository {
 }
 
 fn git_read_controlled(
+    bound: Duration,
     checkout: &Path,
     arguments: &[&str],
     deadline: std::time::Instant,
@@ -105,11 +178,11 @@ fn git_read_controlled(
     command.args(arguments);
     let output = crate::process::run_captured_private_until(
         command,
-        deadline.min(std::time::Instant::now() + Duration::from_secs(30)),
+        deadline.min(std::time::Instant::now() + bound),
         cancelled,
     )
     .map_err(|e| AppError::Validation(format!("bounded GitHub origin read: {}", e.detail())))?;
-    if !output.status.success() || output.stdout.len() >= 64 * 1024 {
+    if !output.status.success() || output.stdout_truncated || output.stdout.len() >= 64 * 1024 {
         return Err(AppError::Validation(
             "bounded GitHub origin query failed or exceeded capture limit".into(),
         ));
@@ -118,10 +191,14 @@ fn git_read_controlled(
         .map_err(|_| AppError::Validation("GitHub origin query is not UTF-8".into()))
 }
 
-fn git_read(checkout: &Path, arguments: &[&str]) -> Result<String, AppError> {
+fn git_read_with_bound(
+    bound: Duration,
+    checkout: &Path,
+    arguments: &[&str],
+) -> Result<String, AppError> {
     let mut command = git_env::command(checkout);
     command.args(arguments);
-    let output = run_captured_private(command, Duration::from_secs(30)).map_err(|error| {
+    let output = run_captured_private(command, bound).map_err(|error| {
         AppError::Validation(format!(
             "reading GitHub origin in {}: {}",
             checkout.display(),

@@ -62,6 +62,7 @@ pub mod integration_recovery;
 pub mod integrity;
 mod isolated_merge;
 pub mod landing;
+mod landing_release;
 pub mod launch_record;
 pub mod migrate;
 #[cfg(feature = "github-pr")]

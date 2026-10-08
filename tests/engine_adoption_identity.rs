@@ -5,6 +5,39 @@ use storyhook::domain::{CLEANUP_LEASE_MARKER, StoryCleanupLease, TmuxCleanupTarg
 use storyhook::service::engine::adoption::{DispatchInspector, LiveDispatchInspector};
 use storyhook_test_support::scratch_dir;
 
+/// SH-846: an unanswered observation is not evidence of a changed occupant.
+/// Keep every production probe's budget; allow the harness to observe again,
+/// as the engine does. Answered Alive/Gone results are never retried.
+fn answered_probe_with(
+    mut patience: storyhook_test_support::load_grace::Patience,
+    mut probe: impl FnMut() -> storyhook::service::engine::WindowProbe,
+) -> storyhook::service::engine::WindowProbe {
+    use storyhook::service::engine::WindowProbe;
+    loop {
+        match probe() {
+            WindowProbe::Unanswered { detail } => {
+                assert!(
+                    !patience.expired(),
+                    "{patience}; adoption probe never answered: {detail}"
+                );
+                std::thread::yield_now();
+            }
+            answer => return answer,
+        }
+    }
+}
+
+fn answered_probe(
+    probe: impl FnMut() -> storyhook::service::engine::WindowProbe,
+) -> storyhook::service::engine::WindowProbe {
+    answered_probe_with(
+        storyhook_test_support::load_grace::Patience::new(
+            storyhook::service::engine::TMUX_TIMEOUT.saturating_mul(3),
+        ),
+        probe,
+    )
+}
+
 struct Dispatch {
     _root: tempfile::TempDir,
     repository: PathBuf,
@@ -155,11 +188,10 @@ impl Dispatch {
         &self,
     ) -> Result<storyhook::service::engine::adoption::InspectedDispatch, storyhook::error::AppError>
     {
-        LiveDispatchInspector::new(storyhook::env::Environment::at(self._root.path())).inspect(
-            &self.repository,
-            "fixture",
-            "SH-1",
-        )
+        LiveDispatchInspector::new(storyhook_test_support::subprocess_patience(
+            storyhook::env::Environment::at(self._root.path()),
+        ))
+        .inspect(&self.repository, "fixture", "SH-1")
     }
 }
 impl Drop for Dispatch {
@@ -293,10 +325,13 @@ fn production_invocation_canonicalizes_adoption_and_detects_a_respawned_pane() {
         .remove(0)
         .lanes
         .remove(0);
-    let observer = ShellDispatcher::new("unused-helper", fixture.env().clone());
+    let observer = ShellDispatcher::new(
+        "unused-helper",
+        storyhook_test_support::subprocess_patience(fixture.env().clone()),
+    );
     let pane = lane.pane_id.as_deref().unwrap();
     assert!(matches!(
-        observer.probe_lane(&lane, pane),
+        answered_probe(|| observer.probe_lane(&lane, pane)),
         WindowProbe::Alive { .. }
     ));
     let executable = dispatch._root.path().join("codex");
@@ -307,7 +342,7 @@ fn production_invocation_canonicalizes_adoption_and_detects_a_respawned_pane() {
             .args(["respawn-pane", "-k", "-t", pane, &launch]),
     );
     assert!(matches!(
-        observer.probe_lane(&lane, pane),
+        answered_probe(|| observer.probe_lane(&lane, pane)),
         WindowProbe::Gone { .. }
     ));
 }
@@ -437,5 +472,78 @@ fn real_cli_adopts_manual_work_and_configures_the_same_paused_run() {
     assert_eq!(
         store.read(|tx| tx.engine_lanes(&run.id)).unwrap(),
         before_retry
+    );
+}
+
+#[test]
+fn sh846_adoption_observation_retries_only_unanswered_results() {
+    use storyhook::service::engine::WindowProbe;
+    let mut calls = 0;
+    let answer = answered_probe(|| {
+        calls += 1;
+        if calls == 1 {
+            WindowProbe::Unanswered {
+                detail: "fixture startup has not answered".into(),
+            }
+        } else {
+            WindowProbe::Alive {
+                last_output_at: None,
+            }
+        }
+    });
+    assert!(matches!(answer, WindowProbe::Alive { .. }));
+    assert_eq!(calls, 2);
+}
+
+#[test]
+fn sh846_adoption_observation_returns_gone_without_retrying() {
+    use storyhook::service::engine::WindowProbe;
+    let mut calls = 0;
+    let answer = answered_probe(|| {
+        calls += 1;
+        WindowProbe::Gone {
+            detail: "different occupant".into(),
+        }
+    });
+    assert!(matches!(answer, WindowProbe::Gone { detail } if detail == "different occupant"));
+    assert_eq!(calls, 1);
+}
+
+#[test]
+fn sh846_adoption_answer_wins_even_when_patience_is_exhausted() {
+    use storyhook::service::engine::WindowProbe;
+    let patience = storyhook_test_support::load_grace::Patience::starting_at(
+        std::time::Duration::ZERO,
+        std::time::Instant::now(),
+        || None,
+    );
+    let answer = answered_probe_with(patience, || WindowProbe::Alive {
+        last_output_at: None,
+    });
+    assert!(matches!(answer, WindowProbe::Alive { .. }));
+}
+
+#[test]
+fn sh846_adoption_unanswered_expiry_keeps_the_actual_diagnostic() {
+    use storyhook::service::engine::WindowProbe;
+    let failure = std::panic::catch_unwind(|| {
+        let patience = storyhook_test_support::load_grace::Patience::starting_at(
+            std::time::Duration::ZERO,
+            std::time::Instant::now(),
+            || None,
+        );
+        answered_probe_with(patience, || WindowProbe::Unanswered {
+            detail: "fixture tmux identity timed out".into(),
+        })
+    })
+    .unwrap_err();
+    let message = failure.downcast_ref::<String>().unwrap();
+    assert!(
+        message.contains("adoption probe never answered"),
+        "{message}"
+    );
+    assert!(
+        message.contains("fixture tmux identity timed out"),
+        "{message}"
     );
 }

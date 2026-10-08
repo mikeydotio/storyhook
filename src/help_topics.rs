@@ -130,19 +130,19 @@ per line. Plain output uses color only at a terminal (NO_COLOR disables it).
 Each record labels its source, stream, process and story/request context.
 Use --store-path to inspect a different store, or --directory to read a project journal.
 
-The daemon maintains one verification window in each project-slug tmux session
-on the default server. The right pane follows the project journal. The left
-pane runs the Verifier Agent (claude --agent story:verifier, Opus, xhigh) in
+The daemon maintains two single-pane windows in each project-slug tmux session
+on the default server. The verification window follows the project journal.
+The verifier window runs the Verifier Agent (claude --agent story:verifier, Opus, xhigh) in
 the registered checkout. Closed or failed readers are repaired; a closed agent
-pane returns after a minute, and an exited agent waits for Enter. Project logs
+window returns after a minute, and an exited agent waits for Enter. Project logs
 live in the registered checkout at .storyhook/logs/YYYY-MM-DD.jsonl.
 That directory ignores itself: storyhook keeps a .gitignore with the rule *
 in it, so git never lists the journal. If a repository already tracks
 journal files, daemon status and verifier status name the command that
 untracks them; storyhook never changes the index.
 STORYHOOK_VERIFIER_MIRROR=0 disables these views without disabling the journal.
-STORYHOOK_VERIFIER_AGENT=0 keeps the reader and omits the agent pane. Without
-claude on the daemon's PATH, the window has no agent pane and the journal says so.
+STORYHOOK_VERIFIER_AGENT=0 keeps the reader and creates no agent window. Without
+claude on the daemon's PATH, there is no agent window and the journal says so.
 A missing tmux or Python 3 activity helper is non-fatal.
 
 Daily files live at <daemon state directory>/activity/YYYY-MM-DD.jsonl.
@@ -253,7 +253,12 @@ set-prefix
   It takes no path or slug: it rewrites the project this directory
   resolves to, or the one --project names. Refuses if the prefix given
   is invalid, is the one this project already has, or already belongs
-  to another project in this store.
+  to another project in this store. It also refuses while a resumable
+  Full Auto run, leased verification handoff or pending reset, cleanup,
+  landing, verification batch or continuation still uses this project's current story IDs. The
+  refusal names the operation to finish or resolve. --force skips only
+  confirmation; it does not bypass these protections. Completed history
+  does not block a rename.
 
   Free-text description and comment bodies are left untouched — there
   is no reliable way to tell a genuine story-id reference in prose
@@ -2828,6 +2833,8 @@ Examples:
             "verifier",
             r#"story verifier status
 story verifier evidence <story-id> [--json]
+story verifier landing show [--json]
+story verifier landing release <intent-id> --reason <reason> [--json]
 story verifier start
 story verifier stop
 story verifier drain
@@ -2838,6 +2845,16 @@ story verifier repair decide <recovery-id> --input <json-file>
 story verifier repair satisfy <recovery-id> --input <json-file>
 
 Inspect and control this project's centralized verifier.
+
+  landing show lists pending intents for this project, including batch bindings.
+  landing release is an operator-only recovery for an exact intent id. It refuses
+  while the project owns active verification, while another release is running,
+  or when GitHub is unavailable, reports MERGED, or reports a different head.
+  It reads the batch PR for a batch member and releases every remaining member
+  together. Every affected story records the reason and observed remote state.
+  Stories stay Verifying; no gate, completion, reset or remote mutation occurs.
+  OPEN is only an observation: an earlier remote request may still complete.
+  The reason records the operator's decision to release that uncertainty.
 
   evidence reads retained admission, execution and submission costs. It works
   without a live owner. Queue time is separate from the inclusive 900-second

@@ -21,8 +21,8 @@ const CODEX_RULE_MARKER: &str = "# storyhook-managed: codex-rules-v1";
 const CODEX_LAUNCHER_RELATIVE: &str = ".codex/storyhook/story.sh";
 const CODEX_RULE_RELATIVE: &str = ".codex/rules/storyhook.rules";
 
-/// The Claude Code plugin agent that runs in the left pane of each project's
-/// `verification` tmux window (SH-822): `plugins/story/agents/verifier.md`,
+/// The Claude Code plugin agent that runs in each project's
+/// `verifier` tmux window (SH-861): `plugins/story/agents/verifier.md`,
 /// scoped by the plugin's name as Claude Code scopes plugin agents. Codex
 /// plugins cannot declare agents, so the definition is Claude-only.
 pub const VERIFIER_AGENT: &str = "story:verifier";
@@ -31,6 +31,7 @@ use crate::embedded::EmbeddedFile;
 
 include!(concat!(env!("OUT_DIR"), "/embedded_marketplace.rs"));
 
+mod codex_cache;
 pub mod guard;
 pub(crate) mod library;
 pub(crate) mod operation;
@@ -307,6 +308,10 @@ fn codex_json(out: &Captured, action: &str) -> Result<serde_json::Value, AppErro
 /// and failed, or did not answer within its deadline (SH-815). A caller that
 /// falls through to another helper must still be able to say why.
 pub(crate) fn codex_installed_plugin_root(home: &Path) -> Result<Option<PathBuf>, AppError> {
+    codex_cache::resolve(home, || probe_codex_installed_plugin_root(home))
+}
+
+fn probe_codex_installed_plugin_root(home: &Path) -> Result<Option<PathBuf>, AppError> {
     let command = "codex plugin list --json";
     let out = match provider_cli::run(PluginTarget::Codex, &["plugin", "list", "--json"]) {
         Ok(out) => out,
@@ -1035,6 +1040,11 @@ fn install_with_verb(
     guard::check(verb, Some(target.install_token()))?;
     let intended = release_marketplace_root()?.display().to_string();
     operation::run(target, verb.token(), Some(&intended), || {
+        let _cache_change = if target == PluginTarget::Codex {
+            Some(codex_cache::Mutation::begin(home_dir()?))
+        } else {
+            None
+        };
         preflight_provider(target)?;
         let marketplace =
             operation::step("materialize marketplace", materialize_release_marketplace)?;
@@ -1173,6 +1183,11 @@ pub fn uninstall(target: &str, project_root: &Path) -> Result<String, AppError> 
     // the run of this verb that this refuses.
     guard::check(guard::Verb::Uninstall, Some(target.install_token()))?;
     operation::run(target, "uninstall", None, || {
+        let _cache_change = if target == PluginTarget::Codex {
+            Some(codex_cache::Mutation::begin(home_dir()?))
+        } else {
+            None
+        };
         let mut message = match target {
             PluginTarget::ClaudeCode => uninstall_claude(project_root),
             PluginTarget::Codex => uninstall_codex(project_root),

@@ -57,9 +57,10 @@ fn run_probe(test: &str, mode: &str, mirror: Option<&str>) {
     }
     let output = ChildGuard::spawn_with_output(&mut command)
         .expect("spawn isolated activity probe")
-        .wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            format!("activity probe {mode} with ambient mirror {mirror:?} did not finish")
-        });
+        .wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || format!("activity probe {mode} with ambient mirror {mirror:?} did not finish"),
+        );
     assert!(
         output.status.success(),
         "activity probe {mode} with ambient mirror {mirror:?} failed:\n{}\n{}",

@@ -15,10 +15,11 @@ pub(super) struct CheckedRegistration {
 
 /// Corroborates Git inventory with private administration, even after `.git` is lost.
 pub(super) fn inspect(
+    bound: std::time::Duration,
     repository: &Path,
     records: &[git::WorktreeRecord],
 ) -> Result<Vec<CheckedRegistration>, AppError> {
-    let administrations = git::administrations(repository)?;
+    let administrations = git::administrations(bound, repository)?;
     let mut checked = Vec::new();
     for record in records.iter().filter(|record| record.path != repository) {
         let path = git::canonical(&record.path)?;
@@ -167,7 +168,7 @@ pub(super) fn inspect(
                 ),
             );
         } else if let Some(admin) = admin {
-            match git::text(&path, &["rev-parse", "--absolute-git-dir"]) {
+            match git::text_with_bound(bound, &path, &["rev-parse", "--absolute-git-dir"]) {
                 Ok(actual) => match git::canonical(Path::new(actual.trim_end_matches('\n'))) {
                     Ok(actual) if actual == admin.path => {}
                     Ok(_) => mark(

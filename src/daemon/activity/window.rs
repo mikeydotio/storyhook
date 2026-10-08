@@ -105,13 +105,14 @@ fn open(env: &Environment, project: &str, directory: &Path, checkout: &Path, sto
             .envs(env.child_vars())
             .env_remove("TMUX")
             .env_remove("TMUX_PANE");
-        let captured = match run_view(command, stop) {
+        let bound = env.subprocess_bound(VIEW_RECONCILE_TIMEOUT);
+        let captured = match run_view_with_bound(command, stop, bound) {
             Ok(captured) => captured,
             Err(CaptureError::Cancelled) => return Ok(()),
             Err(error) => {
                 return Err(format!(
                     "project {project} verification view unavailable (outer bound {}s): {}",
-                    VIEW_RECONCILE_TIMEOUT.as_secs(),
+                    bound.as_secs(),
                     error.detail()
                 ));
             }
@@ -131,10 +132,17 @@ fn open(env: &Environment, project: &str, directory: &Path, checkout: &Path, sto
 }
 
 /// The process boundary shared by production and the deadline/cancellation tests.
+#[cfg(test)]
 fn run_view(command: Command, stop: &AtomicBool) -> Result<Captured, CaptureError> {
-    run_captured_quiet_cancellable(command, VIEW_RECONCILE_TIMEOUT, || {
-        stop.load(Ordering::Acquire)
-    })
+    run_view_with_bound(command, stop, VIEW_RECONCILE_TIMEOUT)
+}
+
+fn run_view_with_bound(
+    command: Command,
+    stop: &AtomicBool,
+    bound: Duration,
+) -> Result<Captured, CaptureError> {
+    run_captured_quiet_cancellable(command, bound, || stop.load(Ordering::Acquire))
 }
 
 /// Reconstructs activated project views and handles phase requests off verifier workers.
