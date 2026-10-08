@@ -39,16 +39,24 @@ pub(crate) fn retain(
     let Some(generation) = candidate.verifying_generation else {
         return Ok(());
     };
-    if attribution.inputs.head.as_deref().is_none_or(|head| {
-        !matches!(head.len(), 40 | 64) || !head.bytes().all(|b| b.is_ascii_hexdigit())
-    }) || !attribution
-        .components
+    if [&attribution.inputs.head, &attribution.inputs.base]
         .iter()
-        .any(|c| c.observed_cause == FailureCause::Integration)
+        .any(|oid| {
+            oid.as_deref().is_none_or(|head| {
+                !matches!(head.len(), 40 | 64) || !head.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+        })
+        || !attribution
+            .components
+            .iter()
+            .any(|c| c.observed_cause == FailureCause::Integration)
         || attempt.elapsed.estimated
         || attempt.finished_at.is_some()
         || !attempt.executions.last().is_some_and(|e| {
             e.finished_at.is_some()
+                && e.purpose.is_gate()
+                && e.journal_bound
+                && e.submissions.contains(&attribution.submission)
                 && !e.estimated
                 && e.verdict.as_deref() == Some("conflict")
                 && e.inputs == attribution.inputs
@@ -107,7 +115,14 @@ pub(crate) fn subjects(
         {
             continue;
         }
-        validate_current(tx, &observed)?;
+        match validate_current(tx, &observed) {
+            Ok(()) => {}
+            // A legitimate stop, label/lease change or new generation revokes
+            // only this observation. Preserve its custody and ordinary hold;
+            // do not hide independent original subjects in the same project.
+            Err(StoreError::Validation(_)) => continue,
+            Err(error) => return Err(error),
+        }
         for component in &observed.attribution.components {
             if component.observed_cause == FailureCause::Integration {
                 result.push(PendingIntegration {
