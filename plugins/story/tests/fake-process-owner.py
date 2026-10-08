@@ -398,7 +398,14 @@ def daemon_settled(home, deadline):
                     busy = True
                     break
                 pinned_descriptor(path, expected, stream.fileno())
-                record = json.load(stream)
+                raw = stream.read()
+                # inspect_lock opens/creates this file even when no daemon
+                # exists. claim_pidfile takes the lifetime lock BEFORE writing
+                # identity, so exactly empty + our pinned exclusive lock proves
+                # no published owner. Nonempty corruption is never absence.
+                if raw == "":
+                    continue
+                record = json.loads(raw)
                 pid, start = record["pid"], record["start_time"]
                 if type(pid) is not int or pid <= 1 or not isinstance(start, str) or not start:
                     raise Refusal("owned daemon lacks an exact native identity")

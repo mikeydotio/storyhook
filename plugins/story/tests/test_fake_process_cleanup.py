@@ -124,6 +124,7 @@ class Fixture:
                 self.records[path.name] = row
 
     def launch(self, child=False, delayed=False, state=None):
+        before = set(self.records)
         prefix = "FAKE_TMUX_PANE_CHILD=1 " if child else ""
         if delayed:
             prefix += "FAKE_TMUX_SENTINEL_DELAY_SECS=900 "
@@ -131,7 +132,15 @@ class Fixture:
             prefix += "FAKE_TMUX_STATE=" + shlex.quote(str(state)) + " "
         provider = "claude" if delayed else "codex"
         self.command(prefix + '"$TESTS_DIR/fakes/tmux" new-window -t fixture -n fixture '
-                     '-c "$FAKE_TMUX_STATE" ' + provider + ' >/dev/null')
+                     '-c "$FAKE_TMUX_STATE" ' + provider +
+                     " ';' set-window-option -t @1 remain-on-exit on >/dev/null")
+        roles = {row["role"] for name, row in self.records.items() if name not in before}
+        expected = {"pane-child", "child"} if child else {"pane"}
+        if delayed:
+            expected.add("publisher")
+        if roles != expected:
+            raise AssertionError("launch did not register its expected workers: " +
+                                 repr((roles, expected)) + "; " + str(self.root))
         return [row for row in self.records.values() if not row["settled"]]
 
     def finish(self, status=0):
@@ -249,7 +258,8 @@ class CleanupTests(unittest.TestCase):
 source "$1" || exit 98
 _TMP_REPOS+=("$FAKE_TMUX_STATE")
 FAKE_TMUX_PANE_CHILD=1 FAKE_TMUX_SENTINEL_DELAY_SECS=900 \
-  "$TESTS_DIR/fakes/tmux" new-window -t nested -n nested -c "$FAKE_TMUX_STATE" claude >/dev/null || exit 99
+  "$TESTS_DIR/fakes/tmux" new-window -t nested -n nested -c "$FAKE_TMUX_STATE" \
+  claude ';' set-window-option -t @1 remain-on-exit on >/dev/null || exit 99
 cp "$FAKE_TMUX_PROCESS_LEDGER"/*.process.json "$FIXTURE_ROOT/receipts/"
 '''
         (f.root / "receipts").mkdir()
@@ -338,6 +348,26 @@ IFS= read -r release < "$FIXTURE_ROOT/nested-release"
     def test_daemon_never_started_needs_no_invented_pid(self):
         OWNER.daemon_settled(self.fixture.state, time.monotonic() + allowance())
         self.assertFalse((self.fixture.state / 'daemon.pid').exists())
+
+    def test_empty_daemon_pidfile_requires_the_original_free_lifetime_lock(self):
+        path = self.fixture.state / 'daemon.pid'
+        path.touch()
+        with path.open('r') as lifetime:
+            fcntl.flock(lifetime, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(OWNER.Refusal, 'daemon is not settled'):
+                OWNER.daemon_settled(self.fixture.state, time.monotonic())
+            self.assertTrue(path.exists())
+        OWNER.daemon_settled(self.fixture.state, time.monotonic() + allowance())
+        self.assertEqual(path.read_bytes(), b'')
+
+    def test_nonempty_malformed_daemon_identity_is_not_absence(self):
+        path = self.fixture.state / 'daemon.pid'
+        # Whitespace is nonempty corruption, even though stripping it would
+        # produce the newly accepted never-published empty spelling.
+        path.write_bytes(b' \n')
+        with self.assertRaises(json.JSONDecodeError):
+            OWNER.daemon_settled(self.fixture.state, time.monotonic() + allowance())
+        self.assertEqual(path.read_bytes(), b' \n')
 
     def test_live_exact_daemon_identity_refuses_without_sending_a_signal(self):
         pin = native.identity(os.getpid(), native.boot_identity())
