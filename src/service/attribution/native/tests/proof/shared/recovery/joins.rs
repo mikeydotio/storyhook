@@ -181,7 +181,7 @@ fn distinct_faults_share_one_explicit_repair_and_cumulative_budget_after_restart
         &reopened,
         ctx.project(),
         evidence.fixture.cwd(),
-        Environment::at(evidence.fixture.cwd()),
+        Environment::at(evidence.fixture.cwd()).with_subprocess_patience(),
     )
     .no_hooks(true);
     let service = ProjectRecoveryService::new(&reopened_ctx);

@@ -40,7 +40,7 @@ impl OwnedFixture {
             &store,
             project,
             native.root.path(),
-            Environment::at(fixture.cwd()),
+            Environment::at(fixture.cwd()).with_subprocess_patience(),
         )
         .no_hooks(true);
         let id = StoryService::new(&ctx)
@@ -121,7 +121,7 @@ impl OwnedFixture {
             &self.store,
             self.candidate.project,
             self.native.root.path(),
-            Environment::at(self.fixture.cwd()),
+            Environment::at(self.fixture.cwd()).with_subprocess_patience(),
         )
         .no_hooks(true)
     }
@@ -175,7 +175,7 @@ fn integration_claim_survives_restart_without_replaying_or_rewriting_submission(
         &reopened,
         f.candidate.project,
         f.native.root.path(),
-        Environment::at(f.fixture.cwd()),
+        Environment::at(f.fixture.cwd()).with_subprocess_patience(),
     )
     .no_hooks(true);
     let service = IntegrationOwnerService::new(&ctx);
@@ -544,7 +544,7 @@ fn integration_claim_rechecks_cancellation_after_transaction_admission() {
             &interrupted,
             f.candidate.project,
             f.native.root.path(),
-            Environment::at(f.fixture.cwd()),
+            Environment::at(f.fixture.cwd()).with_subprocess_patience(),
         )
         .no_hooks(true);
         let service = IntegrationOwnerService::new(&ctx);

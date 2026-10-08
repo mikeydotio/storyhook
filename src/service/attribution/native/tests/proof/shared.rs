@@ -87,6 +87,14 @@ fn native_shared_failure_grants_recovery_but_never_a_causal_return() {
     let mut f = Fixture::new(false);
     // The defect is already committed on the base. The candidate changes only
     // unrelated documentation, so both pinned inputs execute the same failure.
+    // Both pinned trees carry the same path inventory; only unrelated bytes differ.
+    f.write("README.md", "existing shared documentation\n");
+    f.git(&["add", "README.md"]);
+    f.git(&[
+        "commit",
+        "-qm",
+        "shared failing base with existing documentation",
+    ]);
     f.base = f.git(&["rev-parse", "HEAD"]);
     f.write("README.md", "unrelated submitted documentation\n");
     f.git(&["add", "README.md"]);

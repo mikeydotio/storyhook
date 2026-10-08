@@ -6,6 +6,14 @@ mod joins;
 
 fn fixture(mixed: bool) -> (Fixture, Evidence, SharedRecoveryEvidence) {
     let mut f = Fixture::new(false);
+    // Both pinned trees carry the same path inventory; only unrelated bytes differ.
+    f.write("README.md", "existing shared documentation\n");
+    f.git(&["add", "README.md"]);
+    f.git(&[
+        "commit",
+        "-qm",
+        "shared failing base with existing documentation",
+    ]);
     f.base = f.git(&["rev-parse", "HEAD"]);
     f.write("README.md", "unrelated submitted documentation\n");
     f.git(&["add", "README.md"]);
@@ -41,7 +49,7 @@ fn context(evidence: &Evidence) -> Ctx<'_, SqliteStore> {
         &evidence.store,
         evidence.candidate.project,
         evidence.fixture.cwd(),
-        Environment::at(evidence.fixture.cwd()),
+        Environment::at(evidence.fixture.cwd()).with_subprocess_patience(),
     )
     .no_hooks(true)
 }
@@ -120,7 +128,7 @@ fn shared_recovery_readmits_original_generation_once_after_restart_and_release()
         &reopened,
         evidence.candidate.project,
         evidence.fixture.cwd(),
-        Environment::at(evidence.fixture.cwd()),
+        Environment::at(evidence.fixture.cwd()).with_subprocess_patience(),
     )
     .no_hooks(true);
     let restarted = ProjectRecoveryService::new(&restarted_ctx);
@@ -425,7 +433,7 @@ fn shared_recovery_keeps_one_managed_repair_and_never_releases_for_manual_done()
         &evidence.store,
         ProjectId::new(other.get()),
         evidence.fixture.cwd(),
-        Environment::at(evidence.fixture.cwd()),
+        Environment::at(evidence.fixture.cwd()).with_subprocess_patience(),
     )
     .no_hooks(true);
     let other_id = StoryService::new(&other_ctx)
