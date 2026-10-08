@@ -1213,3 +1213,151 @@ fn managed_native_completion_holds_human_reservation_and_cancelled_observation()
         proof.settle().unwrap();
     }
 }
+
+#[test]
+fn managed_restart_worker_owns_central_admission_and_settles_fresh_proof() {
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let (id, earlier, _) = landed_proof(&f, &proof, |_| {});
+    let expected = earlier.evidence().clone();
+    earlier.settle().unwrap();
+    // The former central process has ended before this restart admission.
+    for mut admission in f
+        .store
+        .read(|tx| tx.gate_attempts(f.candidate.project))
+        .unwrap()
+    {
+        if admission.finished_at.is_none() {
+            let revision = admission.revision;
+            admission.finished_at = Some(AT.into());
+            admission.revision += 1;
+            assert!(
+                f.store
+                    .write(|tx| tx.update_gate_attempt(&admission, revision))
+                    .unwrap()
+            );
+        }
+    }
+    let ctx = f.ctx();
+    f.store
+        .write(|tx| tx.put_verification_enabled(f.candidate.project, false))
+        .unwrap();
+    let activity = crate::daemon::verification::VerificationActivity::new();
+    let inflight = crate::daemon::lifecycle::InFlight::new(ctx.env().clone());
+    let mut path = None;
+    let result = crate::daemon::verification::integration_worker::reconcile_one_with(
+        &f.store,
+        ctx.env(),
+        &activity,
+        &inflight,
+        f.candidate.project,
+        &id,
+        |_service, query, deadline, cancellation| {
+            let active = activity
+                .active_for(f.candidate.project)
+                .expect("no central observation owner");
+            assert_eq!(active.story_id, f.candidate.story_id);
+            assert_eq!(active.generation, f.candidate.verifying_generation);
+            assert_eq!(active.mode, crate::domain::landing::VerificationMode::Gated);
+            let attempts = f
+                .store
+                .read(|tx| tx.gate_attempts(f.candidate.project))
+                .unwrap();
+            assert!(
+                attempts.iter().any(|a| a.id == active.attempt_id
+                    && a.executions.is_empty()
+                    && a.finished_at.is_none()),
+                "readonly observation invented a physical gate"
+            );
+            let native = crate::service::integration_recovery::landed_observation::fixture_landed(
+                query,
+                expected,
+                deadline,
+                cancellation.clone(),
+            )?;
+            path = Some(native.observation_path().to_path_buf());
+            Ok(native)
+        },
+    )
+    .unwrap();
+    assert_eq!(result, crate::daemon::verification::TickResult::Completed);
+    assert!(
+        activity.active_for(f.candidate.project).is_none(),
+        "central observation owner leaked"
+    );
+    assert!(
+        !path.unwrap().exists(),
+        "fresh proof resource was not settled"
+    );
+    assert!(
+        !IntegrationOwnerService::new(&ctx)
+            .show(&id)
+            .unwrap()
+            .0
+            .active
+    );
+    proof.settle().unwrap();
+}
+
+#[test]
+fn managed_restart_worker_cancellation_keeps_intent_and_settles_new_proof() {
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let (id, earlier, _) = landed_proof(&f, &proof, |_| {});
+    let expected = earlier.evidence().clone();
+    earlier.settle().unwrap();
+    // The former central process has ended before this restart admission.
+    for mut admission in f
+        .store
+        .read(|tx| tx.gate_attempts(f.candidate.project))
+        .unwrap()
+    {
+        if admission.finished_at.is_none() {
+            let revision = admission.revision;
+            admission.finished_at = Some(AT.into());
+            admission.revision += 1;
+            assert!(
+                f.store
+                    .write(|tx| tx.update_gate_attempt(&admission, revision))
+                    .unwrap()
+            );
+        }
+    }
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let before = service.show(&id).unwrap();
+    let activity = crate::daemon::verification::VerificationActivity::new();
+    let inflight = crate::daemon::lifecycle::InFlight::new(ctx.env().clone());
+    let mut path = None;
+    let result = crate::daemon::verification::integration_worker::reconcile_one_with(
+        &f.store,
+        ctx.env(),
+        &activity,
+        &inflight,
+        f.candidate.project,
+        &id,
+        |_service, query, deadline, cancellation| {
+            let native = crate::service::integration_recovery::landed_observation::fixture_landed(
+                query,
+                expected,
+                deadline,
+                cancellation.clone(),
+            )?;
+            path = Some(native.observation_path().to_path_buf());
+            cancellation.cancel();
+            Ok(native)
+        },
+    );
+    assert!(result.is_err());
+    assert_eq!(service.show(&id).unwrap(), before);
+    assert_eq!(
+        f.store.read(|tx| tx.landing_intents()).unwrap(),
+        [before.1.landing.unwrap()]
+    );
+    assert!(activity.active_for(f.candidate.project).is_none());
+    assert!(
+        !path.unwrap().exists(),
+        "revoked fresh proof was silently dropped"
+    );
+    proof.settle().unwrap();
+}

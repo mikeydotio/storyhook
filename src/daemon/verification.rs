@@ -34,6 +34,7 @@ pub use batch::{
 pub use batch_preview::batch_preview_log;
 pub use cleanup::{CompletedVerification, VerificationCleanupFailure};
 
+pub(crate) mod integration_worker;
 mod managed_landing;
 mod observation;
 mod reconcile_hold;
@@ -753,6 +754,11 @@ pub trait VerificationActuator: Send + Sync {
         candidate: &VerificationCandidate,
         intent: &crate::store::LandingIntent,
     ) -> LandingOutcome;
+    /// Explicit opt-in to the native managed integration lifecycle. Legacy and
+    /// fixture actuators cannot accidentally trigger remote work by default.
+    fn supports_managed_integration(&self) -> bool {
+        false
+    }
     /// A separately owned, one-shot managed merge; ordinary adapters refuse.
     fn land_integration(
         &self,
@@ -2010,6 +2016,10 @@ impl VerificationActuator for ShellVerificationActuator {
         )
     }
 
+    fn supports_managed_integration(&self) -> bool {
+        true
+    }
+
     fn land_integration(
         &self,
         claim: &crate::service::integration_recovery::IntegrationLandingClaim,
@@ -2560,11 +2570,22 @@ where
             crate::service::project_recovery::reconcile_incident(tx, project, &env.now())
         })?;
     }
+    if actuator.supports_managed_integration()
+        && let Some(result) =
+            integration_worker::reconcile(store, env, activity, inflight, project)?
+    {
+        return Ok(result);
+    }
     let ordered = queue.ordered_for(project)?;
     // One recovery per batch per tick: every member's intent observes the
     // same batch merge (SH-832 D5).
     let mut recovered_batches = BTreeSet::new();
     for intent in store.read(|tx| tx.landing_intents())? {
+        // The dedicated native observer owns this format; never fall through
+        // to a legacy helper or renew a managed request from stored JSON.
+        if intent.certification.integration().is_some() {
+            continue;
+        }
         let Some(candidate) = ordered
             .iter()
             .find(|c| c.project == intent.project && c.story_id == intent.story_id)

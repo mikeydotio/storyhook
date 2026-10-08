@@ -87,6 +87,42 @@ pub(super) fn admission(
     id: &str,
     at: &str,
 ) -> Result<GateAttempt, StoreError> {
+    admission_inner(tx, env, candidate, id, at, false)
+}
+
+// Distinct accounting admission for observation only. This does not reconstruct
+// a merge capability or permit the ordinary controller to execute this target.
+pub(super) fn integration_observation_admission(
+    tx: &mut impl WriteOps,
+    env: &Environment,
+    candidate: &VerificationCandidate,
+    id: &str,
+    at: &str,
+) -> Result<GateAttempt, StoreError> {
+    let intent = tx
+        .landing_intents()?
+        .into_iter()
+        .find(|i| {
+            i.project == candidate.project
+                && i.story_id == candidate.story_id
+                && i.certification.integration().is_some()
+        })
+        .ok_or_else(|| {
+            StoreError::Validation(
+                "managed observation admission requires its exact retained intent".into(),
+            )
+        })?;
+    crate::store::landing::validate_intent(tx, &intent)?;
+    admission_inner(tx, env, candidate, id, at, true)
+}
+fn admission_inner(
+    tx: &mut impl WriteOps,
+    env: &Environment,
+    candidate: &VerificationCandidate,
+    id: &str,
+    at: &str,
+    managed_observation: bool,
+) -> Result<GateAttempt, StoreError> {
     let mut record = GateAttempt::new(id.into(), submission(candidate), at);
     record.control_revision = Some(tx.verification_control_revision(candidate.project)?);
     record.mode =
@@ -96,6 +132,7 @@ pub(super) fn admission(
             match intent.certification {
                 LandingAuthority::Certified(_) => VerificationMode::Gated,
                 LandingAuthority::Skipped(_) => VerificationMode::VerificationSkipped,
+                LandingAuthority::Integration(_) if managed_observation => VerificationMode::Gated,
                 LandingAuthority::Integration(_) => {
                     return Err(StoreError::Validation(
                         "integration landing requires its dedicated owner controller".into(),

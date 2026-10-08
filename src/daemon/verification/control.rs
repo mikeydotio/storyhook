@@ -311,7 +311,19 @@ impl VerificationActivity {
                 tx.put_verification_recovery(candidate.project, &recovery)?;
             }
             let record = allowed
-                .then(|| super::cost::admission(tx, env, candidate, &attempt_id, &started_at))
+                .then(|| {
+                    if reservation == Some(ReservationReason::IntegrationObservation) {
+                        super::cost::integration_observation_admission(
+                            tx,
+                            env,
+                            candidate,
+                            &attempt_id,
+                            &started_at,
+                        )
+                    } else {
+                        super::cost::admission(tx, env, candidate, &attempt_id, &started_at)
+                    }
+                })
                 .transpose()?;
             Ok((record, request_id, retry_origin))
         })?;
