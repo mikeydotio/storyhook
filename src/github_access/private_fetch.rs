@@ -444,7 +444,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let env = crate::env::Environment::at(scratch.path());
+        let env = crate::env::Environment::at(scratch.path()).with_subprocess_patience();
         let repo = Repository::resolve_publication(
             scratch.path(),
             &env,

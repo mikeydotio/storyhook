@@ -457,7 +457,7 @@ mod publication_tests {
     fn sh871_publication_rejects_origin_swap_before_effect_resolution() {
         let scratch = storyhook_test_support::scratch_dir();
         let root = scratch.path().canonicalize().unwrap();
-        let env = crate::env::Environment::at(&root);
+        let env = crate::env::Environment::at(&root).with_subprocess_patience();
         let deadline = Instant::now()
             + storyhook_test_support::load_grace::graced_now(Duration::from_secs(60));
         let cancelled = || false;
