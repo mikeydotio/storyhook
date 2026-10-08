@@ -2854,6 +2854,7 @@ where
                 None if active.active.mode == VerificationMode::VerificationSkipped => (
                     observation::verify(
                         store,
+                        env,
                         bus,
                         &candidate,
                         &active.cancellation,
@@ -2879,6 +2880,7 @@ where
                         |_| {
                             observation::verify(
                                 store,
+                                env,
                                 bus,
                                 &candidate,
                                 &active.cancellation,
