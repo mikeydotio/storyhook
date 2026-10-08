@@ -46,7 +46,7 @@ use crate::service::{
     SetPrefixOutcome, SettingsService, StateListing, StoryService, SystemService, TransferService,
     migrate, session, system, transfer,
 };
-use crate::store::{EngineLaneState, EngineScope, ProjectId, ReadOps, Store};
+use crate::store::{EngineScope, ProjectId, ReadOps, Store};
 
 pub(crate) mod story_ids;
 

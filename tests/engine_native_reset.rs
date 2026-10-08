@@ -386,9 +386,12 @@ fn sh890_native_multiple_lanes_preserve_verifying_and_closed_story_resources() {
         let story = StoryService::new(&ctx)
             .create(&storyhook::service::NewStoryInput {
                 title: format!("keep {state}"),
-                state: Some(state.into()),
+                state: Some("todo".into()),
                 ..Default::default()
             })
+            .unwrap();
+        let story = StoryService::new(&ctx)
+            .set_state(&story.id, state, None, Some("todo"), None)
             .unwrap();
         let branch = format!("worktree-{}", story.id);
         let path = w.repo.join(".codex/worktrees").join(&story.id);
