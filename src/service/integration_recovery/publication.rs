@@ -19,7 +19,8 @@ use serde::{Deserialize, Serialize};
 use std::{process::Command, time::Instant};
 
 /// Observable publication identity. JSON cannot acquire publication authority.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PublicationEvidence {
     /// Evidence format.
     pub version: u8,

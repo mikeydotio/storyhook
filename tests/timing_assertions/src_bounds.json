@@ -92,15 +92,15 @@
     }
   },
   "src/github_access/transport.rs": {
-    "production run_captured_private(self.bounds.operation": {
+    "production run_captured_private(bound": {
       "count": 1,
       "kind": "delegated",
-      "reason": "Repository carries separate 30s read and 120s operation allowances resolved from its owning Environment or production defaults. Each authority check and the single transport operation use that carried policy."
+      "reason": "Existing fixed-duration Git transport reads/operations still pass their owning Repository read/operation bound through the unchanged capture branch."
     },
-    "production run_captured_private(self.bounds.read": {
+    "production run_captured_query_quiescent(self.deadline": {
       "count": 1,
       "kind": "delegated",
-      "reason": "Repository carries separate 30s read and 120s operation allowances resolved from its owning Environment or production defaults. Each authority check and the single transport operation use that carried policy."
+      "reason": "The distinct publication control shares the original absolute deadline across origin reads, protected transport and full owned process-group drain. No step renews it."
     }
   },
   "src/lane_budget.rs": {
@@ -271,6 +271,13 @@
       "count": 1,
       "kind": "delegated",
       "reason": "The private index substitution fixture obtains its deadline from the test-local deadline helper, which applies load_grace to a 60-second progress allowance."
+    }
+  },
+  "src/service/integration_recovery/publication.rs": {
+    "production run_captured_query_quiescent(deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Private native object/source observations spend the original publication deadline and observe its cancellation; successful leader exit alone is not settlement."
     }
   },
   "src/service/isolated_merge.rs": {

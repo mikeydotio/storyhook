@@ -106,6 +106,13 @@ enum Kind {
 /// classification for "git, run from this module" has not changed. A new
 /// program, or a new file, does.
 const INVENTORY: &[(&str, &str, Kind)] = &[
+    // Publication preflight fixtures refuse before spawn on an expired or
+    // cancelled original operation; this nonexistent program never executes.
+    (
+        "src/github_access/transport.rs",
+        "\"/storyhook-fixture-command-must-not-spawn\"",
+        Kind::Waited,
+    ),
     // SH-871: native broker proof uses private file-backed input/output and
     // bounded quiescent capture. Public JSON alone confers no authority.
     (
