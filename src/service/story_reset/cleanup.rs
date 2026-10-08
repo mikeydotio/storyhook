@@ -17,6 +17,10 @@ use std::time::Duration;
 #[path = "cleanup_revivify_tests.rs"]
 mod revivify_tests;
 
+#[cfg(test)]
+#[path = "cleanup_retry_tests.rs"]
+mod retry_tests;
+
 /// Attempts for one removal whose failure may be transient.
 const STEP_ATTEMPTS: u32 = 3;
 
@@ -596,9 +600,54 @@ pub(super) fn remove(
     workspace: Option<&WorkspaceLock>,
     residue: &mut Residue,
 ) {
-    close_window(report, caller, env, workspace, residue);
+    // Ordinary story reset retains its final-lever, best-effort policy.
+    let _ = remove_checked(
+        report, paths, authority, caller, env, workspace, residue, None,
+    );
+}
+
+/// Shares physical teardown while Stop Now supplies its narrower owner policy.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn remove_checked(
+    report: &ResourceReport,
+    paths: &[ResetPathIdentity],
+    authority: &Authority,
+    caller: &ResetCaller,
+    env: &crate::env::Environment,
+    workspace: Option<&WorkspaceLock>,
+    residue: &mut Residue,
+    engine_owner: Option<&dyn Fn() -> Result<(), AppError>>,
+) -> Result<(), AppError> {
+    if let Some(check) = engine_owner {
+        check()?;
+    }
+    close_window(report, caller, env, workspace, residue, engine_owner);
+    if let Some(check) = engine_owner {
+        check()?;
+        if residue
+            .0
+            .iter()
+            .any(|entry| entry.resource == window_resource(report))
+        {
+            leave_git(
+                report,
+                residue,
+                "Stop Now could not prove its pinned window was safely closed",
+            );
+            return Ok(());
+        }
+        if let Err(error) = window_absent(report, env) {
+            residue.blocks_dispatch(window_resource(report), error.to_string());
+            leave_git(
+                report,
+                residue,
+                "Stop Now preserves Git resources until its leased window is absent",
+            );
+            return Ok(());
+        }
+    }
     let Some(repository) = &authority.repository else {
-        return;
+        return Ok(());
     };
     // Identity is checked again right before each destructive Git step.
     let unchanged = || super::identity::replaced(paths).is_empty();
@@ -612,6 +661,10 @@ pub(super) fn remove(
                 .iter()
                 .any(|identity| &identity.path == worktree && identity.removable);
             let removed = attempt(|| {
+                if let Some(check) = engine_owner {
+                    check()?;
+                    window_absent(report, env)?;
+                }
                 let registered = git::inventory_with_bound(
                     env.subprocess_bound(std::time::Duration::from_secs(60)),
                     repository,
@@ -619,6 +672,9 @@ pub(super) fn remove(
                 .iter()
                 .any(|record| &record.path == worktree);
                 if registered {
+                    super::identity::validate(paths)?;
+                    #[cfg(test)]
+                    retry_tests::before_removal(retry_tests::Removal::Worktree)?;
                     workspace_lock::git_with_bound(
                         env.subprocess_bound(std::time::Duration::from_secs(30)),
                         repository,
@@ -632,6 +688,11 @@ pub(super) fn remove(
                             "the directory remains and its identity is not proven".into(),
                         ));
                     }
+                    if let Some(check) = engine_owner {
+                        check()?;
+                        window_absent(report, env)?;
+                    }
+                    super::identity::validate(paths)?;
                     std::fs::remove_dir_all(worktree).map_err(|error| {
                         AppError::Validation(format!("removing {}: {error}", worktree.display()))
                     })?;
@@ -647,11 +708,18 @@ pub(super) fn remove(
         && unchanged()
     {
         let deleted = attempt(|| {
+            if let Some(check) = engine_owner {
+                check()?;
+                window_absent(report, env)?;
+            }
             if git::branch_exists_with_bound(
                 env.subprocess_bound(std::time::Duration::from_secs(60)),
                 repository,
                 branch,
             )? {
+                super::identity::validate(paths)?;
+                #[cfg(test)]
+                retry_tests::before_removal(retry_tests::Removal::Branch)?;
                 workspace_lock::git_with_bound(
                     env.subprocess_bound(std::time::Duration::from_secs(30)),
                     repository,
@@ -664,6 +732,32 @@ pub(super) fn remove(
         if let Err(error) = deleted {
             residue.leave(branch_resource(branch), error.to_string());
         }
+    }
+    if let Some(check) = engine_owner {
+        check()?;
+    }
+    Ok(())
+}
+
+/// Stop Now must quiesce the exact leased endpoint before touching Git.
+fn window_absent(report: &ResourceReport, env: &crate::env::Environment) -> Result<(), AppError> {
+    let socket = report
+        .socket_path
+        .as_ref()
+        .ok_or_else(|| AppError::Validation("Stop Now has no pinned tmux endpoint".into()))?;
+    let names = BTreeSet::from([report.window_name.clone()]);
+    let (target, panes) = tmux::resolved_panes(env, socket, &names)?;
+    if target.protected && target.endpoint != *socket {
+        return Err(AppError::Validation(
+            "Stop Now cannot prove absence after a tmux server generation change".into(),
+        ));
+    }
+    if panes.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::Validation(
+            "Stop Now still observes a leased story window".into(),
+        ))
     }
 }
 
@@ -732,16 +826,29 @@ fn close_window(
     env: &crate::env::Environment,
     workspace: Option<&WorkspaceLock>,
     residue: &mut Residue,
+    engine_owner: Option<&dyn Fn() -> Result<(), AppError>>,
 ) {
     let resource = window_resource(report);
-    let (target, expected) = match window_authority(report, caller, env) {
-        Ok(Some(proof)) => proof,
+    match window_authority(report, caller, env) {
+        Ok(Some(_)) => {}
         Ok(None) => return,
         Err(reason) => return residue.leave(resource, reason),
-    };
+    }
     let socket = report.socket_path.as_ref().expect("proven window socket");
     let names = BTreeSet::from([report.window_name.clone()]);
     let closed = attempt(|| {
+        if let Some(check) = engine_owner {
+            check()?;
+        }
+        // A failed kill may be followed by a respawn or a new server. Reuse
+        // the original report, never numeric identifiers from a replacement.
+        let Some((target, expected)) =
+            window_authority(report, caller, env).map_err(AppError::Validation)?
+        else {
+            return Ok(());
+        };
+        #[cfg(test)]
+        retry_tests::before_removal(retry_tests::Removal::Window)?;
         let mut command = std::process::Command::new("tmux");
         crate::env::spawn_env::apply_dispatch_allowlist(&mut command);
         target.apply(&mut command, Some(socket));

@@ -46,7 +46,7 @@ use crate::service::{
     SetPrefixOutcome, SettingsService, StateListing, StoryService, SystemService, TransferService,
     migrate, session, system, transfer,
 };
-use crate::store::{EngineLaneState, EngineScope, ProjectId, ReadOps, Store};
+use crate::store::{EngineScope, ProjectId, ReadOps, Store};
 
 pub(crate) mod story_ids;
 
@@ -1337,25 +1337,30 @@ fn dispatch_engine<S: Store>(ctx: &Ctx<'_, S>, action: EngineAction) -> Result<R
             let run_id = service.resolve_run_id(run.as_ref())?;
             service.resume(&run_id)?
         }
-        EngineAction::Stop { run, now: false } => {
+        EngineAction::Stop {
+            run, now: false, ..
+        } => {
             let run_id = service.resolve_run_id(run.as_ref())?;
             service.stop(&run_id, false)?
         }
-        EngineAction::Stop { run, now: true } => {
+        EngineAction::Stop {
+            run,
+            now: true,
+            caller,
+        } => {
+            let service = service.with_reset_caller(caller.clone());
             let run_id = service.resolve_run_id(run.as_ref())?;
             let selected = one_engine_view(service.status(Some(&run_id))?, &run_id)?;
-            if selected
-                .lanes
-                .iter()
-                .all(|lane| matches!(lane.state, EngineLaneState::Idle))
-            {
+            if !service.stop_needs_unclaim(&run_id)? {
                 service.stop(&run_id, true)?
             } else {
                 let script =
                     crate::api::dispatch::resolve_engine_dispatch_script(selected.run.agent)
                         .map_err(AppError::Storage)?;
                 let dispatcher = ShellDispatcher::new(script, ctx.env().clone());
-                EngineService::new(ctx, &dispatcher).stop(&run_id, true)?
+                EngineService::new(ctx, &dispatcher)
+                    .with_reset_caller(caller)
+                    .stop(&run_id, true)?
             }
         }
         EngineAction::Ack { run } => {

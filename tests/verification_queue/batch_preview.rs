@@ -143,6 +143,7 @@ impl Board {
             consecutive_hard_stops: 0,
             recent_quarantines: Vec::new(),
             stop_reason: None,
+            stop_origin: None,
             acknowledged_at: None,
             created_at: FIXTURE_NOW.into(),
             updated_at: FIXTURE_NOW.into(),

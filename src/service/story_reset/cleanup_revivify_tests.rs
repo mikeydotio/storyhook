@@ -132,6 +132,98 @@ fn a_window_that_appeared_after_reservation_is_left_and_reported() {
     assert_eq!(windows(&fixture, &fixture.endpoint), "SH-1\n");
 }
 
+fn engine_orphan(
+    fixture: &Fixture,
+    report: &mut ResourceReport,
+) -> (PathBuf, Vec<crate::store::ResetPathIdentity>, Authority) {
+    use std::os::unix::fs::MetadataExt;
+    // A partial prior Git removal can leave a directory with pinned identity.
+    let orphan = fixture.env.home().join("engine-orphan");
+    std::fs::create_dir(&orphan).unwrap();
+    std::fs::write(orphan.join("keep"), "owned work").unwrap();
+    let metadata = std::fs::symlink_metadata(&orphan).unwrap();
+    report.worktree = Some(orphan.clone());
+    let paths = vec![crate::store::ResetPathIdentity {
+        path: orphan.clone(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        removable: true,
+    }];
+    let authority = Authority {
+        repository: Some(fixture.env.home().into()),
+        orphan_directory: true,
+        ..Default::default()
+    };
+    (orphan, paths, authority)
+}
+
+#[test]
+fn sh890_changed_server_generation_with_empty_replacement_preserves_git_resources() {
+    let mut fixture = Fixture::new();
+    fixture.start(&fixture.socket.clone(), "SH-1");
+    fixture.start(&fixture.endpoint.clone(), "keepalive");
+    let mut report = report(&fixture, &fixture.socket);
+    let (orphan, paths, authority) = engine_orphan(&fixture, &mut report);
+    let mut residue = Residue::default();
+    remove_checked(
+        &report,
+        &paths,
+        &authority,
+        &ResetCaller::default(),
+        &fixture.env,
+        None,
+        &mut residue,
+        Some(&|| Ok(())),
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(orphan.join("keep")).unwrap(),
+        "owned work"
+    );
+    assert_eq!(windows(&fixture, &fixture.socket), "SH-1\n");
+    assert!(
+        residue
+            .into_entries()
+            .iter()
+            .any(|entry| entry.reason.contains("generation"))
+    );
+}
+
+#[test]
+fn sh890_callers_live_window_withholds_git_removal() {
+    let mut fixture = Fixture::new();
+    fixture.start(&fixture.endpoint.clone(), "SH-1");
+    let mut report = report(&fixture, &fixture.endpoint);
+    let (orphan, paths, authority) = engine_orphan(&fixture, &mut report);
+    let caller = ResetCaller {
+        pane: Some(report.pane.as_ref().unwrap().pane_id.clone()),
+        socket: Some(fixture.endpoint.clone()),
+    };
+    let mut residue = Residue::default();
+    remove_checked(
+        &report,
+        &paths,
+        &authority,
+        &caller,
+        &fixture.env,
+        None,
+        &mut residue,
+        Some(&|| Ok(())),
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(orphan.join("keep")).unwrap(),
+        "owned work"
+    );
+    assert_eq!(windows(&fixture, &fixture.endpoint), "SH-1\n");
+    assert!(
+        residue
+            .into_entries()
+            .iter()
+            .any(|entry| entry.reason.contains("caller's own"))
+    );
+}
+
 #[test]
 fn preview_window_proof_never_closes_any_window_and_keeps_caller_and_generation_guards() {
     let mut fixture = Fixture::new();

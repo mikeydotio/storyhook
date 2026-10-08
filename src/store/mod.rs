@@ -77,7 +77,7 @@ pub use story_reset::{
     ResetLane, ResetOrigin, ResetPathIdentity, ResetRecovery, ResetResidue, StoryReset,
 };
 mod engine_reset;
-pub use engine_reset::EngineReset;
+pub use engine_reset::{EngineReset, EngineResetCleanup};
 pub mod error;
 pub mod fault;
 mod gate_evidence;

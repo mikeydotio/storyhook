@@ -239,7 +239,7 @@
     "production ref:DISPATCH_TIMEOUT": {
       "count": 1,
       "kind": "delegated",
-      "reason": "One total engine stop-lanes deadline passed through stop_lanes_after_dispatch. It remains the transaction contract; the reset helper subprocess itself now reads its Environment allowance."
+      "reason": "One total engine stop-lanes deadline passed through stop_lanes_after_dispatch. It remains the dispatch settlement contract; subsequent native teardown and reserved-owner store writes retain independent subprocess allowances and patient progress."
     }
   },
   "src/service/engine/restoration.rs": {

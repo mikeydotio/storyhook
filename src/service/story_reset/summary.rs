@@ -85,6 +85,11 @@ pub(crate) fn view(reset: &StoryReset) -> ResetView {
 
 /// Lists removed resources, recovery commands and residue for the comment.
 pub(super) fn completion(reset: &StoryReset) -> String {
+    completion_to(reset, "todo")
+}
+
+/// Stop Now restores its captured prior open state; teardown reporting is shared.
+pub(super) fn completion_to(reset: &StoryReset, target: &str) -> String {
     let mut text = format!("Reset {} completed.", reset.token);
     let removed = removed(reset);
     let names = removed.names();
@@ -94,9 +99,9 @@ pub(super) fn completion(reset: &StoryReset) -> String {
         text.push_str(&format!(" Removed {}.", names.join(", ")));
     }
     let recovery = reset.recovery.clone().unwrap_or_default();
-    text.push_str(
-        " Released ownership and returned the story to todo. Preserved remote branches and pull requests.",
-    );
+    text.push_str(&format!(
+        " Released ownership and returned the story to {target}. Preserved remote branches and pull requests."
+    ));
     if let (Some(branch), Some(tip)) = (&recovery.branch, &recovery.tip) {
         let unpushed = recovery
             .unpushed
@@ -108,11 +113,18 @@ pub(super) fn completion(reset: &StoryReset) -> String {
     }
     match (recovery.dirty, recovery.untracked) {
         (Some(0), Some(0)) | (None, None) => {}
-        (dirty, untracked) => text.push_str(&format!(
-            " Discarded {} changed and {} untracked paths.",
-            dirty.unwrap_or(0),
-            untracked.unwrap_or(0)
-        )),
+        (dirty, untracked) => {
+            let label = if removed.worktree.is_some() {
+                "Discarded"
+            } else {
+                "Recorded before reset:"
+            };
+            text.push_str(&format!(
+                " {label} {} changed and {} untracked paths.",
+                dirty.unwrap_or(0),
+                untracked.unwrap_or(0)
+            ));
+        }
     }
     if let Some(awaiting) = &recovery.cleared_awaiting {
         text.push_str(&format!(" Cleared the awaiting reason: {awaiting}"));

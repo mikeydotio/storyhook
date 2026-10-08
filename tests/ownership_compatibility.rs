@@ -63,7 +63,7 @@ fn setup(f: &ServiceFixture) -> Owners {
     Owners {
         native:r#"{"operation":"native-token","lease":null,"force":false,"previous_awaiting":null,"detail":"retained"}"#.into(),
         card:StoryReset {project:f.project(),story:no,story_id:story.id.clone(),token:"card-token".into(),original_state:"verifying".into(),lanes:Vec::new(),resources:None,paths:Vec::new(),completed:false,failure:None,residue:Vec::new(),recovery:None,origin:Default::default()},
-        engine:EngineReset {project:f.project(),story:no,run_id:"owner-run".into(),lane_index:0,token:"engine-token".into(),restore_to:"todo".into(),failure:None,lease:StoryCleanupLease {version:1,project_slug:candidate.project_slug,story_id:story.id,repository_path:f.cwd().into(),worktree_path:f.cwd().join("work"),branch:"feature".into(),tmux:TmuxCleanupTarget { revivify: None,socket_path:f.cwd().join("socket")}}},
+        engine:EngineReset {project:f.project(),story:no,run_id:"owner-run".into(),lane_index:0,token:"engine-token".into(),restore_to:"todo".into(),failure:None,cleanup:None,lease:StoryCleanupLease {version:1,project_slug:candidate.project_slug,story_id:story.id,repository_path:f.cwd().into(),worktree_path:f.cwd().join("work"),branch:"feature".into(),tmux:TmuxCleanupTarget { revivify: None,socket_path:f.cwd().join("socket")}}},
         landing,
     }
 }

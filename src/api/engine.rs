@@ -38,8 +38,8 @@ use crate::service::engine::{
     UnclaimRequest, WindowProbe,
 };
 use crate::store::{
-    EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord, EngineRunRecord,
-    EngineScope, EngineSpeed, ReadOps, SqliteStore, Store,
+    EngineAgent, EngineLaneRecord, EngineQuarantineRecord, EngineRunRecord, EngineScope,
+    EngineSpeed, ReadOps, SqliteStore, Store,
 };
 
 /// Admission can retry for 60 seconds plus at most one five-second SQLite
@@ -164,10 +164,8 @@ impl EngineController {
                                     request.run
                                 ))
                             })?;
-                        let needs_helper = current
-                            .lanes
-                            .iter()
-                            .any(|lane| !matches!(lane.state, EngineLaneState::Idle));
+                        let needs_helper = EngineService::new(&ctx, &NoopDispatcher)
+                            .stop_needs_unclaim(&request.run)?;
                         if !needs_helper {
                             return control_service(&ctx, &NoopDispatcher).stop(&request.run, true);
                         }
@@ -512,6 +510,7 @@ impl From<RunView> for HttpRunView {
             consecutive_hard_stops,
             recent_quarantines,
             stop_reason,
+            stop_origin: _,
             acknowledged_at,
             created_at,
             updated_at,

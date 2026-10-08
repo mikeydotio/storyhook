@@ -1010,6 +1010,7 @@ fn recorded_engine_provider_survives_a_custom_worktree_without_a_pane() {
         consecutive_hard_stops: 0,
         recent_quarantines: vec![],
         stop_reason: None,
+        stop_origin: None,
         acknowledged_at: None,
         created_at: "2026-09-12T00:00:00Z".into(),
         updated_at: "2026-09-12T00:00:00Z".into(),

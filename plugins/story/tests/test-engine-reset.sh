@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Real daemon -> engine -> helper -> Git/tmux reset. Only operational lane
+# Real daemon -> engine -> shared native Git/tmux reset. Only operational lane
 # rows are fixture data; state transitions, cleanup and receipts are production.
 real_tmux=$(command -v tmux)
 source "$(dirname "$0")/lib.sh"
@@ -131,7 +131,7 @@ assert_contains "$windows" "$verify" 'verifier window preserved'
 assert_contains "$windows" "$unrelated" 'unrelated window preserved'
 printf '%s\n' "$windows" | rg -x "$active" && fail_test 'cancelled window survived'
 
-# A mismatched marker refuses before closing the window or deleting Git work.
+# A mismatched marker leaves every resource and finishes with a dispatch hold.
 bad=$(new_story "$repo" 'changed resource identity')
 bad_wt=$(make_owned "$bad")
 (cd "$repo" && story claim "$bad" >/dev/null) || exit 1
@@ -141,43 +141,41 @@ marker="$private/storyhook-cleanup-lease-v1.json"
 cp "$marker" "$socket_root/original-marker.json"
 jq '.branch="foreign-branch"' "$socket_root/original-marker.json" > "$marker"
 out=$(stop_now sh706-reset-marker "$repo/.git/storyhook/workspace-locks/$bad.lock")
-assert_contains "$out" 'cleanup lease marker' 'marker mismatch identifies its resource'
-assert_contains "$out" 'branch mismatch' 'marker mismatch is diagnosed'
+assert_eq "$(jqf "$out" .run.state)" finished 'uncertain lane settles with residue'
+assert_contains "$out" 'marker' 'marker mismatch identifies its resource'
 assert_contains "$(tmux -S "$socket" list-windows -a -F '#{window_name}')" "$bad" 'mismatched target window preserved'
 [ -d "$bad_wt" ] || fail_test 'mismatched worktree removed'
-assert_eq "$(cd "$repo" && story show "$bad" --json | jq -r '.story.story.state')" in-progress 'failed reset retains active claim'
-check=$(cd "$repo" && story engine reset-check "$bad" --json 2>&1)
-assert_contains "$check" 'reset in progress' 'dispatch guard sees reservation'
-cp "$socket_root/original-marker.json" "$marker"
-# An installed artifact nested inside the exact leased worktree remains a
-# refusal even though the operator confirmed discarding ordinary lane work.
-[ ! -e "$STORYHOOK_DATA_DIR/managed-paths" ] || exit 1
-printf '%s\n' "$bad_wt/installed-plugin" > "$STORYHOOK_DATA_DIR/managed-paths"
-out=$(stop_now sh706-reset-marker)
-assert_contains "$out" 'overlaps installed artifacts' 'leased reset preserves installed resources'
-[ -d "$bad_wt" ] || fail_test 'installed-resource worktree removed'
-rm "$STORYHOOK_DATA_DIR/managed-paths"
-out=$(stop_now sh706-reset-marker)
-assert_eq "$(jqf "$out" .run.state)" finished 'same reserved operation retries successfully'
-[ ! -e "$bad_wt" ] || fail_test 'repaired exact target was not removed'
+git -C "$repo" show-ref --verify --quiet "refs/heads/worktree-$bad" || fail_test 'mismatched branch removed'
+assert_eq "$(cd "$repo" && story show "$bad" --json | jq -r '.story.story.state')" todo 'uncertain reset restores prior state'
+assert_contains "$(cd "$repo" && story show "$bad" --json | jq -r '.story.story.awaiting')" 'left resources' 'retained identity blocks redispatch'
 
-# Recovery accepts Git cleanup already completed before finalization while
-# still closing the remaining exact window and deleting the remaining branch.
+# Installed artifacts are retained and reported by the same native teardown.
+installed=$(new_story "$repo" 'preserve installed artifacts')
+installed_wt=$(make_owned "$installed")
+(cd "$repo" && story claim "$installed" >/dev/null) || exit 1
+seed_run sh890-reset-installed "$installed_wt"
+[ ! -e "$STORYHOOK_DATA_DIR/managed-paths" ] || exit 1
+printf '%s\n' "$installed_wt/installed-plugin" > "$STORYHOOK_DATA_DIR/managed-paths"
+out=$(stop_now sh890-reset-installed)
+assert_eq "$(jqf "$out" .run.state)" finished 'installed resource lane settles with residue'
+assert_contains "$out" 'installed' 'leased reset records installed-resource protection'
+[ -d "$installed_wt" ] || fail_test 'installed-resource worktree removed'
+git -C "$repo" show-ref --verify --quiet "refs/heads/worktree-$installed" || fail_test 'installed-resource branch removed'
+assert_contains "$(cd "$repo" && story show "$installed" --json | jq -r '.story.story.awaiting')" 'left resources' 'retained installed resources block redispatch'
+rm "$STORYHOOK_DATA_DIR/managed-paths"
+
+# A partial prior cleanup may leave only its exact window and local branch.
+# Absence is observed from the original lease, without rediscovering other work.
 partial=$(new_story "$repo" 'restart between deletion and finalization')
 partial_wt=$(make_owned "$partial")
 (cd "$repo" && story claim "$partial" >/dev/null) || exit 1
 seed_run sh706-reset-partial "$partial_wt"
-private=$(git -C "$partial_wt" rev-parse --absolute-git-dir)
-marker="$private/storyhook-cleanup-lease-v1.json"
-cp "$marker" "$socket_root/partial-marker.json"
-jq '.branch="foreign-branch"' "$socket_root/partial-marker.json" > "$marker"
-out=$(stop_now sh706-reset-partial)
-assert_contains "$out" 'cleanup lease marker' 'partial fixture names its mismatched marker'
-assert_contains "$out" 'branch mismatch' 'partial fixture holds a durable reservation'
 git -C "$repo" worktree remove --force "$partial_wt" || exit 1
 out=$(stop_now sh706-reset-partial)
-assert_eq "$(jqf "$out" .run.state)" finished 'absent worktree retry finishes'
+assert_eq "$(jqf "$out" .run.state)" finished 'absent worktree cleanup finishes'
 git -C "$repo" show-ref --verify --quiet "refs/heads/worktree-$partial" && fail_test 'partial reset branch survived'
 assert_eq "$(cd "$repo" && story show "$partial" --json | jq -r '.story.story.state')" todo 'partial reset restores only after remaining cleanup'
+windows=$(tmux -S "$socket" list-windows -a -F '#{window_name}')
+printf '%s\n' "$windows" | rg -x "$partial" && fail_test 'partial reset window survived'
 
 exit "$_FAILED"

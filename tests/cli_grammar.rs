@@ -848,6 +848,7 @@ fn engine_parser_covers_every_action_and_default() {
         (
             vec!["engine", "stop", "--now", "--run", "run-1"],
             EngineAction::Stop {
+                caller: storyhook::service::reset::ResetCaller::capture(),
                 run: Some("run-1".to_string()),
                 now: true,
             },

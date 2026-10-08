@@ -1,5 +1,6 @@
 //! A card reset holds readiness until exact resource cleanup succeeds.
 mod cleanup;
+pub(crate) mod engine;
 mod preview;
 pub use preview::{ResetPreview, ResetWindowPreview};
 pub(crate) mod identity;

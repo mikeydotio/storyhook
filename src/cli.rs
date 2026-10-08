@@ -171,6 +171,11 @@ pub enum EngineAction {
     Stop {
         run: Option<String>,
         now: bool,
+        #[serde(
+            default,
+            skip_serializing_if = "crate::service::reset::ResetCaller::is_empty"
+        )]
+        caller: crate::service::reset::ResetCaller,
     },
     Ack {
         run: Option<String>,
@@ -4253,7 +4258,11 @@ fn parse_engine_stop(args: &[String]) -> Result<EngineAction, AppError> {
         }
     }
     expect_no_more(&args[index..], ENGINE_STOP_USAGE)?;
-    Ok(EngineAction::Stop { run, now })
+    Ok(EngineAction::Stop {
+        run,
+        now,
+        caller: crate::service::reset::ResetCaller::capture(),
+    })
 }
 
 fn parse_report(args: &[String]) -> Result<Invocation, AppError> {

@@ -146,6 +146,7 @@ impl Dispatcher for FakeDispatcher {
         &self,
         request: storyhook::store::EngineReset,
         _workspace: std::os::fd::BorrowedFd<'_>,
+        _native: &mut dyn FnMut() -> Result<DispatchOutcome, AppError>,
     ) -> Result<DispatchOutcome, AppError> {
         match self.next(DispatcherCall::Reset(request.clone())) {
             DispatcherStep::Reset => Ok(DispatchOutcome::from_payload(serde_json::json!({

@@ -199,8 +199,6 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // A descendant therefore has no EOF rendezvous with the caller and no
     // unbounded process lifetime to inherit.
     ("src/service/engine.rs", "\"bash\"", Kind::Waited),
-    // Explicit reset uses the same bounded file-backed capture and child environment.
-    ("src/service/engine/reset.rs", "\"bash\"", Kind::Waited),
     // Restoration proof (SH-825) runs its helper through run_captured_with_input:
     // staged stdin, file-backed output, its own process group, and the shared
     // tmux ownership deadline.
@@ -225,6 +223,13 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // per-call tmux bound.
     (
         "src/service/story_reset/cleanup_revivify_tests.rs",
+        "\"tmux\"",
+        Kind::Waited,
+    ),
+    // SH-890 retry fixtures respawn a pane through file-backed capture at the
+    // Environment-adjusted tmux bound; the respawned pane owns no capture pipe.
+    (
+        "src/service/story_reset/cleanup_retry_tests.rs",
         "\"tmux\"",
         Kind::Waited,
     ),

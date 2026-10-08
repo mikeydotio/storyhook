@@ -45,6 +45,7 @@ fn run(id: &str, project_slug: &str, state: EngineRunState) -> EngineRunRecord {
         consecutive_hard_stops: 0,
         recent_quarantines: Vec::new(),
         stop_reason: None,
+        stop_origin: None,
         acknowledged_at: None,
         created_at: "2026-08-29T20:00:00Z".into(),
         updated_at: "2026-08-29T20:00:00Z".into(),
