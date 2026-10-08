@@ -1211,7 +1211,8 @@ fn the_runner_provisions_both_dispatch_provider_commands_before_daemon_startup()
     );
 
     let written = body
-        .find("write_e2e_provider_doubles \"$provider_bin\" \"$faketmux_env\" \"$FAKE_TMUX_IMPLEMENTATION\" \"$dispatch_owners\" \"$dispatch_owner_tool\" || exit 1")
+        .find(r#"write_e2e_provider_doubles "$provider_bin" "$faketmux_env" "$FAKE_TMUX_IMPLEMENTATION" \
+    "$dispatch_owners" "$dispatch_owner_tool" || exit 1"#)
         .expect("run_one_project must generate the doubles through the library, refusing on failure");
     let path = body
         .find("export PATH=\"$provider_bin:$PATH\"")

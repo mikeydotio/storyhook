@@ -353,7 +353,13 @@ while :; do sleep 0.01; done
         for executable, args in [(fake, ["new-window"]), (provider_bin / "tmux", ["new-window"]),
                                  (provider_bin / "codex", ["exec", "fixture"])]:
             with self.subTest(executable=str(executable)):
-                result = subprocess.run([str(executable), *args], env=env, capture_output=True,
+                invocation_env = dict(env)
+                if executable != fake:
+                    # Only baked custody can protect these late calls: neither
+                    # the snapshot nor ambient custody variables are available.
+                    invocation_env.pop("FAKE_TMUX_CUSTODY")
+                    invocation_env.pop("FAKE_TMUX_CUSTODY_HELPER")
+                result = subprocess.run([str(executable), *args], env=invocation_env, capture_output=True,
                                         text=True, timeout=self.budget)
                 self.assertEqual(result.returncode, 64, result.stderr)
                 self.assertIn("closed writer admission", result.stderr)
