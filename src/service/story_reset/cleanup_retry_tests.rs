@@ -296,7 +296,7 @@ fn sh890_window_retry_preserves_a_respawned_pane_and_its_git_resources() {
             command,
             env.subprocess_bound(crate::service::engine::TMUX_TIMEOUT),
         )
-        .unwrap();
+        .unwrap_or_else(|error| panic!("respawning fixture pane: {}", error.detail()));
         assert!(
             output.status.success(),
             "{}",
