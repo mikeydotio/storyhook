@@ -37,6 +37,10 @@ impl IntegrationGateClaim {
     pub fn publication(&self) -> &PublicationEvidence {
         self.owner.publication.as_ref().expect("gate constructor")
     }
+    /// Exact original private objects retained through the central gate.
+    pub fn assembly(&self) -> &AssemblyEvidence {
+        self.native.evidence()
+    }
     /// Absolute original operation lifetime and native private resource custody.
     pub fn validate_custody(&self) -> Result<(), AppError> {
         check_live(self.deadline, &self.cancellation)?;
