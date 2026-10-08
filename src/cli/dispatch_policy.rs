@@ -29,7 +29,7 @@ pub enum PolicyAction {
 }
 
 pub(super) fn parse(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U110;
+    let usage = crate::cli::model::usage::DISPATCH_POLICY_1;
     let fail = || AppError::Usage(usage.into());
     let verb = args.get(1).map(String::as_str).unwrap_or("show");
     if super::model::DispatchPolicyVerb::find(verb).is_none() {

@@ -5,6 +5,8 @@
 //! separate grammar. Existing parsers retain their legacy acceptance semantics.
 use super::*;
 
+pub mod grammar;
+
 /// The entry boundary; it is not an authorization or visibility classification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum FamilyHandler {
@@ -45,7 +47,7 @@ pub fn before_invocation(args: &[String]) -> Option<BeforeInvocation> {
 }
 
 macro_rules! commands {
-    ($( $variant:ident [$($name:literal),+] $handler:ident ($arg:ident) => $body:expr, )*) => {
+    ($( $variant:ident [$($name:literal),+] $handler:ident $grammar:expr; ($arg:ident) => $body:expr, )*) => {
         /// Every registered command family, including early local handlers.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
         pub enum CommandId { $( $variant, )* }
@@ -64,6 +66,9 @@ macro_rules! commands {
             pub(super) fn parse(self, args: &[String]) -> Result<Invocation, AppError> {
                 match self { $(Self::$variant => { let $arg = args; let _ = $arg; $body },)* }
             }
+            pub const fn grammar(self) -> Grammar {
+                match self { $(Self::$variant => $grammar,)* }
+            }
             /// Entry routing is supplied by the same registration as the parser.
             pub const fn handler(self) -> FamilyHandler {
                 match self { $(Self::$variant => FamilyHandler::$handler,)* }
@@ -81,35 +86,35 @@ fn unknown(name: &str) -> Result<Invocation, AppError> {
 }
 
 commands! {
-    HelpFlag ["-h", "--help"] Parsed (args) => Ok(Invocation::Help),
-    VersionFlag ["-V", "--version"] Parsed (args) => Ok(Invocation::Version),
-    Help ["help"] Parsed (args) => parse_help(args),
-    Mcp ["mcp"] Parsed (args) => Err(AppError::Usage(
+    HelpFlag ["-h", "--help"] Parsed Grammar::new("[<ignored>...]", "", FormKind::Command); (args) => Ok(Invocation::Help),
+    VersionFlag ["-V", "--version"] Parsed Grammar::new("[<ignored>...]", "", FormKind::Command); (args) => Ok(Invocation::Version),
+    Help ["help"] Parsed Grammar::new("[<topic:help-topics>] [--all | --compact]", "", FormKind::Command); (args) => parse_help(args),
+    Mcp ["mcp"] Parsed Grammar::new("", "", FormKind::Retired); (args) => Err(AppError::Usage(
             "`story mcp` is retired. Use CLI commands with --json instead. \
              Remove the storyhook MCP server from your host configuration. \
              Run `story help agent-guide` and `story help json-format` for migration guidance."
                 .into(),
         )),
-    Update ["update"] Parsed (args) => parse_update(args),
+    Update ["update"] Parsed Grammar::new("[--check] [--force] [--source <repository>]", "", FormKind::Command); (args) => parse_update(args),
         // Not left to fall through to `unknown command`. Five years of
         // documents, this repo's own plugin skill, and every agent that has
         // ever seen storyhook all say `story init`; the least useful thing to
         // tell any of them is that no such command exists.
-    Init ["init"] Parsed (args) => Err(AppError::Usage(
+    Init ["init"] Parsed Grammar::new("", "", FormKind::Retired); (args) => Err(AppError::Usage(
             "`story init` is now `story project new`.\n\nThe project verbs moved into one \
              group: `story project new`, `story project list`, `story project delete`.\n\n  \
              story project new --prefix <PREFIX>"
                 .to_string(),
         )),
-    Project ["project"] Parsed (args) => parse_project(args),
-    DispatchPolicy ["dispatch-policy"] Parsed (args) => dispatch_policy::parse(args),
-    New ["new"] Parsed (args) => parse_new(args),
-    State ["state"] Parsed (args) => parse_state(args),
-    List ["list"] Parsed (args) => parse_list(args),
-    Next ["next"] Parsed (args) => parse_next(args),
-    Claim ["claim"] Parsed (args) => parse_claim(args),
-    Unclaim ["unclaim"] Parsed (args) => parse_unclaim(args),
-    Reset ["reset"] Parsed (args) => {
+    Project ["project"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_project(args),
+    DispatchPolicy ["dispatch-policy"] Parsed Grammar::new("[--global]", "", FormKind::Command); (args) => dispatch_policy::parse(args),
+    New ["new"] Parsed Grammar::new("<title>... [--state <state:states>] [--type <type:types>] [--description <text>] [--priority <priority:priority>] [--complexity <complexity:complexity>] [--label <label:labels>]... [--labels <csv:labels>] [--blocked-by <id:stories>]... [--draft]", "example", FormKind::Command); (args) => parse_new(args),
+    State ["state"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_state(args),
+    List ["list"] Parsed Grammar::new("[--state <state:states>] [--priority <csv:priority>] [--label <csv:labels>] [--created-after <date>] [--updated-after <date>] [--stale <duration>] [--phase <phase:phases>] [--type <type:types>] [--flagged] [--blocked] [--ready] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]", "", FormKind::Command); (args) => parse_list(args),
+    Next ["next"] Parsed Grammar::new("[--count <count>] [--phase <phase:phases>] [--epic <id:stories>] [--exclude-label <csv:labels>]", "", FormKind::Command); (args) => parse_next(args),
+    Claim ["claim"] Parsed Grammar::new("(<id:stories> | --next [--phase <phase:phases>] [--epic <id:stories>] [--exclude-label <csv:labels>]) [--comment <text> | --no-comment] [--dry-run]", "SH-1", FormKind::Command); (args) => parse_claim(args),
+    Unclaim ["unclaim"] Parsed Grammar::new("<id:stories> [--comment <text> | --no-comment] [--dry-run]", "SH-1", FormKind::Command); (args) => parse_unclaim(args),
+    Reset ["reset"] Parsed Grammar::new("<id:stories> [--force] [--dry-run]", "SH-1", FormKind::Command); (args) => {
             let mut id = None;
             let mut force = false;
             let mut dry_run = false;
@@ -120,13 +125,13 @@ commands! {
                     value if !value.starts_with('-') && id.is_none() => id = Some(value.to_owned()),
                     _ => {
                         return Err(AppError::Usage(
-                            usage::U103.into(),
+                            usage::RESET_1.into(),
                         ));
                     }
                 }
             }
             let id = id.ok_or_else(|| {
-                AppError::Usage(usage::U103.into())
+                AppError::Usage(usage::RESET_1.into())
             })?;
             let caller = crate::service::reset::ResetCaller::capture();
             if dry_run {
@@ -135,97 +140,97 @@ commands! {
                 Ok(Invocation::Reset { id, force, caller })
             }
         },
-    Internal ["internal"] Parsed (args) => parse_internal(args),
-    Engine ["engine"] Parsed (args) => parse_engine(args),
-    Verifier ["verifier"] Parsed (args) => parse_verifier(args),
-    Cleanup ["cleanup"] Parsed (args) => parse_cleanup(args),
-    Resources ["resources"] Parsed (args) => parse_resources(args),
-    Summary ["summary"] Parsed (args) => {
-            expect_no_more(&args[1..], usage::U104)?;
+    Internal ["internal"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_internal(args),
+    Engine ["engine"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_engine(args),
+    Verifier ["verifier"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_verifier(args),
+    Cleanup ["cleanup"] Parsed Grammar::new("[--dry-run]", "", FormKind::Command); (args) => parse_cleanup(args),
+    Resources ["resources"] Parsed Grammar::new("<id:stories> [--lease-json <json>] [--window-name <name>] [--worktree-root <path>] [--tmux-socket <path>] [--location-only]", "SH-1", FormKind::Command); (args) => parse_resources(args),
+    Summary ["summary"] Parsed Grammar::new("", "", FormKind::Command); (args) => {
+            expect_no_more(&args[1..], usage::SUMMARY_1)?;
             Ok(Invocation::Summary)
         },
-    Report ["report"] Parsed (args) => parse_report(args),
-    Search ["search"] Parsed (args) => parse_search(args),
-    Import ["import"] Parsed (args) => parse_import(args),
-    Decompose ["decompose"] Parsed (args) => parse_decompose(args),
-    ImportProject ["import-project"] Parsed (args) => parse_import_project(args),
-    Migrate ["migrate"] Parsed (args) => parse_migrate(args),
+    Report ["report"] Parsed Grammar::new("[--html]", "", FormKind::Command); (args) => parse_report(args),
+    Search ["search"] Parsed Grammar::new("<query>...", "example", FormKind::Command); (args) => parse_search(args),
+    Import ["import"] Parsed Grammar::new("[<file>]", "", FormKind::Command); (args) => parse_import(args),
+    Decompose ["decompose"] Parsed Grammar::new("(<file> | --stdin) [--dry-run]", "example.md", FormKind::Command); (args) => parse_decompose(args),
+    ImportProject ["import-project"] Parsed Grammar::new("<file> [--legacy-links]", "example.json", FormKind::Command); (args) => parse_import_project(args),
+    Migrate ["migrate"] Parsed Grammar::new("[<path>] [--dry-run]", "", FormKind::Command); (args) => parse_migrate(args),
         // Deleted rather than redirected-and-kept: `link checkout` is strictly
         // more capable. `relink` needed a pointer file in the directory it was
         // pointed at, which is precisely what a checkout that has been moved,
         // renamed or freshly cloned may not have; `link checkout` records the
         // path against a project named the ordinary way and asks the directory
         // for nothing.
-    Relink ["relink"] Parsed (args) => Err(AppError::Usage(
+    Relink ["relink"] Parsed Grammar::new("", "", FormKind::Retired); (args) => Err(AppError::Usage(
             "`story relink` is now `story project link checkout`.\n\nIt no longer reads a \
              pointer file, so it works for a checkout that never had one:\n\n  story --project \
              <SLUG> project link checkout <PATH>"
                 .to_string(),
         )),
-    Export ["export"] Parsed (args) => {
-            expect_no_more(&args[1..], usage::U105)?;
+    Export ["export"] Parsed Grammar::new("", "", FormKind::Command); (args) => {
+            expect_no_more(&args[1..], usage::EXPORT_1)?;
             Ok(Invocation::Export)
         },
-    LoadContext ["load-context", "context"] Parsed (args) => parse_context(args),
-    Phase ["phase"] Parsed (args) => parse_phase(args),
-    Type ["type"] Parsed (args) => parse_type(args),
-    Epic ["epic"] Parsed (args) => parse_epic(args),
-    Handoff ["handoff"] Parsed (args) => parse_handoff(args),
-    Graph ["graph"] Parsed (args) => parse_graph(args),
-    Doctor ["doctor"] Parsed (args) => parse_doctor(args),
-    LaneBudget ["lane-budget"] Parsed (args) => {
-            expect_no_more(&args[1..], usage::U106)?;
+    LoadContext ["load-context", "context"] Parsed Grammar::new("[--format <format:context-format>] [--story <id:stories>]", "", FormKind::Command); (args) => parse_context(args),
+    Phase ["phase"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_phase(args),
+    Type ["type"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_type(args),
+    Epic ["epic"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_epic(args),
+    Handoff ["handoff"] Parsed Grammar::new("[--since <duration>]", "", FormKind::Command); (args) => parse_handoff(args),
+    Graph ["graph"] Parsed Grammar::new("[--critical-path | --blocked-by <id:stories> | --parallel-groups] [<ignored>...]", "", FormKind::Command); (args) => parse_graph(args),
+    Doctor ["doctor"] Parsed Grammar::new("[--fix]", "", FormKind::Command); (args) => parse_doctor(args),
+    LaneBudget ["lane-budget"] Parsed Grammar::new("", "", FormKind::Command); (args) => {
+            expect_no_more(&args[1..], usage::LANE_BUDGET_1)?;
             Ok(Invocation::LaneBudget)
         },
-    Hooks ["hooks"] Parsed (args) => parse_hooks(args),
-    Scaffold ["scaffold"] Parsed (args) => parse_scaffold(args),
-    CommitSync ["commit-sync", "sync-git"] Parsed (args) => parse_commit_sync(args),
-    LinkPr ["link-pr"] Parsed (args) => parse_link_pr(args),
-    UnlinkPr ["unlink-pr"] Parsed (args) => parse_unlink_pr(args),
-    Attachment ["attachment"] Parsed (args) => parse_attachment(args),
-    PrCheck ["pr-check"] Parsed (args) => parse_pr_check(args),
-    Plugin ["plugin"] Parsed (args) => parse_plugin(args),
-    Web ["web"] Parsed (args) => parse_web(args),
-    Token ["token"] Parsed (args) => parse_token(args),
-    Daemon ["daemon"] Parsed (args) => parse_daemon(args),
-    Store ["store"] Parsed (args) => parse_store(args),
-    Continuation ["continuation"] Parsed (args) => continuation::parse(args),
-    SessionEligibility ["session-eligibility"] Parsed (args) => {
+    Hooks ["hooks"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_hooks(args),
+    Scaffold ["scaffold"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_scaffold(args),
+    CommitSync ["commit-sync", "sync-git"] Parsed Grammar::new("[--since <duration>]", "", FormKind::Command); (args) => parse_commit_sync(args),
+    LinkPr ["link-pr"] Parsed Grammar::new("<id:stories> <url> [--no-close-on-merge]", "SH-1 https://example.invalid/pr/1", FormKind::Command); (args) => parse_link_pr(args),
+    UnlinkPr ["unlink-pr"] Parsed Grammar::new("<id:stories> <url>", "SH-1 https://example.invalid/pr/1", FormKind::Command); (args) => parse_unlink_pr(args),
+    Attachment ["attachment"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_attachment(args),
+    PrCheck ["pr-check"] Parsed Grammar::new("[<id:stories>]", "", FormKind::Command); (args) => parse_pr_check(args),
+    Plugin ["plugin"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_plugin(args),
+    Web ["web"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_web(args),
+    Token ["token"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_token(args),
+    Daemon ["daemon"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_daemon(args),
+    Store ["store"] Parsed Grammar::new("", "", FormKind::Group); (args) => parse_store(args),
+    Continuation ["continuation"] Parsed Grammar::new("", "", FormKind::Group); (args) => continuation::parse(args),
+    SessionEligibility ["session-eligibility"] Parsed Grammar::new("<id:stories>", "SH-1", FormKind::Command); (args) => {
             if args.len() != 2 {
                 return Err(AppError::Usage(
-                    usage::U107.into(),
+                    usage::SESSION_ELIGIBILITY_1.into(),
                 ));
             }
             Ok(Invocation::SessionEligibility {
                 id: args[1].clone(),
             })
         },
-    Show ["show"] Parsed (args) => parse_show(args),
-    Log ["log"] Parsed (args) => parse_log(args),
-    Comment ["comment"] Parsed (args) => parse_comment(args),
-    Move ["move"] Parsed (args) => parse_move(args),
-    Close ["close"] Parsed (args) => parse_close(args),
-    Block ["block"] Parsed (args) => parse_block(args),
-    Unblock ["unblock"] Parsed (args) => parse_unblock(args),
-    Prioritize ["prioritize"] Parsed (args) => parse_prioritize(args),
-    Label ["label"] Parsed (args) => parse_label(args),
-    Unlabel ["unlabel"] Parsed (args) => parse_unlabel(args),
-    Reopen ["reopen"] Parsed (args) => parse_reopen_verb(args),
-    Archive ["archive"] Parsed (args) => parse_hide(args),
-    Unarchive ["unarchive"] Parsed (args) => parse_unhide(args),
-    ArchiveState ["archive-state"] Parsed (args) => parse_hide_state(args),
-    Publish ["publish"] Parsed (args) => parse_publish(args),
-    Delete ["delete"] Parsed (args) => parse_delete_verb(args),
-    Purge ["purge"] Parsed (args) => parse_purge_verb(args),
-    Set ["set"] Parsed (args) => parse_set(args),
-    Relate ["relate", "link"] Parsed (args) => parse_relate(args),
-    Unrelate ["unrelate", "unlink"] Parsed (args) => parse_unrelate(args),
-    SessionStart ["session-start"] Parsed (args) => {
-            expect_no_more(&args[1..], usage::U108)?;
+    Show ["show"] Parsed Grammar::new("<id:stories>", "SH-1", FormKind::Command); (args) => parse_show(args),
+    Log ["log"] Parsed Grammar::new("<id:stories>", "SH-1", FormKind::Command); (args) => parse_log(args),
+    Comment ["comment"] Parsed Grammar::new("<id:stories> <text>...", "SH-1 example", FormKind::Command); (args) => parse_comment(args),
+    Move ["move"] Parsed Grammar::new("<id:stories> <state:states> [--if-state <expected:states>] [--reason <text>] [<comment>...]", "SH-1 done", FormKind::Command); (args) => parse_move(args),
+    Close ["close"] Parsed Grammar::new("<id:stories> <reason>...", "SH-1 example", FormKind::Command); (args) => parse_close(args),
+    Block ["block"] Parsed Grammar::new("<id:stories> (--on <blocker:stories> [--on <blocker:stories>]... [<reason>...] | <reason>...)", "SH-1 example", FormKind::Command); (args) => parse_block(args),
+    Unblock ["unblock"] Parsed Grammar::new("<id:stories> [--on <blocker:stories>]...", "SH-1", FormKind::Command); (args) => parse_unblock(args),
+    Prioritize ["prioritize"] Parsed Grammar::new("<id:stories> <priority:priority>", "SH-1 low", FormKind::Command); (args) => parse_prioritize(args),
+    Label ["label"] Parsed Grammar::new("<id:stories> <csv:labels>", "SH-1 example", FormKind::Command); (args) => parse_label(args),
+    Unlabel ["unlabel"] Parsed Grammar::new("<id:stories> <csv:labels>", "SH-1 example", FormKind::Command); (args) => parse_unlabel(args),
+    Reopen ["reopen"] Parsed Grammar::new("<id:stories>", "SH-1", FormKind::Command); (args) => parse_reopen_verb(args),
+    Archive ["archive"] Parsed Grammar::new("<id:stories>", "SH-1", FormKind::Command); (args) => parse_hide(args),
+    Unarchive ["unarchive"] Parsed Grammar::new("<id:stories>", "SH-1", FormKind::Command); (args) => parse_unhide(args),
+    ArchiveState ["archive-state"] Parsed Grammar::new("<state:states> [--force]", "done", FormKind::Command); (args) => parse_hide_state(args),
+    Publish ["publish"] Parsed Grammar::new("<id:stories>", "SH-1", FormKind::Command); (args) => parse_publish(args),
+    Delete ["delete"] Parsed Grammar::new("<id:stories> [--force]", "SH-1", FormKind::Command); (args) => parse_delete_verb(args),
+    Purge ["purge"] Parsed Grammar::new("", "", FormKind::Retired); (args) => parse_purge_verb(args),
+    Set ["set"] Parsed Grammar::new("<id:stories> [--title <title>] [--state <state:states>] [--priority <priority:priority>] [--complexity <complexity:complexity>] [--labels <csv:labels>] [--blocked <reason>] [--unblocked] [--json <json>] [--type <type:types>] [--description <text>]", "SH-1 --title example", FormKind::Command); (args) => parse_set(args),
+    Relate ["relate", "link"] Parsed Grammar::new("<a:stories> <relation:relationships> <b:stories>", "SH-1 blocks SH-2", FormKind::Command); (args) => parse_relate(args),
+    Unrelate ["unrelate", "unlink"] Parsed Grammar::new("<a:stories> <relation:relationships> <b:stories>", "SH-1 blocks SH-2", FormKind::Command); (args) => parse_unrelate(args),
+    SessionStart ["session-start"] Parsed Grammar::new("", "", FormKind::Command); (args) => {
+            expect_no_more(&args[1..], usage::SESSION_START_1)?;
             Ok(Invocation::SessionStart)
         },
-    Github ["github"] Github (args) => unknown(&args[0]),
-    Tui ["tui"] Tui (args) => unknown(&args[0]),
+    Github ["github"] Github Grammar::new("", "", FormKind::Group); (args) => unknown(&args[0]),
+    Tui ["tui"] Tui Grammar::new("[<ignored>...]", "", FormKind::Early); (args) => unknown(&args[0]),
 }
 
 /// One long flag a verb accepts, and whether the token after it is its value.
@@ -1049,9 +1054,10 @@ pub struct CommandGroup {
     pub command: CommandId,
     pub prefix: &'static [&'static str],
     pub words: &'static [&'static str],
+    pub grammars: &'static [Grammar],
 }
 macro_rules! subcommands {
-    ($( $group:ident ($root:ident [$($prefix:literal),*]) { $($variant:ident = $word:literal),+ $(,)? } )*) => {
+    ($( $group:ident ($root:ident [$($prefix:literal),*]) { $($variant:ident = $word:literal => $grammar:expr),+ $(,)? } )*) => {
         $(
             #[derive(Clone, Copy, Debug, PartialEq, Eq)]
             pub enum $group { $($variant),+ }
@@ -1062,154 +1068,154 @@ macro_rules! subcommands {
             }
         )*
         pub static GROUPS: &[CommandGroup] = &[
-            $(CommandGroup { command: CommandId::$root, prefix: &[$($prefix),*], words: &[$($word),+] },)*
+            $(CommandGroup { command: CommandId::$root, prefix: &[$($prefix),*], words: &[$($word),+], grammars: &[$($grammar),+] },)*
         ];
     }
 }
 subcommands! {
     ProjectVerb (Project []) {
-        New = "new",
-        Delete = "delete",
-        SetPrefix = "set-prefix",
-        Init = "init",
-        Deinit = "deinit",
-        List = "list",
-        Show = "show",
-        Link = "link",
-        Unlink = "unlink",
-        Settings = "settings",
+        New = "new" => Grammar::new("[--prefix <prefix> [--name <name>] [--attach <path> | --no-attach] [--no-agents-md]]", "--prefix EX --no-attach", FormKind::Command),
+        Delete = "delete" => Grammar::new("[--force | -f]", "", FormKind::Command),
+        SetPrefix = "set-prefix" => Grammar::new("<prefix> [--force | -f]", "EX", FormKind::Command),
+        Init = "init" => Grammar::new("", "", FormKind::Retired),
+        Deinit = "deinit" => Grammar::new("", "", FormKind::Retired),
+        List = "list" => Grammar::new("", "", FormKind::Command),
+        Show = "show" => Grammar::new("", "", FormKind::Command),
+        Link = "link" => Grammar::new("", "", FormKind::Group),
+        Unlink = "unlink" => Grammar::new("", "", FormKind::Group),
+        Settings = "settings" => Grammar::new("", "", FormKind::Group),
     }
     ProjectLinkVerb (Project ["link"]) {
-        Origin = "origin",
-        Checkout = "checkout",
+        Origin = "origin" => Grammar::new("[<url>]", "", FormKind::Command),
+        Checkout = "checkout" => Grammar::new("[<path>]", "", FormKind::Command),
     }
     ProjectUnlinkVerb (Project ["unlink"]) {
-        Origin = "origin",
-        Checkout = "checkout",
+        Origin = "origin" => Grammar::new("[<url>]", "", FormKind::Command),
+        Checkout = "checkout" => Grammar::new("", "", FormKind::Command),
     }
     ProjectSettingsVerb (Project ["settings"]) {
-        List = "list",
-        Get = "get",
-        Set = "set",
-        Unset = "unset",
+        List = "list" => Grammar::new("", "", FormKind::Command),
+        Get = "get" => Grammar::new("<key:project-settings>", "automations.enabled", FormKind::Command),
+        Set = "set" => Grammar::new("<key:project-settings> <value>", "automations.enabled false", FormKind::Command),
+        Unset = "unset" => Grammar::new("<key:project-settings>", "automations.enabled", FormKind::Command),
     }
     StateVerb (State []) {
-        List = "list",
-        Add = "add",
-        Set = "set",
-        Remove = "remove",
-        Reorder = "reorder",
+        List = "list" => Grammar::new("", "", FormKind::Command),
+        Add = "add" => Grammar::new("<slug> --super <super:superstate> [--role <role:active-role>] [--description <text>]", "review --super OPEN", FormKind::Command),
+        Set = "set" => Grammar::new("<state:states> [--super <super:superstate>] [--role <role:state-role>] [--description <text> | --no-description] [--move-stories-to <state:states>]", "review --description example", FormKind::Command),
+        Remove = "remove" => Grammar::new("<state:states> [--move-stories-to <state:states>]", "review", FormKind::Command),
+        Reorder = "reorder" => Grammar::new("<csv:states>...", "todo done", FormKind::Command),
     }
     EngineVerb (Engine []) {
-        ResetCheck = "reset-check",
-        ResetTarget = "reset-target",
-        Start = "start",
-        Configure = "configure",
-        Adopt = "adopt",
-        Status = "status",
-        Pause = "pause",
-        Resume = "resume",
-        Stop = "stop",
-        Ack = "ack",
+        ResetCheck = "reset-check" => Grammar::new("<id:stories>", "SH-1", FormKind::Command),
+        ResetTarget = "reset-target" => Grammar::new("--run <run> --token <token>", "--run run --token token", FormKind::Command),
+        Start = "start" => Grammar::new("[--epic <id:stories>] [--lanes <lanes>] [--agent <agent:providers>] [--model <model:provider-models>] [--effort <effort:provider-efforts>] [--speed <speed:speed>]", "", FormKind::Command),
+        Configure = "configure" => Grammar::new("[--lanes <lanes>] [--model <model:provider-models>] [--effort <effort:provider-efforts>] [--speed <speed:speed>] [--run <run>]", "--lanes 1", FormKind::Command),
+        Adopt = "adopt" => Grammar::new("<id:stories>... [--run <run>]", "SH-1", FormKind::Command),
+        Status = "status" => Grammar::new("[--run <run>]", "", FormKind::Command),
+        Pause = "pause" => Grammar::new("[--run <run>]", "", FormKind::Command),
+        Resume = "resume" => Grammar::new("[--run <run>]", "", FormKind::Command),
+        Stop = "stop" => Grammar::new("[--run <run>] [--now]", "", FormKind::Command),
+        Ack = "ack" => Grammar::new("[--run <run>]", "", FormKind::Command),
     }
     VerifierVerb (Verifier []) {
-        Landing = "landing",
-        Evidence = "evidence",
-        RepairAdmit = "repair-admit",
-        Repair = "repair",
-        GateConfig = "gate-config",
-        Status = "status",
-        Start = "start",
-        Stop = "stop",
-        Drain = "drain",
-        Ack = "ack",
+        Landing = "landing" => Grammar::new("", "", FormKind::Group),
+        Evidence = "evidence" => Grammar::new("<id:stories>", "SH-1", FormKind::Command),
+        RepairAdmit = "repair-admit" => Grammar::new("<story:stories> <attempt> <generation> <base> <head> <head-tree> <tree>", "SH-1 attempt 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", FormKind::Command),
+        Repair = "repair" => Grammar::new("", "", FormKind::Group),
+        GateConfig = "gate-config" => Grammar::new("<checkout> <base> <head> <tree>", "/tmp/example aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", FormKind::Command),
+        Status = "status" => Grammar::new("", "", FormKind::Command),
+        Start = "start" => Grammar::new("", "", FormKind::Command),
+        Stop = "stop" => Grammar::new("", "", FormKind::Command),
+        Drain = "drain" => Grammar::new("", "", FormKind::Command),
+        Ack = "ack" => Grammar::new("<incident> [--leave-stopped]", "incident", FormKind::Command),
     }
     PhaseVerb (Phase []) {
-        List = "list",
-        Show = "show",
-        Add = "add",
-        Remove = "remove",
-        Create = "create",
+        List = "list" => Grammar::new("", "", FormKind::Command),
+        Show = "show" => Grammar::new("<phase:phases> [<ignored>...]", "1", FormKind::Command),
+        Add = "add" => Grammar::new("<id:stories> <phase:phases> [<ignored>...]", "SH-1 1", FormKind::Command),
+        Remove = "remove" => Grammar::new("<id:stories>", "SH-1", FormKind::Command),
+        Create = "create" => Grammar::new("<phase:phases> [<title>...]", "1 example", FormKind::Command),
     }
     TypeVerb (Type []) {
-        List = "list",
-        Add = "add",
-        Set = "set",
-        Remove = "remove",
+        List = "list" => Grammar::new("", "", FormKind::Command),
+        Add = "add" => Grammar::new("<slug> [--description <text>] [--emoji <glyph>]", "example", FormKind::Command),
+        Set = "set" => Grammar::new("<type:types> [--description <text> | --no-description] [--emoji <glyph> | --no-emoji]", "example --description example", FormKind::Command),
+        Remove = "remove" => Grammar::new("<type:types>", "example", FormKind::Command),
     }
     EpicVerb (Epic []) {
-        List = "list",
-        Show = "show",
-        Create = "create",
-        Add = "add",
+        List = "list" => Grammar::new("", "", FormKind::Command),
+        Show = "show" => Grammar::new("<id:stories>", "SH-1", FormKind::Command),
+        Create = "create" => Grammar::new("<title>...", "example", FormKind::Command),
+        Add = "add" => Grammar::new("<epic:stories> <story:stories>", "SH-1 SH-2", FormKind::Command),
     }
     HooksVerb (Hooks []) {
-        Install = "install",
-        Uninstall = "uninstall",
-        List = "list",
-        Test = "test",
+        Install = "install" => Grammar::new("", "", FormKind::Command),
+        Uninstall = "uninstall" => Grammar::new("", "", FormKind::Command),
+        List = "list" => Grammar::new("", "", FormKind::Command),
+        Test = "test" => Grammar::new("<event:hook-events>", "story.moved", FormKind::Command),
     }
     AttachmentVerb (Attachment []) {
-        Add = "add",
-        List = "list",
-        Remove = "remove",
-        Save = "save",
+        Add = "add" => Grammar::new("<id:stories> <path> [--name <name>]", "SH-1 example.txt", FormKind::Command),
+        List = "list" => Grammar::new("<id:stories>", "SH-1", FormKind::Command),
+        Remove = "remove" => Grammar::new("<id:stories> <number>", "SH-1 1", FormKind::Command),
+        Save = "save" => Grammar::new("<id:stories> <number> <path>", "SH-1 1 example.txt", FormKind::Command),
     }
     PluginVerb (Plugin []) {
-        Install = "install",
-        Uninstall = "uninstall",
-        Reinstall = "reinstall",
-        Run = "run",
+        Install = "install" => Grammar::new("<provider:providers>", "codex", FormKind::Command),
+        Uninstall = "uninstall" => Grammar::new("<provider:providers>", "codex", FormKind::Command),
+        Reinstall = "reinstall" => Grammar::new("", "", FormKind::Command),
+        Run = "run" => Grammar::new("<provider:providers> -- <helper-command> [<argument>...]", "codex -- example", FormKind::Command),
     }
     StoreVerb (Store []) {
-        New = "new",
-        Backup = "backup",
+        New = "new" => Grammar::new("<path>", "/tmp/example.db", FormKind::Command),
+        Backup = "backup" => Grammar::new("[--label <label>]", "", FormKind::Command),
     }
     DaemonVerb (Daemon []) {
-        Logs = "logs",
-        Start = "start",
-        Restart = "restart",
-        Serve = "--serve",
-        Stop = "stop",
-        Gc = "gc",
-        Status = "status",
-        Install = "install",
-        Uninstall = "uninstall",
-        Token = "token",
+        Logs = "logs" => Grammar::new("[--follow] [--directory <path>]", "", FormKind::Command),
+        Start = "start" => Grammar::new("[--port <port>]", "", FormKind::Command),
+        Restart = "restart" => Grammar::new("", "", FormKind::Command),
+        Serve = "--serve" => Grammar::new("[--port <port>] [--owner <owner>]", "", FormKind::Command),
+        Stop = "stop" => Grammar::new("[--force]", "", FormKind::Command),
+        Gc = "gc" => Grammar::new("[--force]", "", FormKind::Command),
+        Status = "status" => Grammar::new("", "", FormKind::Command),
+        Install = "install" => Grammar::new("[--this-binary]", "", FormKind::Command),
+        Uninstall = "uninstall" => Grammar::new("", "", FormKind::Command),
+        Token = "token" => Grammar::new("", "", FormKind::Command),
     }
     WebVerb (Web []) {
-        Start = "start",
-        Stop = "stop",
-        Status = "status",
-        Open = "open",
-        Address = "address",
-        Revoke = "revoke",
-        Serve = "--serve",
+        Start = "start" => Grammar::new("[--port <port>]", "", FormKind::Command),
+        Stop = "stop" => Grammar::new("", "", FormKind::Command),
+        Status = "status" => Grammar::new("", "", FormKind::Command),
+        Open = "open" => Grammar::new("", "", FormKind::Command),
+        Address = "address" => Grammar::new("", "", FormKind::Command),
+        Revoke = "revoke" => Grammar::new("", "", FormKind::Retired),
+        Serve = "--serve" => Grammar::new("[--port <port>]", "", FormKind::Command),
     }
     TokenVerb (Token []) {
-        New = "new",
-        List = "list",
-        Revoke = "revoke",
+        New = "new" => Grammar::new("<name>", "example", FormKind::Command),
+        List = "list" => Grammar::new("", "", FormKind::Command),
+        Revoke = "revoke" => Grammar::new("<name>", "example", FormKind::Command),
     }
-    VerifierLandingVerb (Verifier ["landing"]) { Show = "show", Release = "release" }
+    VerifierLandingVerb (Verifier ["landing"]) { Show = "show" => Grammar::new("", "", FormKind::Command), Release = "release" => Grammar::new("<intent> --reason <reason>", "intent --reason example", FormKind::Command) }
 
-    VerifierRepairVerb (Verifier ["repair"]) { Show = "show", Decide = "decide", Satisfy = "satisfy" }
+    VerifierRepairVerb (Verifier ["repair"]) { Show = "show" => Grammar::new("<recovery>", "recovery", FormKind::Command), Decide = "decide" => Grammar::new("<recovery> --input <json-file>", "recovery --input input.json", FormKind::Command), Satisfy = "satisfy" => Grammar::new("<recovery> --input <json-file>", "recovery --input input.json", FormKind::Command) }
 
-    InternalVerb (Internal []) { SupersedeBlockDeliveries = "supersede-block-deliveries", SupersedeContinuations = "supersede-continuations" }
+    InternalVerb (Internal []) { SupersedeBlockDeliveries = "supersede-block-deliveries" => Grammar::new("<id:stories>", "SH-1", FormKind::Command), SupersedeContinuations = "supersede-continuations" => Grammar::new("<id:stories>", "SH-1", FormKind::Command) }
 
-    DoctorVerb (Doctor []) { Abandoned = "abandoned", Crashes = "crashes", Install = "install" }
+    DoctorVerb (Doctor []) { Abandoned = "abandoned" => Grammar::new("", "", FormKind::Command), Crashes = "crashes" => Grammar::new("", "", FormKind::Command), Install = "install" => Grammar::new("", "", FormKind::Command) }
 
-    DoctorAbandonedVerb (Doctor ["abandoned"]) { Clear = "clear" }
+    DoctorAbandonedVerb (Doctor ["abandoned"]) { Clear = "clear" => Grammar::new("(--all | <request>)", "--all", FormKind::Command) }
 
-    DoctorCrashesVerb (Doctor ["crashes"]) { Clear = "clear" }
+    DoctorCrashesVerb (Doctor ["crashes"]) { Clear = "clear" => Grammar::new("(--all | <crash>)", "--all", FormKind::Command) }
 
-    ScaffoldVerb (Scaffold []) { AgentsMd = "agents-md", ClaudeMd = "claude-md", CursorRules = "cursor-rules" }
+    ScaffoldVerb (Scaffold []) { AgentsMd = "agents-md" => Grammar::new("", "", FormKind::Command), ClaudeMd = "claude-md" => Grammar::new("", "", FormKind::Command), CursorRules = "cursor-rules" => Grammar::new("", "", FormKind::Command) }
 
-    ContinuationVerb (Continuation []) { Capabilities = "capabilities", Request = "request", Status = "status", Receipt = "receipt", Retry = "retry", Ack = "ack" }
+    ContinuationVerb (Continuation []) { Capabilities = "capabilities" => Grammar::new("", "", FormKind::Command), Request = "request" => Grammar::new("<id:stories> --stdin", "SH-1 --stdin", FormKind::Command), Status = "status" => Grammar::new("<id:stories>", "SH-1", FormKind::Command), Receipt = "receipt" => Grammar::new("<id:stories> <request> --stdin", "SH-1 request --stdin", FormKind::Command), Retry = "retry" => Grammar::new("<id:stories> <request>", "SH-1 request", FormKind::Command), Ack = "ack" => Grammar::new("<id:stories> <request> --reviewed-seq <sequence> --head <sha> --provider <provider:providers> --session-id <session>", "SH-1 request --reviewed-seq 1 --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --provider codex --session-id session", FormKind::Command) }
 
-    DispatchPolicyVerb (DispatchPolicy []) { Show = "show", Set = "set", Reset = "reset", Resolve = "resolve" }
+    DispatchPolicyVerb (DispatchPolicy []) { Show = "show" => Grammar::new("[--global]", "", FormKind::Command), Set = "set" => Grammar::new("[--global] --agent <agent:providers> --complexity <complexity:complexity> [--model <model:provider-models>] [--effort <effort:provider-efforts>]", "--agent codex --complexity low --model example", FormKind::Command), Reset = "reset" => Grammar::new("[--global] --agent <agent:providers> --complexity <complexity:complexity> [--model] [--effort]", "--agent codex --complexity low", FormKind::Command), Resolve = "resolve" => Grammar::new("<id:stories> --agent <agent:providers>", "SH-1 --agent codex", FormKind::Command) }
 
-    GithubVerb (Github []) { Observe = "observe", Resolve = "resolve", Merge = "merge", Exec = "exec", Git = "git" }
+    GithubVerb (Github []) { Observe = "observe" => Grammar::new("--checkout <path> [--authority <path>] -- (ls-remote | fetch) <argument>...", "--checkout /tmp/example -- ls-remote origin", FormKind::Early), Resolve = "resolve" => Grammar::new("--checkout <path> [--authority <path>] [--expected <repository>]", "--checkout /tmp/example", FormKind::Early), Merge = "merge" => Grammar::new("--checkout <path> [--authority <path>] [--expected <repository>] -- <number> <head>", "--checkout /tmp/example -- 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", FormKind::Early), Exec = "exec" => Grammar::new("--checkout <path> [--authority <path>] [--expected <repository>] -- <argument>...", "--checkout /tmp/example -- repo view", FormKind::Early), Git = "git" => Grammar::new("--checkout <path> [--authority <path>] [--expected <repository>] -- <argument>...", "--checkout /tmp/example -- ls-remote origin", FormKind::Early) }
 
 }
 
@@ -1229,150 +1235,150 @@ macro_rules! usages {
     }
 }
 usages! {
-    U1 (Internal) = "usage: story internal supersede-block-deliveries <id> --json\n       \
+    INTERNAL_1 (Internal) = "usage: story internal supersede-block-deliveries <id> --json\n       \
              story internal supersede-continuations <id> --json";
-    U2 (Resources) = "usage: story resources <id> [--lease-json JSON] [--window-name NAME] [--worktree-root PATH] [--tmux-socket PATH] [--location-only]";
-    U3 (Cleanup) = "usage: story cleanup [--dry-run]";
-    U4 (Claim) = "usage: story claim <id> [--comment <text> | --no-comment] \
+    RESOURCES_1 (Resources) = "usage: story resources <id> [--lease-json JSON] [--window-name NAME] [--worktree-root PATH] [--tmux-socket PATH] [--location-only]";
+    CLEANUP_1 (Cleanup) = "usage: story cleanup [--dry-run]";
+    CLAIM_1 (Claim) = "usage: story claim <id> [--comment <text> | --no-comment] \
                            [--dry-run]\n       story claim --next [--phase <N>] [--epic <id>] \
                            [--exclude-label <csv>] [--comment <text> | --no-comment] \
                            [--dry-run]";
-    U5 (Unclaim) = "usage: story unclaim <id> [--comment <text> | --no-comment] \
+    UNCLAIM_1 (Unclaim) = "usage: story unclaim <id> [--comment <text> | --no-comment] \
                              [--dry-run]";
-    U6 (Project) = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
+    PROJECT_1 (Project) = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
                              [--attach <PATH> | --no-attach] [--no-agents-md] | delete \
                              [--force] | set-prefix <NEW-PREFIX> [--force] | show | list | \
                              link origin [URL]|checkout [PATH] | unlink origin [URL]|checkout \
                              | settings list|get|set|unset";
-    U7 (Project) = "usage: story project show\n\n`story project show` takes no \
+    PROJECT_2 (Project) = "usage: story project show\n\n`story project show` takes no \
                                   argument. It reports the project this directory resolves \
                                   to — name a different one with `--project <slug>`.";
-    U8 (Project) = "usage: story project delete [--force]\n\n`story project \
+    PROJECT_3 (Project) = "usage: story project delete [--force]\n\n`story project \
                                     delete` takes no positional argument. It destroys the \
                                     project this directory resolves to; name a different one \
                                     with `--project <slug>`.";
-    U9 (Project) = "usage: story project set-prefix <NEW-PREFIX> \
+    PROJECT_4 (Project) = "usage: story project set-prefix <NEW-PREFIX> \
                                         [--force]\n\n`story project set-prefix` takes exactly \
                                         one positional argument, the new prefix. It rewrites \
                                         the project this directory resolves to; name a \
                                         different one with `--project <slug>`.";
-    U10 (Project) = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
+    PROJECT_5 (Project) = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
                                  [--attach <PATH> | --no-attach] [--no-agents-md]\n\nRun with no \
                                  flags at a terminal to be asked. `story project new` takes no \
                                  positional argument: name the project with --name and the \
                                  checkout with --attach.";
-    U11 (Project) = "usage: story project link origin [URL] | story project link checkout [PATH]\n\nThese attach \
+    PROJECT_6 (Project) = "usage: story project link origin [URL] | story project link checkout [PATH]\n\nThese attach \
      *git* associations to a project. They are unrelated to `story link`, which is an alias for \
      `story relate` and joins one story to another.";
-    U12 (Project) = "usage: story project unlink origin [URL] | story project unlink checkout\n\n`unlink \
+    PROJECT_7 (Project) = "usage: story project unlink origin [URL] | story project unlink checkout\n\n`unlink \
      checkout` takes no path: a project has at most one. These are unrelated to `story unlink`, \
      which is an alias for `story unrelate`.";
-    U13 (Project) = "usage: story project settings list | get <key> | \
+    PROJECT_8 (Project) = "usage: story project settings list | get <key> | \
                                       set <key> <value> | unset <key>";
-    U14 (New) = "usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--complexity low|medium|high] [--label <name> ...] [--labels <csv>] [--blocked-by <id> ...] [--draft]";
-    U15 (Publish) = "usage: story publish <id>";
-    U16 (Type) = "usage: story type list | story type add <slug> [...] | story type set <slug> [...] | story type remove <slug>";
-    U17 (Type) = "usage: story type add <slug> [--description \"<text>\"] [--emoji <glyph>]";
-    U18 (Type) = "usage: story type set <slug> [--description \"<text>\"] [--no-description] [--emoji <glyph>] [--no-emoji]";
-    U19 (Type) = "usage: story type remove <slug>";
-    U20 (State) = "usage: story state list | story state add <slug> --super OPEN|CLOSED | story state set <slug> [...] | story state remove <slug> | story state reorder <slug,...>";
-    U21 (State) = "usage: story state add <slug> --super OPEN|CLOSED [--role active] [--description \"<text>\"]";
-    U22 (State) = "usage: story state set <slug> [--super OPEN|CLOSED] [--role active|none] [--description \"<text>\"] [--no-description] [--move-stories-to <slug>]";
-    U23 (State) = "usage: story state remove <slug> [--move-stories-to <slug>]";
-    U24 (State) = "usage: story state reorder <slug,slug,...>";
-    U25 (List) = "usage: story list [--state <slug>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]";
-    U26 (Next) = "usage: story next [--count <n>] [--phase <N>] [--epic <id>] \
+    NEW_1 (New) = "usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--complexity low|medium|high] [--label <name> ...] [--labels <csv>] [--blocked-by <id> ...] [--draft]";
+    PUBLISH_1 (Publish) = "usage: story publish <id>";
+    TYPE_1 (Type) = "usage: story type list | story type add <slug> [...] | story type set <slug> [...] | story type remove <slug>";
+    TYPE_2 (Type) = "usage: story type add <slug> [--description \"<text>\"] [--emoji <glyph>]";
+    TYPE_3 (Type) = "usage: story type set <slug> [--description \"<text>\"] [--no-description] [--emoji <glyph>] [--no-emoji]";
+    TYPE_4 (Type) = "usage: story type remove <slug>";
+    STATE_1 (State) = "usage: story state list | story state add <slug> --super OPEN|CLOSED | story state set <slug> [...] | story state remove <slug> | story state reorder <slug,...>";
+    STATE_2 (State) = "usage: story state add <slug> --super OPEN|CLOSED [--role active] [--description \"<text>\"]";
+    STATE_3 (State) = "usage: story state set <slug> [--super OPEN|CLOSED] [--role active|none] [--description \"<text>\"] [--no-description] [--move-stories-to <slug>]";
+    STATE_4 (State) = "usage: story state remove <slug> [--move-stories-to <slug>]";
+    STATE_5 (State) = "usage: story state reorder <slug,slug,...>";
+    LIST_1 (List) = "usage: story list [--state <slug>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]";
+    NEXT_1 (Next) = "usage: story next [--count <n>] [--phase <N>] [--epic <id>] \
                  [--exclude-label <csv>]";
-    U27 (Engine) = "usage: story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex] [--model <id>] [--effort <id>] [--speed standard|fast]";
-    U28 (Engine) = "usage: story engine status [--run <id>]";
-    U29 (Engine) = "usage: story engine pause [--run <id>]";
-    U30 (Engine) = "usage: story engine resume [--run <id>]";
-    U31 (Engine) = "usage: story engine stop [--run <id>] [--now]";
-    U32 (Engine) = "usage: story engine ack [--run <id>]";
-    U33 (Engine) = "usage: story engine <start|configure|adopt|status|pause|resume|stop|ack>";
-    U34 (Engine) = "usage: story engine reset-check <story-id>";
-    U35 (Engine) = "usage: story engine reset-target --run <id> --token <token>";
-    U36 (Engine) = "usage: story engine adopt <id> [<id> ...] [--run <id>]";
-    U37 (Engine) = "usage: story engine configure (--lanes <n> | --model <id> | --effort <id> | --speed standard|fast) [--run <id>]";
-    U38 (Verifier) = "usage: story verifier ack <incident-id> [--leave-stopped]";
-    U39 (Verifier) = "usage: story verifier <status|evidence|landing|start|stop|drain|ack|repair>";
-    U40 (Verifier) = "usage: story verifier landing show | release <intent-id> --reason <reason>";
-    U41 (Verifier) = "usage: story verifier evidence <story-id> [--json]";
-    U42 (Verifier) = "usage: story verifier repair-admit <story> <attempt> <generation> <base> <head> <head-tree> <tree> --json (private verifier callback)";
-    U43 (Verifier) = "usage: story verifier repair show <recovery-id> | decide <recovery-id> --input <json-file> | satisfy <recovery-id> --input <json-file>";
-    U44 (Verifier) = "usage: story verifier gate-config <checkout> <base> <head> <tree> --json";
-    U45 (Verifier) = "usage: story verifier <status|start|stop|drain>";
-    U46 (Report) = "usage: story report [--html]";
-    U47 (Search) = "usage: story search <query>";
-    U48 (Import) = "usage: story import [<file>]";
-    U49 (Decompose) = "usage: story decompose <file> [--dry-run] | story decompose --stdin [--dry-run]";
-    U50 (ImportProject) = "usage: story import-project <file> [--legacy-links]";
-    U51 (Migrate) = "usage: story migrate [<path>] [--dry-run]";
-    U52 (LoadContext) = "usage: story load-context [--format markdown|json] [--story <id>]";
-    U53 (Phase) = "usage: story phase list|show <N>|add <id> <N>|remove <id>|create <N> [\"<title>\"]";
-    U54 (Phase) = "usage: story phase show <N>";
-    U55 (Phase) = "usage: story phase add <id> <N>";
-    U56 (Phase) = "usage: story phase remove <id>";
-    U57 (Phase) = "usage: story phase create <N> [\"<title>\"]";
-    U58 (Epic) = "usage: story epic list|show <id>|create \"<title>\"|add <epic-id> <story-id>";
-    U59 (Epic) = "usage: story epic show <id>";
-    U60 (Epic) = "usage: story epic create \"<title>\"";
-    U61 (Epic) = "usage: story epic add <epic-id> <story-id>";
-    U62 (Handoff) = "usage: story handoff [--since <duration>]";
-    U63 (Graph) = "usage: story graph --blocked-by <id>";
-    U64 (Graph) = "usage: story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]";
-    U65 (Doctor) = "usage: story doctor install";
-    U66 (Doctor) = "usage: story doctor [--fix] | install | abandoned [clear (--all | <request-id>)] \
+    ENGINE_1 (Engine) = "usage: story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex] [--model <id>] [--effort <id>] [--speed standard|fast]";
+    ENGINE_2 (Engine) = "usage: story engine status [--run <id>]";
+    ENGINE_3 (Engine) = "usage: story engine pause [--run <id>]";
+    ENGINE_4 (Engine) = "usage: story engine resume [--run <id>]";
+    ENGINE_5 (Engine) = "usage: story engine stop [--run <id>] [--now]";
+    ENGINE_6 (Engine) = "usage: story engine ack [--run <id>]";
+    ENGINE_7 (Engine) = "usage: story engine <start|configure|adopt|status|pause|resume|stop|ack>";
+    ENGINE_8 (Engine) = "usage: story engine reset-check <story-id>";
+    ENGINE_9 (Engine) = "usage: story engine reset-target --run <id> --token <token>";
+    ENGINE_10 (Engine) = "usage: story engine adopt <id> [<id> ...] [--run <id>]";
+    ENGINE_11 (Engine) = "usage: story engine configure (--lanes <n> | --model <id> | --effort <id> | --speed standard|fast) [--run <id>]";
+    VERIFIER_1 (Verifier) = "usage: story verifier ack <incident-id> [--leave-stopped]";
+    VERIFIER_2 (Verifier) = "usage: story verifier <status|evidence|landing|start|stop|drain|ack|repair>";
+    VERIFIER_3 (Verifier) = "usage: story verifier landing show | release <intent-id> --reason <reason>";
+    VERIFIER_4 (Verifier) = "usage: story verifier evidence <story-id> [--json]";
+    VERIFIER_5 (Verifier) = "usage: story verifier repair-admit <story> <attempt> <generation> <base> <head> <head-tree> <tree> --json (private verifier callback)";
+    VERIFIER_6 (Verifier) = "usage: story verifier repair show <recovery-id> | decide <recovery-id> --input <json-file> | satisfy <recovery-id> --input <json-file>";
+    VERIFIER_7 (Verifier) = "usage: story verifier gate-config <checkout> <base> <head> <tree> --json";
+    VERIFIER_8 (Verifier) = "usage: story verifier <status|start|stop|drain>";
+    REPORT_1 (Report) = "usage: story report [--html]";
+    SEARCH_1 (Search) = "usage: story search <query>";
+    IMPORT_1 (Import) = "usage: story import [<file>]";
+    DECOMPOSE_1 (Decompose) = "usage: story decompose <file> [--dry-run] | story decompose --stdin [--dry-run]";
+    IMPORT_PROJECT_1 (ImportProject) = "usage: story import-project <file> [--legacy-links]";
+    MIGRATE_1 (Migrate) = "usage: story migrate [<path>] [--dry-run]";
+    LOAD_CONTEXT_1 (LoadContext) = "usage: story load-context [--format markdown|json] [--story <id>]";
+    PHASE_1 (Phase) = "usage: story phase list|show <N>|add <id> <N>|remove <id>|create <N> [\"<title>\"]";
+    PHASE_2 (Phase) = "usage: story phase show <N>";
+    PHASE_3 (Phase) = "usage: story phase add <id> <N>";
+    PHASE_4 (Phase) = "usage: story phase remove <id>";
+    PHASE_5 (Phase) = "usage: story phase create <N> [\"<title>\"]";
+    EPIC_1 (Epic) = "usage: story epic list|show <id>|create \"<title>\"|add <epic-id> <story-id>";
+    EPIC_2 (Epic) = "usage: story epic show <id>";
+    EPIC_3 (Epic) = "usage: story epic create \"<title>\"";
+    EPIC_4 (Epic) = "usage: story epic add <epic-id> <story-id>";
+    HANDOFF_1 (Handoff) = "usage: story handoff [--since <duration>]";
+    GRAPH_1 (Graph) = "usage: story graph --blocked-by <id>";
+    GRAPH_2 (Graph) = "usage: story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]";
+    DOCTOR_1 (Doctor) = "usage: story doctor install";
+    DOCTOR_2 (Doctor) = "usage: story doctor [--fix] | install | abandoned [clear (--all | <request-id>)] \
          | crashes [clear (--all | <crash-id>)]";
-    U67 (Doctor) = "usage: story doctor abandoned [clear (--all | <request-id>)]";
-    U68 (Doctor) = "usage: story doctor crashes [clear (--all | <crash-id>)]";
-    U69 (Update) = "usage: story update [--check] [--force] [--source HOST/OWNER/REPO]";
-    U70 (Hooks) = "usage: story hooks install|uninstall|list|test <event_type>";
-    U71 (Hooks) = "usage: story hooks test <event_type>";
-    U72 (Scaffold) = "usage: story scaffold agents-md|claude-md|cursor-rules";
-    U73 (CommitSync) = "usage: story commit-sync [--since <duration>]";
-    U74 (LinkPr) = "usage: story link-pr <id> <url> [--no-close-on-merge]";
-    U75 (UnlinkPr) = "usage: story unlink-pr <id> <url>";
-    U76 (Attachment) = "usage: story attachment add <id> <path> [--name <text>] | \
+    DOCTOR_3 (Doctor) = "usage: story doctor abandoned [clear (--all | <request-id>)]";
+    DOCTOR_4 (Doctor) = "usage: story doctor crashes [clear (--all | <crash-id>)]";
+    UPDATE_1 (Update) = "usage: story update [--check] [--force] [--source HOST/OWNER/REPO]";
+    HOOKS_1 (Hooks) = "usage: story hooks install|uninstall|list|test <event_type>";
+    HOOKS_2 (Hooks) = "usage: story hooks test <event_type>";
+    SCAFFOLD_1 (Scaffold) = "usage: story scaffold agents-md|claude-md|cursor-rules";
+    COMMIT_SYNC_1 (CommitSync) = "usage: story commit-sync [--since <duration>]";
+    LINK_PR_1 (LinkPr) = "usage: story link-pr <id> <url> [--no-close-on-merge]";
+    UNLINK_PR_1 (UnlinkPr) = "usage: story unlink-pr <id> <url>";
+    ATTACHMENT_1 (Attachment) = "usage: story attachment add <id> <path> [--name <text>] | \
     list <id> | remove <id> <n> | save <id> <n> <path>";
-    U77 (PrCheck) = "usage: story pr-check [<id>]";
-    U78 (Help) = "usage: story help [<topic>] [--all|--compact]";
-    U79 (Plugin) = "usage: story plugin install|uninstall <claude|codex> | story plugin reinstall | story plugin run codex -- <helper-command> [args...]";
-    U80 (Store) = "usage: story store new <path> | story store backup [--label <text>]";
-    U81 (Daemon) = "usage: story daemon start [--port <PORT>] | restart | stop [--force] | status | \
+    PR_CHECK_1 (PrCheck) = "usage: story pr-check [<id>]";
+    HELP_1 (Help) = "usage: story help [<topic>] [--all|--compact]";
+    PLUGIN_1 (Plugin) = "usage: story plugin install|uninstall <claude|codex> | story plugin reinstall | story plugin run codex -- <helper-command> [args...]";
+    STORE_1 (Store) = "usage: story store new <path> | story store backup [--label <text>]";
+    DAEMON_1 (Daemon) = "usage: story daemon start [--port <PORT>] | restart | stop [--force] | status | \
                  install [--this-binary] | uninstall | token | gc [--force] | logs [--follow] [--directory <PATH>]";
-    U82 (Web) = "usage: story web start [--port <PORT>] | stop | status | open | address";
-    U83 (Token) = "usage: story token new <name> | story token list | story token revoke <name>";
-    U84 (Show) = "usage: story show <id>";
-    U85 (Log) = "usage: story log <id>";
-    U86 (Comment) = "usage: story comment <id> \"<text>\"";
-    U87 (Move) = "usage: story move <id> <state> [--if-state <expected>] [--reason <text>] [\"<comment>\"]";
-    U88 (Close) = "usage: story close <id> \"<reason>\"";
-    U89 (Block) = "usage: story block <id> --on <blocker> [--on <blocker>]... \
+    WEB_1 (Web) = "usage: story web start [--port <PORT>] | stop | status | open | address";
+    TOKEN_1 (Token) = "usage: story token new <name> | story token list | story token revoke <name>";
+    SHOW_1 (Show) = "usage: story show <id>";
+    LOG_1 (Log) = "usage: story log <id>";
+    COMMENT_1 (Comment) = "usage: story comment <id> \"<text>\"";
+    MOVE_1 (Move) = "usage: story move <id> <state> [--if-state <expected>] [--reason <text>] [\"<comment>\"]";
+    CLOSE_1 (Close) = "usage: story close <id> \"<reason>\"";
+    BLOCK_1 (Block) = "usage: story block <id> --on <blocker> [--on <blocker>]... \
                           [\"<reason>\"] | story block <id> \"<reason>\"";
-    U90 (Unblock) = "usage: story unblock <id> [--on <blocker>]...";
-    U91 (Prioritize) = "usage: story prioritize <id> <level>";
-    U92 (Label) = "usage: story label <id> <labels-csv>";
-    U93 (Unlabel) = "usage: story unlabel <id> <labels-csv>";
-    U94 (Reopen) = "usage: story reopen <id>";
-    U95 (Archive) = "usage: story archive <id>";
-    U96 (Unarchive) = "usage: story unarchive <id>";
-    U97 (ArchiveState) = "usage: story archive-state <state> [--force]";
-    U98 (Delete) = "usage: story delete <id> [--force]";
-    U99 (Relate) = "usage: story relate <a> <relationship-type> <b>";
-    U100 (Unrelate) = "usage: story unrelate <a> <relationship-type> <b>";
-    U101 (Set) = "usage: story set <id> [--field value ...]";
-    U102 (Set) = "usage: story set <id> [--title \"<title>\"] [--state <slug>] [--priority <level>] [--complexity low|medium|high] [--labels \"<csv>\"] [--blocked \"<reason>\"] [--unblocked] [--json \"<json>\"] [--type <slug>] [--description \"<text>\"]";
-    U103 (Reset) = "usage: story reset <id> [--force] [--dry-run]";
-    U104 (Summary) = "usage: story summary";
-    U105 (Export) = "usage: story export";
-    U106 (LaneBudget) = "usage: story lane-budget";
-    U107 (SessionEligibility) = "usage: story session-eligibility <id>";
-    U108 (SessionStart) = "usage: story session-start";
-    U109 (Continuation) = "usage: story continuation request <id> --stdin | status <id> | receipt <id> <request> --stdin | retry <id> <request> | ack <id> <request> --reviewed-seq <n> --head <sha> --provider <codex|claude> --session-id <id> | capabilities";
-    U110 (DispatchPolicy) = "usage: story dispatch-policy show|set|reset|resolve [<story-id>] [--global] [--agent codex|claude] [--complexity low|medium|high] [--model <id>] [--effort <id>]. For reset, --model and --effort take no value. See story help dispatch-policy";
-    U111 (Github) = "usage: story github observe --checkout PATH [--authority PATH] -- ls-remote|fetch ARGUMENTS";
-    U112 (Github) = "usage: story github resolve|exec|git|merge --checkout PATH [--authority PATH] [--expected HOST/OWNER/REPO] [-- ARGUMENTS]";
+    UNBLOCK_1 (Unblock) = "usage: story unblock <id> [--on <blocker>]...";
+    PRIORITIZE_1 (Prioritize) = "usage: story prioritize <id> <level>";
+    LABEL_1 (Label) = "usage: story label <id> <labels-csv>";
+    UNLABEL_1 (Unlabel) = "usage: story unlabel <id> <labels-csv>";
+    REOPEN_1 (Reopen) = "usage: story reopen <id>";
+    ARCHIVE_1 (Archive) = "usage: story archive <id>";
+    UNARCHIVE_1 (Unarchive) = "usage: story unarchive <id>";
+    ARCHIVE_STATE_1 (ArchiveState) = "usage: story archive-state <state> [--force]";
+    DELETE_1 (Delete) = "usage: story delete <id> [--force]";
+    RELATE_1 (Relate) = "usage: story relate <a> <relationship-type> <b>";
+    UNRELATE_1 (Unrelate) = "usage: story unrelate <a> <relationship-type> <b>";
+    SET_1 (Set) = "usage: story set <id> [--field value ...]";
+    SET_2 (Set) = "usage: story set <id> [--title \"<title>\"] [--state <slug>] [--priority <level>] [--complexity low|medium|high] [--labels \"<csv>\"] [--blocked \"<reason>\"] [--unblocked] [--json \"<json>\"] [--type <slug>] [--description \"<text>\"]";
+    RESET_1 (Reset) = "usage: story reset <id> [--force] [--dry-run]";
+    SUMMARY_1 (Summary) = "usage: story summary";
+    EXPORT_1 (Export) = "usage: story export";
+    LANE_BUDGET_1 (LaneBudget) = "usage: story lane-budget";
+    SESSION_ELIGIBILITY_1 (SessionEligibility) = "usage: story session-eligibility <id>";
+    SESSION_START_1 (SessionStart) = "usage: story session-start";
+    CONTINUATION_1 (Continuation) = "usage: story continuation request <id> --stdin | status <id> | receipt <id> <request> --stdin | retry <id> <request> | ack <id> <request> --reviewed-seq <n> --head <sha> --provider <codex|claude> --session-id <id> | capabilities";
+    DISPATCH_POLICY_1 (DispatchPolicy) = "usage: story dispatch-policy show|set|reset|resolve [<story-id>] [--global] [--agent codex|claude] [--complexity low|medium|high] [--model <id>] [--effort <id>]. For reset, --model and --effort take no value. See story help dispatch-policy";
+    GITHUB_1 (Github) = "usage: story github observe --checkout PATH [--authority PATH] -- ls-remote|fetch ARGUMENTS";
+    GITHUB_2 (Github) = "usage: story github resolve|exec|git|merge --checkout PATH [--authority PATH] [--expected HOST/OWNER/REPO] [-- ARGUMENTS]";
 }
 
 /// Local protocols before current-directory and project resolution.
@@ -1434,4 +1440,95 @@ pub fn needs_questionnaire(invocation: &Invocation) -> bool {
             action: ProjectAction::New(NewProjectRequest::Ask)
         }
     )
+}
+
+/// A registered group, accepted form, retired refusal, or early local protocol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FormKind {
+    Command,
+    Group,
+    Retired,
+    Early,
+}
+
+/// Canonical operand/option syntax and a concrete parser witness.
+/// `[]` means optional, `()` groups alternatives, `|` chooses, and `...`
+/// repeats the preceding item. Angle brackets name values and optional domains.
+/// Options retain their legacy placement/duplicate rules in the bound parser.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct Grammar {
+    pub syntax: &'static str,
+    pub example_tail: &'static str,
+    pub kind: FormKind,
+}
+impl Grammar {
+    pub const fn new(syntax: &'static str, example_tail: &'static str, kind: FormKind) -> Self {
+        Self {
+            syntax,
+            example_tail,
+            kind,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CommandPath {
+    pub command: CommandId,
+    /// Canonical words, including the family; operands are never path components.
+    pub words: Vec<&'static str>,
+    pub grammar: Grammar,
+}
+impl CommandPath {
+    pub fn example(&self) -> Vec<String> {
+        self.words
+            .iter()
+            .copied()
+            .chain(self.grammar.example_tail.split_whitespace())
+            .map(str::to_string)
+            .collect()
+    }
+    pub fn aliases(&self) -> Vec<Vec<&'static str>> {
+        self.command.names()[1..]
+            .iter()
+            .map(|alias| {
+                let mut words = self.words.clone();
+                words[0] = alias;
+                words
+            })
+            .collect()
+    }
+}
+/// Enumerate in registration order. Every nested entry is generated by the
+/// same macro as the selector matched in the production parser.
+pub fn paths() -> Vec<CommandPath> {
+    let mut result = Vec::new();
+    for command in CommandId::ALL {
+        result.push(CommandPath {
+            command: *command,
+            words: vec![command.names()[0]],
+            grammar: command.grammar(),
+        });
+        for group in GROUPS.iter().filter(|group| group.command == *command) {
+            for (word, grammar) in group.words.iter().zip(group.grammars) {
+                let words = std::iter::once(command.names()[0])
+                    .chain(group.prefix.iter().copied())
+                    .chain(std::iter::once(*word))
+                    .collect();
+                result.push(CommandPath {
+                    command: *command,
+                    words,
+                    grammar: *grammar,
+                });
+            }
+        }
+    }
+    result
+}
+/// Exact lookup; unlike dispatch this never interprets an operand as a path.
+pub fn path(words: &[&str]) -> Option<CommandPath> {
+    let command = CommandId::find(words.first()?)?;
+    paths()
+        .into_iter()
+        .find(|entry| entry.command == command && entry.words[1..] == words[1..])
 }

@@ -48,7 +48,7 @@ fn run_local_with_env(
         .first()
         .is_some_and(|mode| GithubVerb::find(mode) == Some(GithubVerb::Observe))
     {
-        let usage = || AppError::Usage(crate::cli::model::usage::U111.into());
+        let usage = || AppError::Usage(crate::cli::model::usage::GITHUB_1.into());
         if arguments.len() < 5 || arguments[1] != "--checkout" {
             return Err(usage());
         }
@@ -73,7 +73,7 @@ fn run_attempt(
     may_refresh: bool,
     env: Option<&crate::env::Environment>,
 ) -> Result<Vec<u8>, AppError> {
-    let usage = || AppError::Usage(crate::cli::model::usage::U112.into());
+    let usage = || AppError::Usage(crate::cli::model::usage::GITHUB_2.into());
     if arguments.len() < 3 || arguments[1] != "--checkout" {
         return Err(usage());
     }

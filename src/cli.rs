@@ -1868,7 +1868,7 @@ fn parse_internal(args: &[String]) -> Result<Invocation, AppError> {
         {
             Ok(Invocation::SupersedeContinuations { id: id.clone() })
         }
-        _ => Err(AppError::Usage(crate::cli::model::usage::U1.into())),
+        _ => Err(AppError::Usage(crate::cli::model::usage::INTERNAL_1.into())),
     }
 }
 
@@ -1886,7 +1886,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_resources(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U2;
+    let usage = crate::cli::model::usage::RESOURCES_1;
     // The client owns its terminal locator; the daemon must not supply its own.
     let tmux_socket = match std::env::var("TMUX") {
         Ok(value) => value
@@ -1957,31 +1957,31 @@ fn parse_cleanup(args: &[String]) -> Result<Invocation, AppError> {
     for arg in &args[1..] {
         match arg.as_str() {
             "--dry-run" => dry_run = true,
-            _ => return Err(AppError::Usage(crate::cli::model::usage::U3.into())),
+            _ => return Err(AppError::Usage(crate::cli::model::usage::CLEANUP_1.into())),
         }
     }
     Ok(Invocation::Cleanup { dry_run })
 }
 
-const CLAIM_USAGE: &str = crate::cli::model::usage::U4;
+const CLAIM_USAGE: &str = crate::cli::model::usage::CLAIM_1;
 
-const UNCLAIM_USAGE: &str = crate::cli::model::usage::U5;
+const UNCLAIM_USAGE: &str = crate::cli::model::usage::UNCLAIM_1;
 
-const PROJECT_USAGE: &str = crate::cli::model::usage::U6;
+const PROJECT_USAGE: &str = crate::cli::model::usage::PROJECT_1;
 
-const PROJECT_SHOW_USAGE: &str = crate::cli::model::usage::U7;
+const PROJECT_SHOW_USAGE: &str = crate::cli::model::usage::PROJECT_2;
 
-const PROJECT_DELETE_USAGE: &str = crate::cli::model::usage::U8;
+const PROJECT_DELETE_USAGE: &str = crate::cli::model::usage::PROJECT_3;
 
-const PROJECT_SET_PREFIX_USAGE: &str = crate::cli::model::usage::U9;
+const PROJECT_SET_PREFIX_USAGE: &str = crate::cli::model::usage::PROJECT_4;
 
-const PROJECT_NEW_USAGE: &str = crate::cli::model::usage::U10;
+const PROJECT_NEW_USAGE: &str = crate::cli::model::usage::PROJECT_5;
 
-const PROJECT_LINK_USAGE: &str = crate::cli::model::usage::U11;
+const PROJECT_LINK_USAGE: &str = crate::cli::model::usage::PROJECT_6;
 
-const PROJECT_UNLINK_USAGE: &str = crate::cli::model::usage::U12;
+const PROJECT_UNLINK_USAGE: &str = crate::cli::model::usage::PROJECT_7;
 
-const PROJECT_SETTINGS_USAGE: &str = crate::cli::model::usage::U13;
+const PROJECT_SETTINGS_USAGE: &str = crate::cli::model::usage::PROJECT_8;
 
 fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
     let action = args
@@ -2268,7 +2268,7 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
     let mut draft = false;
     let mut blocked_by: Vec<String> = Vec::new();
     let mut index = 1;
-    let usage = crate::cli::model::usage::U14;
+    let usage = crate::cli::model::usage::NEW_1;
     while index < args.len() {
         match args[index].as_str() {
             "--state" => {
@@ -2366,23 +2366,25 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_publish(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 2 {
-        return Err(AppError::Usage(crate::cli::model::usage::U15.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::PUBLISH_1.to_string(),
+        ));
     }
     Ok(Invocation::Publish {
         id: args[1].clone(),
     })
 }
 
-const TYPE_USAGE: &str = crate::cli::model::usage::U16;
-const TYPE_ADD_USAGE: &str = crate::cli::model::usage::U17;
-const TYPE_SET_USAGE: &str = crate::cli::model::usage::U18;
-const TYPE_REMOVE_USAGE: &str = crate::cli::model::usage::U19;
+const TYPE_USAGE: &str = crate::cli::model::usage::TYPE_1;
+const TYPE_ADD_USAGE: &str = crate::cli::model::usage::TYPE_2;
+const TYPE_SET_USAGE: &str = crate::cli::model::usage::TYPE_3;
+const TYPE_REMOVE_USAGE: &str = crate::cli::model::usage::TYPE_4;
 
-const STATE_USAGE: &str = crate::cli::model::usage::U20;
-const STATE_ADD_USAGE: &str = crate::cli::model::usage::U21;
-const STATE_SET_USAGE: &str = crate::cli::model::usage::U22;
-const STATE_REMOVE_USAGE: &str = crate::cli::model::usage::U23;
-const STATE_REORDER_USAGE: &str = crate::cli::model::usage::U24;
+const STATE_USAGE: &str = crate::cli::model::usage::STATE_1;
+const STATE_ADD_USAGE: &str = crate::cli::model::usage::STATE_2;
+const STATE_SET_USAGE: &str = crate::cli::model::usage::STATE_3;
+const STATE_REMOVE_USAGE: &str = crate::cli::model::usage::STATE_4;
+const STATE_REORDER_USAGE: &str = crate::cli::model::usage::STATE_5;
 
 /// Splits `--flag value` / `--flag=value` / `--flag` into (name, value)
 /// pairs. A value that itself starts with `--` is read as the next flag, so
@@ -2558,7 +2560,7 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
     let mut include_closed = false;
     let mut include_archived = false;
     let mut index = 1;
-    let usage = crate::cli::model::usage::U25;
+    let usage = crate::cli::model::usage::LIST_1;
 
     while index < args.len() {
         match args[index].as_str() {
@@ -2694,7 +2696,7 @@ fn parse_next(args: &[String]) -> Result<Invocation, AppError> {
     let mut epic = None;
     let mut exclude_label = None;
     let mut index = 1;
-    let usage = crate::cli::model::usage::U26;
+    let usage = crate::cli::model::usage::NEXT_1;
 
     while index < args.len() {
         match args[index].as_str() {
@@ -2947,12 +2949,12 @@ fn parse_unclaim(args: &[String]) -> Result<Invocation, AppError> {
     })
 }
 
-const ENGINE_START_USAGE: &str = crate::cli::model::usage::U27;
-const ENGINE_STATUS_USAGE: &str = crate::cli::model::usage::U28;
-const ENGINE_PAUSE_USAGE: &str = crate::cli::model::usage::U29;
-const ENGINE_RESUME_USAGE: &str = crate::cli::model::usage::U30;
-const ENGINE_STOP_USAGE: &str = crate::cli::model::usage::U31;
-const ENGINE_ACK_USAGE: &str = crate::cli::model::usage::U32;
+const ENGINE_START_USAGE: &str = crate::cli::model::usage::ENGINE_1;
+const ENGINE_STATUS_USAGE: &str = crate::cli::model::usage::ENGINE_2;
+const ENGINE_PAUSE_USAGE: &str = crate::cli::model::usage::ENGINE_3;
+const ENGINE_RESUME_USAGE: &str = crate::cli::model::usage::ENGINE_4;
+const ENGINE_STOP_USAGE: &str = crate::cli::model::usage::ENGINE_5;
+const ENGINE_ACK_USAGE: &str = crate::cli::model::usage::ENGINE_6;
 
 /// `story engine start|status|pause|resume|stop|ack` (SH-467).
 ///
@@ -2962,11 +2964,13 @@ const ENGINE_ACK_USAGE: &str = crate::cli::model::usage::U32;
 /// rejected the word, the exact SH-357 parser contract this family inherits.
 fn parse_engine(args: &[String]) -> Result<Invocation, AppError> {
     let Some(action) = args.get(1).map(String::as_str) else {
-        return Err(AppError::Usage(crate::cli::model::usage::U33.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::ENGINE_7.to_string(),
+        ));
     };
     let action = match model::EngineVerb::find(action) {
         Some(model::EngineVerb::ResetCheck) => {
-            let usage = crate::cli::model::usage::U34;
+            let usage = crate::cli::model::usage::ENGINE_8;
             if args.len() != 3 {
                 return Err(AppError::Usage(usage.into()));
             }
@@ -2975,7 +2979,7 @@ fn parse_engine(args: &[String]) -> Result<Invocation, AppError> {
             }
         }
         Some(model::EngineVerb::ResetTarget) => {
-            let usage = crate::cli::model::usage::U35;
+            let usage = crate::cli::model::usage::ENGINE_9;
             if args.len() != 6 || args[2] != "--run" || args[4] != "--token" {
                 return Err(AppError::Usage(usage.into()));
             }
@@ -3001,13 +3005,15 @@ fn parse_engine(args: &[String]) -> Result<Invocation, AppError> {
             run: parse_engine_run(args, ENGINE_ACK_USAGE)?,
         },
         None => {
-            return Err(AppError::Usage(crate::cli::model::usage::U33.to_string()));
+            return Err(AppError::Usage(
+                crate::cli::model::usage::ENGINE_7.to_string(),
+            ));
         }
     };
     Ok(Invocation::Engine { action })
 }
 
-const ENGINE_ADOPT_USAGE: &str = crate::cli::model::usage::U36;
+const ENGINE_ADOPT_USAGE: &str = crate::cli::model::usage::ENGINE_10;
 
 fn parse_engine_adopt(args: &[String]) -> Result<EngineAction, AppError> {
     let mut run = None;
@@ -3036,7 +3042,7 @@ fn parse_engine_adopt(args: &[String]) -> Result<EngineAction, AppError> {
     Ok(EngineAction::Adopt { run, ids })
 }
 
-const ENGINE_CONFIGURE_USAGE: &str = crate::cli::model::usage::U37;
+const ENGINE_CONFIGURE_USAGE: &str = crate::cli::model::usage::ENGINE_11;
 
 fn parse_engine_configure(args: &[String]) -> Result<EngineAction, AppError> {
     use crate::service::engine::ConfigurePatch;
@@ -3192,7 +3198,7 @@ fn parse_engine_run(args: &[String], usage: &str) -> Result<Option<String>, AppE
     Ok(run)
 }
 
-const VERIFIER_ACK_USAGE: &str = crate::cli::model::usage::U38;
+const VERIFIER_ACK_USAGE: &str = crate::cli::model::usage::VERIFIER_1;
 
 /// `story verifier ack <incident-id>` (SH-666).
 ///
@@ -3203,11 +3209,13 @@ const VERIFIER_ACK_USAGE: &str = crate::cli::model::usage::U38;
 /// complete arm ends in [`expect_no_more`] with its own usage string.
 fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
     let Some(action) = args.get(1).map(String::as_str) else {
-        return Err(AppError::Usage(crate::cli::model::usage::U39.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::VERIFIER_2.to_string(),
+        ));
     };
     let action = match model::VerifierVerb::find(action) {
         Some(model::VerifierVerb::Landing) => {
-            const USAGE: &str = crate::cli::model::usage::U40;
+            const USAGE: &str = crate::cli::model::usage::VERIFIER_3;
             match args
                 .get(2)
                 .and_then(|word| model::VerifierLandingVerb::find(word))
@@ -3234,7 +3242,7 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
             }
         }
         Some(model::VerifierVerb::Evidence) => {
-            const USAGE: &str = crate::cli::model::usage::U41;
+            const USAGE: &str = crate::cli::model::usage::VERIFIER_4;
             if args.len() != 3 || args[2].trim().is_empty() || is_flag_shaped(&args[2]) {
                 return Err(AppError::Usage(USAGE.into()));
             }
@@ -3243,7 +3251,7 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
             }
         }
         Some(model::VerifierVerb::RepairAdmit) => {
-            const USAGE: &str = crate::cli::model::usage::U42;
+            const USAGE: &str = crate::cli::model::usage::VERIFIER_5;
             if args.len() != 9
                 || args[2..]
                     .iter()
@@ -3271,7 +3279,7 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
             }
         }
         Some(model::VerifierVerb::Repair) => {
-            const USAGE: &str = crate::cli::model::usage::U43;
+            const USAGE: &str = crate::cli::model::usage::VERIFIER_6;
             let id = args
                 .get(3)
                 .filter(|s| !is_flag_shaped(s))
@@ -3310,7 +3318,7 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
             }
         }
         Some(model::VerifierVerb::GateConfig) => {
-            const USAGE: &str = crate::cli::model::usage::U44;
+            const USAGE: &str = crate::cli::model::usage::VERIFIER_7;
             if args.len() != 6 {
                 return Err(AppError::Usage(USAGE.into()));
             }
@@ -3325,7 +3333,7 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
         | Some(model::VerifierVerb::Start)
         | Some(model::VerifierVerb::Stop)
         | Some(model::VerifierVerb::Drain) => {
-            expect_no_more(&args[2..], crate::cli::model::usage::U45)?;
+            expect_no_more(&args[2..], crate::cli::model::usage::VERIFIER_8)?;
             match action {
                 "status" => VerifierAction::Status,
                 "start" => VerifierAction::Start,
@@ -3351,12 +3359,10 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
                 }
             }
         }
-        None
-        | Some(model::VerifierVerb::Status)
-        | Some(model::VerifierVerb::Start)
-        | Some(model::VerifierVerb::Stop)
-        | Some(model::VerifierVerb::Drain) => {
-            return Err(AppError::Usage(crate::cli::model::usage::U39.to_string()));
+        None => {
+            return Err(AppError::Usage(
+                crate::cli::model::usage::VERIFIER_2.to_string(),
+            ));
         }
     };
     Ok(Invocation::Verifier { action })
@@ -3401,7 +3407,9 @@ fn parse_report(args: &[String]) -> Result<Invocation, AppError> {
                 index += 1;
             }
             _ => {
-                return Err(AppError::Usage(crate::cli::model::usage::U46.to_string()));
+                return Err(AppError::Usage(
+                    crate::cli::model::usage::REPORT_1.to_string(),
+                ));
             }
         }
     }
@@ -3410,7 +3418,9 @@ fn parse_report(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_search(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() < 2 {
-        return Err(AppError::Usage(crate::cli::model::usage::U47.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::SEARCH_1.to_string(),
+        ));
     }
     Ok(Invocation::Search {
         query: join_tokens(&args[1..]),
@@ -3419,7 +3429,9 @@ fn parse_search(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_import(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() > 2 {
-        return Err(AppError::Usage(crate::cli::model::usage::U48.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::IMPORT_1.to_string(),
+        ));
     }
     let file = args.get(1).cloned();
     Ok(Invocation::Import { file })
@@ -3430,7 +3442,7 @@ fn parse_decompose(args: &[String]) -> Result<Invocation, AppError> {
     let mut stdin = false;
     let mut dry_run = false;
     let mut index = 1;
-    let usage = crate::cli::model::usage::U49;
+    let usage = crate::cli::model::usage::DECOMPOSE_1;
 
     while index < args.len() {
         match args[index].as_str() {
@@ -3464,7 +3476,7 @@ fn parse_decompose(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_import_project(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U50;
+    let usage = crate::cli::model::usage::IMPORT_PROJECT_1;
     let mut file = None;
     let mut legacy_links = false;
     let mut index = 1;
@@ -3491,7 +3503,7 @@ fn parse_import_project(args: &[String]) -> Result<Invocation, AppError> {
 /// from inside the repository being migrated; when it is absent the invocation
 /// carries `None` and the dispatcher walks up from the working directory.
 fn parse_migrate(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U51;
+    let usage = crate::cli::model::usage::MIGRATE_1;
     let mut path = None;
     let mut dry_run = false;
     let mut index = 1;
@@ -3515,7 +3527,7 @@ fn parse_context(args: &[String]) -> Result<Invocation, AppError> {
     let mut format = None;
     let mut story = None;
     let mut index = 1;
-    let usage = crate::cli::model::usage::U52;
+    let usage = crate::cli::model::usage::LOAD_CONTEXT_1;
     while index < args.len() {
         match args[index].as_str() {
             "--format" => {
@@ -3554,7 +3566,7 @@ fn validate_phase_number(s: &str) -> Result<(), AppError> {
 }
 
 fn parse_phase(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U53;
+    let usage = crate::cli::model::usage::PHASE_1;
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -3568,7 +3580,7 @@ fn parse_phase(args: &[String]) -> Result<Invocation, AppError> {
         Some(model::PhaseVerb::Show) => {
             let phase = args
                 .get(2)
-                .ok_or_else(|| AppError::Usage(crate::cli::model::usage::U54.to_string()))?
+                .ok_or_else(|| AppError::Usage(crate::cli::model::usage::PHASE_2.to_string()))?
                 .clone();
             validate_phase_number(&phase)?;
             Ok(Invocation::Phase {
@@ -3577,7 +3589,9 @@ fn parse_phase(args: &[String]) -> Result<Invocation, AppError> {
         }
         Some(model::PhaseVerb::Add) => {
             if args.len() < 4 {
-                return Err(AppError::Usage(crate::cli::model::usage::U55.to_string()));
+                return Err(AppError::Usage(
+                    crate::cli::model::usage::PHASE_3.to_string(),
+                ));
             }
             validate_phase_number(&args[3])?;
             Ok(Invocation::Phase {
@@ -3588,7 +3602,7 @@ fn parse_phase(args: &[String]) -> Result<Invocation, AppError> {
             })
         }
         Some(model::PhaseVerb::Remove) => {
-            let remove_usage = crate::cli::model::usage::U56;
+            let remove_usage = crate::cli::model::usage::PHASE_4;
             let id = args
                 .get(2)
                 .ok_or_else(|| AppError::Usage(remove_usage.to_string()))?
@@ -3601,7 +3615,7 @@ fn parse_phase(args: &[String]) -> Result<Invocation, AppError> {
         Some(model::PhaseVerb::Create) => {
             let phase = args
                 .get(2)
-                .ok_or_else(|| AppError::Usage(crate::cli::model::usage::U57.to_string()))?
+                .ok_or_else(|| AppError::Usage(crate::cli::model::usage::PHASE_5.to_string()))?
                 .clone();
             validate_phase_number(&phase)?;
             let title = if args.len() > 3 {
@@ -3706,7 +3720,7 @@ fn parse_type(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_epic(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U58;
+    let usage = crate::cli::model::usage::EPIC_1;
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -3718,7 +3732,7 @@ fn parse_epic(args: &[String]) -> Result<Invocation, AppError> {
             })
         }
         Some(model::EpicVerb::Show) => {
-            let show_usage = crate::cli::model::usage::U59;
+            let show_usage = crate::cli::model::usage::EPIC_2;
             let id = args
                 .get(2)
                 .ok_or_else(|| AppError::Usage(show_usage.to_string()))?
@@ -3730,18 +3744,22 @@ fn parse_epic(args: &[String]) -> Result<Invocation, AppError> {
         }
         Some(model::EpicVerb::Create) => {
             if args.len() < 3 {
-                return Err(AppError::Usage(crate::cli::model::usage::U60.to_string()));
+                return Err(AppError::Usage(
+                    crate::cli::model::usage::EPIC_3.to_string(),
+                ));
             }
             let title = join_tokens(&args[2..]);
             if title.is_empty() {
-                return Err(AppError::Usage(crate::cli::model::usage::U60.to_string()));
+                return Err(AppError::Usage(
+                    crate::cli::model::usage::EPIC_3.to_string(),
+                ));
             }
             Ok(Invocation::Epic {
                 action: EpicAction::Create { title },
             })
         }
         Some(model::EpicVerb::Add) => {
-            let add_usage = crate::cli::model::usage::U61;
+            let add_usage = crate::cli::model::usage::EPIC_4;
             if args.len() < 4 {
                 return Err(AppError::Usage(add_usage.to_string()));
             }
@@ -3763,14 +3781,16 @@ fn parse_handoff(args: &[String]) -> Result<Invocation, AppError> {
     while index < args.len() {
         match args[index].as_str() {
             "--since" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| AppError::Usage(crate::cli::model::usage::U62.to_string()))?;
+                let value = args.get(index + 1).ok_or_else(|| {
+                    AppError::Usage(crate::cli::model::usage::HANDOFF_1.to_string())
+                })?;
                 since = Some(value.clone());
                 index += 2;
             }
             _ => {
-                return Err(AppError::Usage(crate::cli::model::usage::U62.to_string()));
+                return Err(AppError::Usage(
+                    crate::cli::model::usage::HANDOFF_1.to_string(),
+                ));
             }
         }
     }
@@ -3790,7 +3810,7 @@ fn parse_graph(args: &[String]) -> Result<Invocation, AppError> {
         "--blocked-by" => {
             let id = args
                 .get(2)
-                .ok_or_else(|| AppError::Usage(crate::cli::model::usage::U63.to_string()))?;
+                .ok_or_else(|| AppError::Usage(crate::cli::model::usage::GRAPH_1.to_string()))?;
             Ok(Invocation::Graph {
                 mode: GraphMode::BlockedBy(id.clone()),
             })
@@ -3798,7 +3818,9 @@ fn parse_graph(args: &[String]) -> Result<Invocation, AppError> {
         "--parallel-groups" => Ok(Invocation::Graph {
             mode: GraphMode::ParallelGroups,
         }),
-        _ => Err(AppError::Usage(crate::cli::model::usage::U64.to_string())),
+        _ => Err(AppError::Usage(
+            crate::cli::model::usage::GRAPH_2.to_string(),
+        )),
     }
 }
 
@@ -3810,7 +3832,7 @@ fn parse_doctor(args: &[String]) -> Result<Invocation, AppError> {
         return parse_doctor_crashes(args);
     }
     if args.len() >= 2 && model::DoctorVerb::find(&args[1]) == Some(model::DoctorVerb::Install) {
-        expect_no_more(&args[2..], crate::cli::model::usage::U65)?;
+        expect_no_more(&args[2..], crate::cli::model::usage::DOCTOR_1)?;
         return Ok(Invocation::DoctorInstall);
     }
 
@@ -3822,11 +3844,13 @@ fn parse_doctor(args: &[String]) -> Result<Invocation, AppError> {
         return Ok(Invocation::Doctor { fix: true });
     }
 
-    Err(AppError::Usage(crate::cli::model::usage::U66.to_string()))
+    Err(AppError::Usage(
+        crate::cli::model::usage::DOCTOR_2.to_string(),
+    ))
 }
 
 fn parse_doctor_abandoned(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U67;
+    let usage = crate::cli::model::usage::DOCTOR_3;
     let action = match &args[2..] {
         [] => AbandonedAction::List,
         [clear, target]
@@ -3853,7 +3877,7 @@ fn parse_doctor_abandoned(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_doctor_crashes(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U68;
+    let usage = crate::cli::model::usage::DOCTOR_4;
     let action = match &args[2..] {
         [] => CrashesAction::List,
         [clear, target]
@@ -3877,7 +3901,7 @@ fn parse_doctor_crashes(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_update(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U69;
+    let usage = crate::cli::model::usage::UPDATE_1;
     let mut check = false;
     let mut force = false;
     let mut source = None;
@@ -3918,8 +3942,8 @@ fn parse_update(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_hooks(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U70;
-    let test_usage = crate::cli::model::usage::U71;
+    let usage = crate::cli::model::usage::HOOKS_1;
+    let test_usage = crate::cli::model::usage::HOOKS_2;
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -3962,11 +3986,15 @@ fn parse_hooks(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_scaffold(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 2 {
-        return Err(AppError::Usage(crate::cli::model::usage::U72.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::SCAFFOLD_1.to_string(),
+        ));
     }
     let kind = args[1].clone();
     if model::ScaffoldVerb::find(&kind).is_none() {
-        return Err(AppError::Usage(crate::cli::model::usage::U72.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::SCAFFOLD_1.to_string(),
+        ));
     }
     Ok(Invocation::Scaffold { kind })
 }
@@ -3974,7 +4002,7 @@ fn parse_scaffold(args: &[String]) -> Result<Invocation, AppError> {
 fn parse_commit_sync(args: &[String]) -> Result<Invocation, AppError> {
     let mut since = None;
     let mut index = 1;
-    let usage = crate::cli::model::usage::U73;
+    let usage = crate::cli::model::usage::COMMIT_SYNC_1;
     while index < args.len() {
         match args[index].as_str() {
             "--since" => {
@@ -3993,7 +4021,7 @@ fn parse_commit_sync(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_link_pr(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U74;
+    let usage = crate::cli::model::usage::LINK_PR_1;
     if args.len() < 3 || args.len() > 4 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -4011,7 +4039,9 @@ fn parse_link_pr(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_unlink_pr(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 3 {
-        return Err(AppError::Usage(crate::cli::model::usage::U75.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::UNLINK_PR_1.to_string(),
+        ));
     }
     Ok(Invocation::UnlinkPr {
         id: args[1].clone(),
@@ -4019,7 +4049,7 @@ fn parse_unlink_pr(args: &[String]) -> Result<Invocation, AppError> {
     })
 }
 
-const ATTACHMENT_USAGE: &str = crate::cli::model::usage::U76;
+const ATTACHMENT_USAGE: &str = crate::cli::model::usage::ATTACHMENT_1;
 
 /// `story attachment add|list|remove|save` (SH-315).
 fn parse_attachment(args: &[String]) -> Result<Invocation, AppError> {
@@ -4108,7 +4138,9 @@ fn parse_attachment_id(raw: Option<&String>) -> Result<u32, AppError> {
 
 fn parse_pr_check(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() > 2 {
-        return Err(AppError::Usage(crate::cli::model::usage::U77.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::PR_CHECK_1.to_string(),
+        ));
     }
     Ok(Invocation::PrCheck {
         id: args.get(1).cloned(),
@@ -4135,7 +4167,7 @@ fn parse_help(args: &[String]) -> Result<Invocation, AppError> {
     // second (SH-357).
     expect_no_more(
         positional.get(1..).unwrap_or_default(),
-        crate::cli::model::usage::U78,
+        crate::cli::model::usage::HELP_1,
     )?;
 
     let has_compact = flags.contains(&"--compact");
@@ -4159,7 +4191,7 @@ fn parse_help(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
-    const USAGE: &str = crate::cli::model::usage::U79;
+    const USAGE: &str = crate::cli::model::usage::PLUGIN_1;
     let Some(action) = args.get(1).map(String::as_str) else {
         return Err(AppError::Usage(USAGE.to_string()));
     };
@@ -4201,7 +4233,7 @@ fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
 
 /// `story store new <path> | backup [--label <text>]`.
 fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U80;
+    let usage = crate::cli::model::usage::STORE_1;
     let action = match args
         .get(1)
         .map(String::as_str)
@@ -4254,7 +4286,7 @@ fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U81;
+    let usage = crate::cli::model::usage::DAEMON_1;
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -4438,7 +4470,7 @@ fn parse_serve_flags(
 }
 
 fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U82;
+    let usage = crate::cli::model::usage::WEB_1;
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -4543,7 +4575,7 @@ fn validate_token_name(raw: &str) -> Result<&str, AppError> {
 
 /// `story token new <name> | list | revoke <name>` (SH-255).
 fn parse_token(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U83;
+    let usage = crate::cli::model::usage::TOKEN_1;
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -4595,7 +4627,9 @@ fn parse_token(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_show(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 2 {
-        return Err(AppError::Usage(crate::cli::model::usage::U84.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::SHOW_1.to_string(),
+        ));
     }
     Ok(Invocation::Show {
         id: args[1].clone(),
@@ -4604,7 +4638,7 @@ fn parse_show(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_log(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 2 {
-        return Err(AppError::Usage(crate::cli::model::usage::U85.to_string()));
+        return Err(AppError::Usage(crate::cli::model::usage::LOG_1.to_string()));
     }
     Ok(Invocation::Log {
         id: args[1].clone(),
@@ -4613,7 +4647,9 @@ fn parse_log(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_comment(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() < 3 {
-        return Err(AppError::Usage(crate::cli::model::usage::U86.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::COMMENT_1.to_string(),
+        ));
     }
     Ok(Invocation::Comment {
         id: args[1].clone(),
@@ -4622,7 +4658,7 @@ fn parse_comment(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U87;
+    let usage = crate::cli::model::usage::MOVE_1;
     if args.len() < 3 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -4708,7 +4744,7 @@ fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
 /// reason travels as the comment rather than as `--reason`, because
 /// `set_state` refuses an `awaiting` reason on a CLOSED target.
 fn parse_close(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U88;
+    let usage = crate::cli::model::usage::CLOSE_1;
     if args.len() < 3 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -4725,8 +4761,8 @@ fn parse_close(args: &[String]) -> Result<Invocation, AppError> {
     })
 }
 
-const BLOCK_USAGE: &str = crate::cli::model::usage::U89;
-const UNBLOCK_USAGE: &str = crate::cli::model::usage::U90;
+const BLOCK_USAGE: &str = crate::cli::model::usage::BLOCK_1;
+const UNBLOCK_USAGE: &str = crate::cli::model::usage::UNBLOCK_1;
 
 /// `story block <id> --on <blocker> [--on <blocker>]... ["<reason>"]`, or
 /// `story block <id> "<reason>"` (SH-398).
@@ -4786,7 +4822,9 @@ fn parse_unblock(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_prioritize(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 3 {
-        return Err(AppError::Usage(crate::cli::model::usage::U91.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::PRIORITIZE_1.to_string(),
+        ));
     }
     Ok(Invocation::SetPriority {
         id: args[1].clone(),
@@ -4796,7 +4834,9 @@ fn parse_prioritize(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_label(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 3 {
-        return Err(AppError::Usage(crate::cli::model::usage::U92.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::LABEL_1.to_string(),
+        ));
     }
     let add = normalize_labels([&args[2]]);
     Ok(Invocation::SetLabels {
@@ -4808,7 +4848,9 @@ fn parse_label(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_unlabel(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 3 {
-        return Err(AppError::Usage(crate::cli::model::usage::U93.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::UNLABEL_1.to_string(),
+        ));
     }
     let remove = normalize_labels([&args[2]]);
     Ok(Invocation::SetLabels {
@@ -4821,8 +4863,8 @@ fn parse_unlabel(args: &[String]) -> Result<Invocation, AppError> {
 fn parse_reopen_verb(args: &[String]) -> Result<Invocation, AppError> {
     let id = args
         .get(1)
-        .ok_or_else(|| AppError::Usage(crate::cli::model::usage::U94.to_string()))?;
-    expect_no_more(&args[2..], crate::cli::model::usage::U94)?;
+        .ok_or_else(|| AppError::Usage(crate::cli::model::usage::REOPEN_1.to_string()))?;
+    expect_no_more(&args[2..], crate::cli::model::usage::REOPEN_1)?;
     Ok(Invocation::Reopen { id: id.clone() })
 }
 
@@ -4838,7 +4880,9 @@ fn parse_purge_verb(_args: &[String]) -> Result<Invocation, AppError> {
 /// `story archive <id>` — the "Archive" action (SH-43).
 fn parse_hide(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 2 {
-        return Err(AppError::Usage(crate::cli::model::usage::U95.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::ARCHIVE_1.to_string(),
+        ));
     }
     Ok(Invocation::Hide {
         id: args[1].clone(),
@@ -4848,7 +4892,9 @@ fn parse_hide(args: &[String]) -> Result<Invocation, AppError> {
 /// `story unarchive <id>` — the inverse of [`parse_hide`].
 fn parse_unhide(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 2 {
-        return Err(AppError::Usage(crate::cli::model::usage::U96.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::UNARCHIVE_1.to_string(),
+        ));
     }
     Ok(Invocation::Unhide {
         id: args[1].clone(),
@@ -4860,7 +4906,7 @@ fn parse_unhide(args: &[String]) -> Result<Invocation, AppError> {
 /// answers with what it would hide and writes
 /// nothing.
 fn parse_hide_state(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U97;
+    let usage = crate::cli::model::usage::ARCHIVE_STATE_1;
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -4876,7 +4922,7 @@ fn parse_hide_state(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_delete_verb(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = crate::cli::model::usage::U98;
+    let usage = crate::cli::model::usage::DELETE_1;
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -4893,7 +4939,9 @@ fn parse_delete_verb(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_relate(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 4 {
-        return Err(AppError::Usage(crate::cli::model::usage::U99.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::RELATE_1.to_string(),
+        ));
     }
     Ok(Invocation::Relate {
         a: args[1].clone(),
@@ -4905,7 +4953,9 @@ fn parse_relate(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_unrelate(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 4 {
-        return Err(AppError::Usage(crate::cli::model::usage::U100.to_string()));
+        return Err(AppError::Usage(
+            crate::cli::model::usage::UNRELATE_1.to_string(),
+        ));
     }
     Ok(Invocation::Relate {
         a: args[1].clone(),
@@ -4917,7 +4967,7 @@ fn parse_unrelate(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() < 3 {
-        return Err(AppError::Usage(crate::cli::model::usage::U101.to_string()));
+        return Err(AppError::Usage(crate::cli::model::usage::SET_1.to_string()));
     }
     let id = args[1].clone();
     let mut title = None;
@@ -4931,7 +4981,7 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
     let mut story_type = None;
     let mut description = None;
     let mut index = 2;
-    let usage = crate::cli::model::usage::U102;
+    let usage = crate::cli::model::usage::SET_2;
 
     while index < args.len() {
         match args[index].as_str() {

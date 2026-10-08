@@ -36,7 +36,7 @@ pub enum ContinuationAction {
     },
 }
 pub(super) fn parse(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = || AppError::Usage(crate::cli::model::usage::U109.into());
+    let usage = || AppError::Usage(crate::cli::model::usage::CONTINUATION_1.into());
     let action = args
         .get(1)
         .and_then(|word| super::model::ContinuationVerb::find(word))

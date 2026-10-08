@@ -178,3 +178,115 @@ fn registered_reset_and_recovery_protocols_keep_distinct_invocations() {
         Invocation::Verifier { .. }
     ));
 }
+
+#[test]
+fn every_registered_path_has_a_real_parser_witness_or_explicit_early_boundary() {
+    let mut paths = BTreeSet::new();
+    for path in model::paths() {
+        assert!(
+            paths.insert(path.words.clone()),
+            "duplicate path {:?}",
+            path.words
+        );
+        let found = model::path(&path.words).unwrap();
+        assert_eq!(found.grammar.syntax, path.grammar.syntax);
+        model::grammar::expression(path.grammar.syntax)
+            .unwrap_or_else(|error| panic!("{:?}: {error}", path.words));
+        let result = parse_invocation(&path.example());
+        match path.grammar.kind {
+            model::FormKind::Command => assert!(result.is_ok(), "{:?}: {result:?}", path.example()),
+            model::FormKind::Retired => assert!(result.is_err(), "retired {:?}", path.words),
+            model::FormKind::Group => {
+                assert!(
+                    model::paths()
+                        .iter()
+                        .any(|child| child.words.len() > path.words.len()
+                            && child.words.starts_with(&path.words)),
+                    "empty group {:?}",
+                    path.words
+                );
+                assert!(result.is_err(), "unexpected group default {:?}", path.words);
+            }
+            model::FormKind::Early => assert!(path.command.handler() != FamilyHandler::Parsed),
+        }
+        for alias in path.aliases() {
+            assert_eq!(model::path(&alias).unwrap().words, path.words);
+        }
+    }
+    assert!(model::path(&["project", "link", "typo"]).is_none());
+    assert!(model::path(&["show", "SH-1"]).is_none());
+}
+
+#[test]
+fn local_invocation_handlers_are_selected_without_execution() {
+    let parsed = |args: &[&str]| parse_invocation(&argv(args)).unwrap();
+    assert!(matches!(
+        model::before_environment(&parsed(&["daemon", "logs", "--follow"])),
+        Some(model::BeforeEnvironment::Logs {
+            follow: true,
+            directory: None
+        })
+    ));
+    assert!(matches!(
+        model::before_environment(&parsed(&["daemon", "--serve", "--port", "0"])),
+        Some(model::BeforeEnvironment::Serve {
+            port: Some(0),
+            owner: None
+        })
+    ));
+    assert!(matches!(
+        model::before_environment(&parsed(&["web", "--serve"])),
+        Some(model::BeforeEnvironment::Serve {
+            port: None,
+            owner: None
+        })
+    ));
+    assert!(matches!(
+        model::before_store(&parsed(&["plugin", "run", "codex", "--", "context"])),
+        Some(model::BeforeStore::Plugin {
+            target: "codex",
+            ..
+        })
+    ));
+    assert!(matches!(
+        model::before_store(&parsed(&["store", "new", "example.db"])),
+        Some(model::BeforeStore::StoreNew { path: "example.db" })
+    ));
+    assert!(model::needs_questionnaire(&parsed(&["project", "new"])));
+    assert!(!model::needs_questionnaire(&parsed(&[
+        "project", "new", "--prefix", "EX"
+    ])));
+    assert!(model::before_environment(&parsed(&["show", "SH-1"])).is_none());
+    assert!(model::before_store(&parsed(&["show", "SH-1"])).is_none());
+}
+
+#[test]
+fn structured_syntax_exposes_multiplicity_alternatives_and_dynamic_sources() {
+    use model::grammar::{Domain, Expression as E};
+    let expression =
+        model::grammar::expression("<id:stories> [--on <blocker:stories>]...").unwrap();
+    let E::Sequence(items) = expression else {
+        panic!("expected sequence")
+    };
+    assert!(matches!(
+        &items[0],
+        E::Operand {
+            domain: Some(Domain::Dynamic {
+                source: "story list --all",
+                ..
+            }),
+            ..
+        }
+    ));
+    assert!(matches!(&items[1], E::Repeated(inner) if matches!(**inner, E::Optional(_))));
+    assert!(model::grammar::expression("[<id>").is_err());
+    assert!(model::grammar::expression("<id:invented>").is_err());
+    let E::Sequence(items) = model::grammar::expression("(one | two)").unwrap() else {
+        panic!()
+    };
+    assert!(matches!(items[0], E::Choice(_)));
+    for value in ["low", "medium", "high"] {
+        assert!(parse_invocation(&argv(&["new", "example", "--complexity", value])).is_ok());
+    }
+    assert!(parse_invocation(&argv(&["new", "example", "--complexity", "invented"])).is_err());
+}
