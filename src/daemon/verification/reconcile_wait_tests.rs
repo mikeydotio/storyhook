@@ -143,6 +143,7 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
     let watch = HoldWatch::production(&counted);
     let (idle_tx, idle_rx) = channel();
     let (resumed_tx, resumed_rx) = channel();
+    let env = ctx.env();
     std::thread::scope(|scope| {
         scope.spawn(|| {
             let _journal = enter(Some(LogContext {
@@ -152,6 +153,7 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
             let before = built_on_this_thread();
             let result = wait_for_reconciled_candidate_cancellable(
                 &store,
+                env,
                 &subscription,
                 &stop,
                 &reserved,
@@ -163,6 +165,7 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
                 .unwrap();
             let result = wait_for_reconciled_candidate_cancellable(
                 &store,
+                env,
                 &subscription,
                 &stop,
                 &reserved,
@@ -236,7 +239,9 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
             "the waiter returns the resubmission as the origin-validated queue reports it"
         );
         // One origin check on return: both seams must see it, or their zeros
-        // above prove nothing.
+        // above prove nothing. The caller's Environment declares patience;
+        // rebuilding an undeclared Environment inside the waiter panics here
+        // before a validated candidate can be returned.
         assert!(
             total_git > 0,
             "the git tally must see the origin check on return"

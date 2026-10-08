@@ -4011,6 +4011,7 @@ fn poll_project_verification(
                 };
                 wait_for_reconciled_candidate_cancellable(
                     store,
+                    env,
                     &subscription,
                     stop,
                     reserved,

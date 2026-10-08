@@ -756,6 +756,7 @@ mod tests {
                 ready.send(()).unwrap();
                 let result = wait_for_reconciled_candidate_cancellable(
                     &store,
+                    &env,
                     &subscription,
                     &stop,
                     &candidate,
