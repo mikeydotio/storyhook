@@ -31,6 +31,12 @@ pub struct ResetCaller {
 }
 
 impl ResetCaller {
+    /// Whether the request came without terminal identity (HTTP or a legacy client).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.pane.is_none() && self.socket.is_none()
+    }
+
     /// Captures terminal identity on the CLI side, before RPC serialization.
     pub fn capture() -> Self {
         Self {

@@ -310,8 +310,18 @@ fn legacy_authority(
         .iter()
         .any(|record| &record.path == target && record.locked);
     // Unreadable status counts as dirty: authority is never inferred.
-    let dirty = git::text(target, &["status", "--porcelain", "--untracked-files=all"])
-        .map_or(true, |status| !status.trim().is_empty());
+    let dirty = git::text(
+        target,
+        &[
+            "--no-optional-locks",
+            "-c",
+            "core.fsmonitor=false",
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        ],
+    )
+    .map_or(true, |status| !status.trim().is_empty());
     if locked || dirty {
         residue.leave(worktree_resource(target), PROMISE);
         *worktree = false;
@@ -464,7 +474,15 @@ pub(super) fn recovery(report: &ResourceReport, authority: &Authority) -> ResetR
         && matches!(worktree.try_exists(), Ok(true))
         && let Ok(status) = git::text(
             worktree,
-            &["status", "--porcelain=v2", "-z", "--untracked-files=all"],
+            &[
+                "--no-optional-locks",
+                "-c",
+                "core.fsmonitor=false",
+                "status",
+                "--porcelain=v2",
+                "-z",
+                "--untracked-files=all",
+            ],
         )
     {
         let (dirty, untracked) = count_changes(&status);
@@ -535,9 +553,54 @@ pub(super) fn remove(
     workspace: Option<&WorkspaceLock>,
     residue: &mut Residue,
 ) {
-    close_window(report, caller, env, workspace, residue);
+    // Ordinary story reset retains its final-lever, best-effort policy.
+    let _ = remove_checked(
+        report, paths, authority, caller, env, workspace, residue, None,
+    );
+}
+
+/// Shares physical teardown while Stop Now supplies its narrower owner policy.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn remove_checked(
+    report: &ResourceReport,
+    paths: &[ResetPathIdentity],
+    authority: &Authority,
+    caller: &ResetCaller,
+    env: &crate::env::Environment,
+    workspace: Option<&WorkspaceLock>,
+    residue: &mut Residue,
+    engine_owner: Option<&dyn Fn() -> Result<(), AppError>>,
+) -> Result<(), AppError> {
+    if let Some(check) = engine_owner {
+        check()?;
+    }
+    close_window(report, caller, env, workspace, residue, engine_owner);
+    if let Some(check) = engine_owner {
+        check()?;
+        if residue
+            .0
+            .iter()
+            .any(|entry| entry.resource == window_resource(report))
+        {
+            leave_git(
+                report,
+                residue,
+                "Stop Now could not prove its pinned window was safely closed",
+            );
+            return Ok(());
+        }
+        if let Err(error) = window_absent(report, env) {
+            residue.blocks_dispatch(window_resource(report), error.to_string());
+            leave_git(
+                report,
+                residue,
+                "Stop Now preserves Git resources until its leased window is absent",
+            );
+            return Ok(());
+        }
+    }
     let Some(repository) = &authority.repository else {
-        return;
+        return Ok(());
     };
     // Identity is checked again right before each destructive Git step.
     let unchanged = || super::identity::replaced(paths).is_empty();
@@ -551,6 +614,10 @@ pub(super) fn remove(
                 .iter()
                 .any(|identity| &identity.path == worktree && identity.removable);
             let removed = attempt(|| {
+                if let Some(check) = engine_owner {
+                    check()?;
+                    window_absent(report, env)?;
+                }
                 let registered = git::inventory(repository)?
                     .iter()
                     .any(|record| &record.path == worktree);
@@ -567,6 +634,10 @@ pub(super) fn remove(
                             "the directory remains and its identity is not proven".into(),
                         ));
                     }
+                    if let Some(check) = engine_owner {
+                        check()?;
+                        window_absent(report, env)?;
+                    }
                     std::fs::remove_dir_all(worktree).map_err(|error| {
                         AppError::Validation(format!("removing {}: {error}", worktree.display()))
                     })?;
@@ -582,6 +653,10 @@ pub(super) fn remove(
         && unchanged()
     {
         let deleted = attempt(|| {
+            if let Some(check) = engine_owner {
+                check()?;
+                window_absent(report, env)?;
+            }
             if git::branch_exists(repository, branch)? {
                 workspace_lock::git(repository, &["branch", "-D", "--", branch], workspace)?;
             }
@@ -591,63 +666,77 @@ pub(super) fn remove(
             residue.leave(branch_resource(branch), error.to_string());
         }
     }
+    if let Some(check) = engine_owner {
+        check()?;
+    }
+    Ok(())
 }
 
-/// Closes the exact pinned window; any doubt about its identity leaves it.
-fn close_window(
-    report: &ResourceReport,
+/// Stop Now must quiesce the exact leased endpoint before touching Git.
+fn window_absent(report: &ResourceReport, env: &crate::env::Environment) -> Result<(), AppError> {
+    let socket = report
+        .socket_path
+        .as_ref()
+        .ok_or_else(|| AppError::Validation("Stop Now has no pinned tmux endpoint".into()))?;
+    let names = BTreeSet::from([report.window_name.clone()]);
+    let (target, panes) = tmux::resolved_panes(env, socket, &names)?;
+    if target.protected && target.endpoint != *socket {
+        return Err(AppError::Validation(
+            "Stop Now cannot prove absence after a tmux server generation change".into(),
+        ));
+    }
+    if panes.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::Validation(
+            "Stop Now still observes a leased story window".into(),
+        ))
+    }
+}
+
+/// Shared read-only proof for the exact window reset may close.
+pub(super) fn window_authority<'a>(
+    report: &'a ResourceReport,
     caller: &ResetCaller,
     env: &crate::env::Environment,
-    workspace: Option<&WorkspaceLock>,
-    residue: &mut Residue,
-) {
-    let resource = window_resource(report);
+) -> Result<Option<(crate::service::tmux_target::Target, &'a tmux::ResourcePane)>, String> {
     // The window is only as proven as the identity it was resolved with.
     if !matches!(report.status.as_str(), "resolved" | "absent") {
         if report.socket_path.is_some() || report.pane.is_some() {
-            residue.leave(
-                resource,
-                format!(
-                    "resource identity is {}: {}",
-                    report.status,
-                    report.diagnostics.join("; ")
-                ),
-            );
+            return Err(format!(
+                "resource identity is {}: {}",
+                report.status,
+                report.diagnostics.join("; ")
+            ));
         }
-        return;
+        return Ok(None);
     }
     let Some(socket) = &report.socket_path else {
         if report.pane.is_some() {
-            residue.leave(resource, "the tmux window has no recorded socket");
+            return Err("the tmux window has no recorded socket".into());
         }
-        return;
+        return Ok(None);
     };
     let names = BTreeSet::from([report.window_name.clone()]);
     let (target, panes) = match attempt(|| tmux::resolved_panes(env, socket, &names)) {
         Ok(observed) => observed,
-        Err(error) => return residue.leave(resource, error.to_string()),
+        Err(error) => return Err(error.to_string()),
     };
     if panes.is_empty() {
-        return;
+        return Ok(None);
     }
     if target.protected && target.endpoint != *socket {
-        return residue.leave(
-            resource,
-            "the tmux server generation changed after reset began",
-        );
+        return Err("the tmux server generation changed after reset began".into());
     }
     let Some(expected) = &report.pane else {
-        return residue.leave(resource, "a new tmux window appeared after reset began");
+        return Err("a new tmux window appeared after reset began".into());
     };
     if panes.len() != 1
         || panes[0].window_id != expected.window_id
         || panes[0].pane_id != expected.pane_id
         || panes[0].pid != expected.pid
     {
-        return residue.leave(
-            resource,
-            "the tmux window's identity changed after reset began",
-        );
+        return Err("the tmux window's identity changed after reset began".into());
     }
     if caller.pane.as_deref() == Some(expected.pane_id.as_str())
         && caller.socket.as_ref().is_some_and(|own| {
@@ -658,9 +747,32 @@ fn close_window(
                     .is_ok_and(|own| target.endpoint.canonicalize().is_ok_and(|end| own == end))
         })
     {
-        return residue.leave(resource, "it is the reset caller's own tmux window");
+        return Err("it is the reset caller's own tmux window".into());
     }
+    Ok(Some((target, expected)))
+}
+
+/// Closes the exact pinned window; any doubt about its identity leaves it.
+fn close_window(
+    report: &ResourceReport,
+    caller: &ResetCaller,
+    env: &crate::env::Environment,
+    workspace: Option<&WorkspaceLock>,
+    residue: &mut Residue,
+    engine_owner: Option<&dyn Fn() -> Result<(), AppError>>,
+) {
+    let resource = window_resource(report);
+    let (target, expected) = match window_authority(report, caller, env) {
+        Ok(Some(proof)) => proof,
+        Ok(None) => return,
+        Err(reason) => return residue.leave(resource, reason),
+    };
+    let socket = report.socket_path.as_ref().expect("proven window socket");
+    let names = BTreeSet::from([report.window_name.clone()]);
     let closed = attempt(|| {
+        if let Some(check) = engine_owner {
+            check()?;
+        }
         let mut command = std::process::Command::new("tmux");
         crate::env::spawn_env::apply_dispatch_allowlist(&mut command);
         target.apply(&mut command, Some(socket));

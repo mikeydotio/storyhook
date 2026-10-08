@@ -712,15 +712,15 @@ impl DispatchOutcome {
 pub trait Dispatcher: Send + Sync {
     fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError>;
     fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError>;
-    /// Deletes resources owned by a durable reset while inheriting the supplied workspace exclusion into destructive children.
+    /// Runs the native leased-reset actuator. Test dispatchers may substitute
+    /// effects at this existing seam without replacing ownership orchestration.
     fn reset(
         &self,
         _request: crate::store::EngineReset,
         _workspace: std::os::fd::BorrowedFd<'_>,
+        native: &mut dyn FnMut() -> Result<DispatchOutcome, AppError>,
     ) -> Result<DispatchOutcome, AppError> {
-        Err(AppError::Storage(
-            "this dispatcher does not support leased reset".into(),
-        ))
+        native()
     }
     fn probe_window(&self, window: &str) -> WindowProbe;
     /// Probes a lane using its durable identity when the dispatcher supports it.
@@ -1045,14 +1045,6 @@ pub(crate) fn pane_state(
 }
 
 impl Dispatcher for ShellDispatcher {
-    fn reset(
-        &self,
-        request: crate::store::EngineReset,
-        workspace: std::os::fd::BorrowedFd<'_>,
-    ) -> Result<DispatchOutcome, AppError> {
-        reset::run_shell_reset(&self.story_sh_path, &request, &self.env, workspace)
-    }
-
     fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError> {
         let options = DispatchOptions {
             model: request.model,
@@ -1236,12 +1228,23 @@ pub struct RunView {
 pub struct EngineService<'ctx, S: Store, D: Dispatcher> {
     ctx: &'ctx Ctx<'ctx, S>,
     dispatcher: &'ctx D,
+    reset_caller: crate::service::reset::ResetCaller,
 }
 
 impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     #[must_use]
     pub fn new(ctx: &'ctx Ctx<'ctx, S>, dispatcher: &'ctx D) -> Self {
-        Self { ctx, dispatcher }
+        Self {
+            ctx,
+            dispatcher,
+            reset_caller: Default::default(),
+        }
+    }
+
+    /// Carries terminal identity from the request, never from the daemon.
+    pub fn with_reset_caller(mut self, caller: crate::service::reset::ResetCaller) -> Self {
+        self.reset_caller = caller;
+        self
     }
 
     /// Starts one run and all of its idle lanes in a single transaction.
@@ -1294,6 +1297,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 consecutive_hard_stops: 0,
                 recent_quarantines: Vec::new(),
                 stop_reason: None,
+                stop_origin: None,
                 acknowledged_at: None,
                 created_at: now.clone(),
                 updated_at: now.clone(),
@@ -1622,7 +1626,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
 
         if self.ctx.store().read(|tx| reset::stopping(tx, run_id))? {
             let view = if pass == ReconcilePass::Steady {
-                self.reset_now(run_id)?
+                self.reset_now(run_id, None)?
             } else {
                 self.one_view(run_id)?
             };
@@ -2833,7 +2837,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     }
 
     fn stop_now(&self, run_id: &RunId) -> Result<RunView, AppError> {
-        self.reset_now(run_id)
+        self.reset_now(run_id, Some(&self.reset_caller))
     }
 
     /// Waits until no lane is mid-dispatch, then returns the lanes.

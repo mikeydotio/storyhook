@@ -5871,14 +5871,11 @@ cmd_unclaim() {
 # kept. `--force` is accepted and changes nothing (council C1 on SH-886). Use
 # `unclaim` to release a story and keep its work.
 #
-# The engine mode below is Stop Now's leased helper, which is unchanged.
+# Stop Now now uses the daemon's native teardown, never this shell transport.
 cmd_reset() {
   _parse_release_args "$RESET_USAGE" true "$@"
   if [ -n "${STORYHOOK_ENGINE_RESET_V1:-}" ]; then
-    [ "$REL_FORCE" = true ] || refuse "engine-reset-force" "engine reset requires the explicit discard contract"
-    source "$STORY_PLUGIN_ROOT/lib/engine-reset.sh"
-    cmd_engine_reset "$REL_ID" "$STORYHOOK_ENGINE_RESET_V1"
-    return
+    refuse "engine-reset-retired" "Stop Now teardown is native; obsolete engine reset input cannot invoke ordinary story reset"
   fi
   local id="$REL_ID"
   local -a native=(reset "$id")

@@ -69,7 +69,7 @@ pub struct ResourceObservation {
 }
 
 /// Complete read-only result; ambiguity is evidence, never a chosen target.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceReport {
     /// True when only location was observed and pane identity requires a separate check.
     pub location_only: bool,

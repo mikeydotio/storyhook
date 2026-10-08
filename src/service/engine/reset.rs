@@ -7,7 +7,6 @@ use crate::service::executor_lock::ExecutorLock;
 use crate::service::workspace_lock::WorkspaceLock;
 use crate::store::patience::{Shutdown, patiently};
 use crate::store::{EngineReset, ExpectedSeq, ProjectId, StoryNo};
-use std::os::fd::{AsRawFd, BorrowedFd};
 
 /// What Stop Now does with one occupied lane. Every lane maps to exactly one
 /// outcome, and none of them refuses forever, so no lane can keep a stopped
@@ -15,7 +14,7 @@ use std::os::fd::{AsRawFd, BorrowedFd};
 enum StopTarget {
     /// The lane is idle, or this attempt released it without cleanup.
     Settled,
-    /// A leased reset that the helper must clean up.
+    /// A leased reset for the shared native actuator.
     Reset(Box<EngineReset>),
     /// A live lane whose story carries a reserved label (SH-837, council
     /// D7): the story is left for a person, so Stop Now closes the agent's
@@ -49,6 +48,27 @@ pub(crate) fn stopping(tx: &impl ReadOps, run: &str) -> Result<bool, StoreError>
 }
 
 impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
+    /// Only reserved-label lanes need the shell's non-destructive unclaim.
+    pub(crate) fn stop_needs_unclaim(&self, run_id: &str) -> Result<bool, AppError> {
+        Ok(self.ctx.store().read(|tx| {
+            let project = self.ctx.project();
+            let prefix = project_prefix(tx, project)?;
+            let active = active_state(&tx.states(project)?).map(|state| state.slug.clone());
+            for lane in tx.engine_lanes(run_id)? {
+                if let Some(id) = &lane.story_id
+                    && let Some(row) = optional_lane_story(tx, project, &prefix, id)?
+                    && active.as_deref() == Some(row.state.as_str())
+                    && lane.cleanup_lease.is_some()
+                    && tx.engine_reset(project, row.story_no)?.is_none()
+                    && super::lane_reserved_label(&lane, &row.snapshot).is_some()
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })?)
+    }
+
     /// Read-only helper authorization, scoped to the selected project and token.
     pub fn reset_target(&self, run_id: &str, token: &str) -> Result<EngineReset, AppError> {
         Ok(self.ctx.store().read(|tx| {
@@ -86,7 +106,11 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         })?)
     }
 
-    pub(super) fn reset_now(&self, run_id: &RunId) -> Result<RunView, AppError> {
+    pub(super) fn reset_now(
+        &self,
+        run_id: &RunId,
+        request_caller: Option<&crate::service::reset::ResetCaller>,
+    ) -> Result<RunView, AppError> {
         let (lock_path, lock) = run_lock_file(self.ctx.env(), "reset", run_id)?;
         // A busy lock means another Stop Now already owns this run's cleanup.
         // This request still records the same durable intent below, so the
@@ -102,8 +126,8 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 )));
             }
         };
-        // The helper runs from a neutral directory; only this context retains
-        // the original caller. Refuse before scheduling restartable cleanup.
+        // Capture the request directory before scheduling restartable cleanup.
+        // A background retry uses the durable origin instead of adopting its cwd.
         let caller = self
             .ctx
             .cwd()
@@ -137,12 +161,19 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     let Some(row) = optional_lane_story(tx, project, &prefix, id)? else {
                         continue;
                     };
-                    if row.state == active && caller.starts_with(&lease.worktree_path) {
+                    if request_caller.is_some() && row.state == active && caller.starts_with(&lease.worktree_path) {
                         return Err(StoreError::Invariant(format!("cannot reset calling worktree for story `{id}`; invoke Stop Now from outside its worktree")));
                     }
                 }
             }
             let before = run.clone();
+            if run.stop_origin.is_none() && let Some(request_caller) = request_caller {
+                run.stop_origin = Some(crate::store::ResetOrigin {
+                    caller: request_caller.clone(), cwd: Some(caller.clone()),
+                    fire_hooks: self.ctx.hooks_enabled(), hook_depth: self.ctx.depth(),
+                    ..Default::default()
+                });
+            }
             // Cleanup does not reacquire admission: a newer live run may
             // already own this project's slot (SH-790).
             if run.state != EngineRunState::Halted {
@@ -213,9 +244,17 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     if !admitted {
                         return Ok(false);
                     }
-                    let outcome = self
-                        .dispatcher
-                        .reset(reset.clone(), workspace.descriptor())?;
+                    let result =
+                        self.dispatcher
+                            .reset(reset.clone(), workspace.descriptor(), &mut || {
+                                crate::service::story_reset::engine::execute(
+                                    self.ctx, &reset, &workspace,
+                                )
+                            });
+                    if self.superseded(&reset)? {
+                        return Ok(false);
+                    }
+                    let outcome = result?;
                     validate_receipt(&reset, &outcome)?;
                     self.finish_reset(&reset, &outcome.payload, workspace)
                 })();
@@ -237,7 +276,11 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         patiently(&Shutdown::new(), None, || {
                             self.ctx.store().write(|tx| {
                                 if owns(tx, &failed)? {
-                                    tx.put_engine_reset(&failed)?;
+                                    let mut current = tx
+                                        .engine_reset(failed.project, failed.story)?
+                                        .expect("owner checked");
+                                    current.failure = failed.failure.clone();
+                                    tx.put_engine_reset(&current)?;
                                 }
                                 Ok(())
                             })
@@ -451,6 +494,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 lease,
                 restore_to,
                 failure: None,
+                cleanup: None,
             };
             tx.put_engine_reset(&reset)?;
             Ok(StopTarget::Reset(Box::new(reset)))
@@ -526,18 +570,29 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     && state.slug != active && state.slug != VERIFYING_STATE_SLUG)
                 .or_else(|| states.get("todo"))
                 .ok_or_else(|| StoreError::Invariant("reset fallback state todo missing".into()))?;
-            let events = vec![
+            let cleanup = if receipt.get("native_reset").and_then(|v| v.as_u64()) == Some(1) {
+                let cleanup: crate::store::EngineResetCleanup = serde_json::from_value(receipt["cleanup"].clone())?;
+                let persisted = tx.engine_reset(reset.project, reset.story)?.and_then(|current| current.cleanup);
+                if !cleanup.completed || persisted.as_ref() != Some(&cleanup) {
+                    return Err(StoreError::Invariant("native reset receipt differs from durable progress".into()));
+                }
+                Some(cleanup)
+            } else { None };
+            let mut events = vec![
                 StoryEvent::StoryStateChanged { at: now.clone(), state: target.slug.clone() },
                 StoryEvent::StoryAwaitingCleared { at: now.clone() },
                 StoryEvent::StoryCommentAdded {
                     at: now.clone(),
-                    text: format!(
+                    text: cleanup.as_ref().map(|cleanup| crate::service::story_reset::engine::completion(reset, cleanup, &target.slug)).unwrap_or_else(|| format!(
                         "Full Auto Stop Now discarded unfinished work for run `{}` lane {}. \
                          Removed the exact window, worktree, and local branch. Restored state `{}`. Reset {} completed.",
                         reset.run_id, reset.lane_index, target.slug, reset.token,
-                    ),
+                    )),
                 },
             ];
+            if let Some(hold) = cleanup.as_ref().and_then(|cleanup| crate::service::story_reset::engine::hold(reset, cleanup)) {
+                events.push(StoryEvent::StoryAwaitingSet { at: now.clone(), awaiting: hold });
+            }
             // Removing the reservation and releasing the claim share this
             // transaction; no caller can observe an unguarded active story.
             crate::service::block_delivery::supersede_pending(tx, reset.project, reset.story, "engine reset completed; prior session authority retired")?;
@@ -550,14 +605,31 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             idle.outcome = Some(OPERATOR_STOPPED_NOW.into());
             idle.outcome_detail = Some(receipt.to_string());
             put_or_retire_idle_lane(tx, &idle)?;
-            Ok(Some((row.snapshot, snapshot)))
+            let origin = cleanup.as_ref().and_then(|cleanup| cleanup.origin.clone());
+            Ok(Some((row.snapshot, snapshot, origin)))
         })
         })?;
-        let Some((before, snapshot)) = finished else {
+        let Some((before, snapshot, origin)) = finished else {
             return Ok(false);
         };
         drop(workspace);
-        StoryService::new(self.ctx).fire_transition_hooks(
+        let resumed;
+        let hook_ctx = if let Some(origin) = origin {
+            resumed = crate::service::Ctx::new(
+                self.ctx.store(),
+                reset.project,
+                origin
+                    .cwd
+                    .unwrap_or_else(|| reset.lease.repository_path.clone()),
+                self.ctx.env().clone(),
+            )
+            .no_hooks(!origin.fire_hooks)
+            .hook_depth(origin.hook_depth);
+            &resumed
+        } else {
+            self.ctx
+        };
+        StoryService::new(hook_ctx).fire_transition_hooks(
             &before.id,
             &before.title,
             &before.state,
@@ -573,7 +645,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
 fn owns(tx: &impl ReadOps, reset: &EngineReset) -> Result<bool, StoreError> {
     Ok(tx
         .engine_reset(reset.project, reset.story)?
-        .is_some_and(|current| current.token == reset.token && current.lease == reset.lease))
+        .is_some_and(|current| {
+            current.token == reset.token
+                && current.run_id == reset.run_id
+                && current.lane_index == reset.lane_index
+                && current.lease == reset.lease
+        }))
 }
 
 /// Whether a cleanup operation other than Stop Now owns `lane`'s story.
@@ -631,65 +708,40 @@ pub fn validate_receipt(reset: &EngineReset, outcome: &DispatchOutcome) -> Resul
         return Err(AppError::Validation(helper_diagnosis(&outcome.payload)));
     }
     let payload = &outcome.payload;
+    if payload.get("native_reset").and_then(|value| value.as_u64()) == Some(1) {
+        let progress: crate::store::EngineResetCleanup =
+            serde_json::from_value(payload["cleanup"].clone()).map_err(|error| {
+                AppError::Storage(format!("invalid native reset receipt: {error}"))
+            })?;
+        if !progress.completed {
+            return Err(AppError::Storage(
+                "native reset receipt is not complete".into(),
+            ));
+        }
+    }
     if payload.get("token").and_then(|v| v.as_str()) != Some(reset.token.as_str())
         || payload.get("lease")
             != Some(
                 &serde_json::to_value(&reset.lease)
                     .map_err(|e| AppError::Storage(e.to_string()))?,
             )
-        || [
-            "tmux_story_windows_absent",
-            "worktree_registration_absent",
-            "worktree_path_absent",
-            "branch_absent",
-        ]
-        .iter()
-        .any(|key| {
-            payload
-                .get("postconditions")
-                .and_then(|v| v.get(key))
-                .and_then(|v| v.as_bool())
-                != Some(true)
-        })
+        || (payload.get("native_reset").and_then(|v| v.as_u64()) != Some(1)
+            && [
+                "tmux_story_windows_absent",
+                "worktree_registration_absent",
+                "worktree_path_absent",
+                "branch_absent",
+            ]
+            .iter()
+            .any(|key| {
+                payload
+                    .get("postconditions")
+                    .and_then(|v| v.get(key))
+                    .and_then(|v| v.as_bool())
+                    != Some(true)
+            }))
     {
         return Err(AppError::Storage("reset helper success did not prove the exact token, lease and every resource absence postcondition".into()));
     }
     Ok(())
-}
-
-pub(super) fn run_shell_reset(
-    script: &Path,
-    reset: &EngineReset,
-    env: &Environment,
-    workspace: BorrowedFd<'_>,
-) -> Result<DispatchOutcome, AppError> {
-    let encoded = serde_json::to_string(reset)
-        .map_err(|e| AppError::Storage(format!("encoding reset request: {e}")))?;
-    let mut command = Command::new("bash");
-    command.arg(script).args([
-        "--project",
-        &reset.lease.project_slug,
-        "reset",
-        &reset.lease.story_id,
-        "--force",
-    ]);
-    apply_dispatch_allowlist(&mut command);
-    command
-        .current_dir(env.home())
-        .envs(env.child_vars())
-        .env(
-            "STORY_BIN",
-            std::env::current_exe().map_err(|e| AppError::Storage(e.to_string()))?,
-        )
-        .env("STORYHOOK_ENGINE_RESET_V1", encoded)
-        .env("GIT_TERMINAL_PROMPT", "0");
-    crate::service::workspace_lock::inherit_descriptor(workspace, &mut command);
-    command.env("STORY_WORKSPACE_LOCK_FD", workspace.as_raw_fd().to_string());
-    let captured = crate::process::run_captured_quiescent(
-        command,
-        DISPATCH_TIMEOUT,
-        crate::process::TerminationPolicy::Kill,
-    )
-    .map_err(|e| AppError::Storage(format!("reset helper failed: {}", e.detail())))?;
-    classify_dispatch_capture(&captured)
 }

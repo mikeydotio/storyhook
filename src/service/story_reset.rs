@@ -1,5 +1,6 @@
 //! A card reset holds readiness until exact resource cleanup succeeds.
 mod cleanup;
+pub(crate) mod engine;
 pub(crate) mod identity;
 mod summary;
 mod takeover;

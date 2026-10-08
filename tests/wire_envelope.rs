@@ -562,6 +562,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 },
                 restore_to: "todo".into(),
                 failure: Some("previous attempt retained its reservation".into()),
+                cleanup: None,
             })),
         ),
         (
@@ -2216,6 +2217,7 @@ fn invocation_corpus() -> Vec<Invocation> {
         },
         Invocation::Engine {
             action: EngineAction::Stop {
+                caller: Default::default(),
                 run: Some("run-1".to_string()),
                 now: true,
             },

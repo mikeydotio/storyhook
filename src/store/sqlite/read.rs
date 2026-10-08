@@ -234,7 +234,7 @@ pub(super) fn projects(conn: &Connection) -> Result<Vec<ProjectRecord>, StoreErr
 
 const ENGINE_RUN_COLUMNS: &str = "id, project_slug, scope_kind, scope_story_id, lanes, agent, \
     state, consecutive_hard_stops, stop_reason, acknowledged_at, created_at, updated_at, \
-    recent_quarantines_json, model, effort, speed";
+    recent_quarantines_json, model, effort, speed, stop_origin_json";
 
 #[derive(Debug)]
 struct RawEngineRun {
@@ -250,6 +250,7 @@ struct RawEngineRun {
     acknowledged_at: Option<String>,
     created_at: String,
     updated_at: String,
+    stop_origin_json: Option<String>,
     recent_quarantines_json: String,
     model: Option<String>,
     effort: Option<String>,
@@ -274,6 +275,7 @@ fn raw_engine_run(row: &Row<'_>) -> Result<RawEngineRun, rusqlite::Error> {
         model: row.get(13)?,
         effort: row.get(14)?,
         speed: row.get(15)?,
+        stop_origin_json: row.get(16)?,
     })
 }
 
@@ -339,6 +341,11 @@ fn hydrate_engine_run(raw: RawEngineRun) -> Result<EngineRunRecord, StoreError> 
             &raw.recent_quarantines_json,
         )?,
         stop_reason: raw.stop_reason,
+        stop_origin: raw
+            .stop_origin_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?,
         acknowledged_at: raw.acknowledged_at,
         created_at: raw.created_at,
         updated_at: raw.updated_at,

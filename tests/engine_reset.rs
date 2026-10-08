@@ -331,6 +331,7 @@ fn stale_probe_and_duplicate_stop_cannot_compete_with_the_reset_owner() {
             &self,
             request: EngineReset,
             _workspace: std::os::fd::BorrowedFd<'_>,
+            _native: &mut dyn FnMut() -> Result<DispatchOutcome, AppError>,
         ) -> Result<DispatchOutcome, AppError> {
             self.resets
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -763,6 +764,7 @@ fn stop_now_during_a_dispatch_that_is_then_refused_finishes_the_run() {
             &self,
             _: EngineReset,
             _: std::os::fd::BorrowedFd<'_>,
+            _: &mut dyn FnMut() -> Result<DispatchOutcome, AppError>,
         ) -> Result<DispatchOutcome, AppError> {
             panic!("a refused dispatch has no lease, so nothing may be reset")
         }
@@ -1028,6 +1030,7 @@ fn a_stop_now_reset_superseded_while_its_helper_runs_defers_instead_of_failing()
             &self,
             request: EngineReset,
             _workspace: std::os::fd::BorrowedFd<'_>,
+            _native: &mut dyn FnMut() -> Result<DispatchOutcome, AppError>,
         ) -> Result<DispatchOutcome, AppError> {
             storyhook::service::story_reset::StoryResetService::new(&self.fixture.ctx())
                 .reserve("SH-1", "SH-1")

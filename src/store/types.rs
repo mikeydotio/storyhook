@@ -258,6 +258,8 @@ pub struct EngineRunRecord {
     pub recent_quarantines: Vec<EngineQuarantineRecord>,
     /// Machine-readable or human-readable stop classification.
     pub stop_reason: Option<String>,
+    /// Caller protections accepted with Stop Now, retained across daemon restarts.
+    pub stop_origin: Option<super::ResetOrigin>,
     /// When the current halt/drain notification was acknowledged.
     pub acknowledged_at: Option<String>,
     /// RFC3339 creation timestamp supplied by the caller.

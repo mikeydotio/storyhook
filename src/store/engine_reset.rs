@@ -24,4 +24,24 @@ pub struct EngineReset {
     pub restore_to: String,
     /// Most recent failed cleanup diagnosis, retained across restarts.
     pub failure: Option<String>,
+    /// Pinned native teardown evidence; absent in pre-SH-890 reservations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup: Option<EngineResetCleanup>,
+}
+
+/// Native teardown progress, persisted before any removal and retained on retry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineResetCleanup {
+    /// The original accepted request, never the retrying daemon's terminal.
+    pub origin: Option<super::ResetOrigin>,
+    /// Exact leased resource observation; replacements are never rediscovered.
+    pub resources: crate::service::resources::ResourceReport,
+    /// Pinned filesystem identities.
+    pub paths: Vec<super::ResetPathIdentity>,
+    /// Recovery facts captured before destructive work.
+    pub recovery: super::ResetRecovery,
+    /// Resources left by the completed removal attempt.
+    pub residue: Vec<super::ResetResidue>,
+    /// Removal finished; retries only finalize the recorded outcome.
+    pub completed: bool,
 }

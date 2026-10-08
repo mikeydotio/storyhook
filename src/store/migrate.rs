@@ -511,6 +511,12 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0057_verification_control_revision.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 58,
+        name: "engine_stop_origin",
+        sql: include_str!("schema/0058_engine_stop_origin.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 mod lineage;
