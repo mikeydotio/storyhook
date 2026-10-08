@@ -84,12 +84,86 @@ pub struct AssemblyEvidence {
 pub struct NativeAssembly {
     evidence: AssemblyEvidence,
     custody: Custody,
+    settlement: SettlementSnapshot,
 }
 
 impl NativeAssembly {
     /// Reviewable evidence; not a gate, landing or publication receipt.
     pub fn evidence(&self) -> &AssemblyEvidence {
         &self.evidence
+    }
+
+    /// Explicitly remove only the original live private assembly after all
+    /// native effects have proven drained. The caller must retain exclusive
+    /// central custody through this call; this handle does not prove quiescence.
+    /// No historical receipt can reconstruct cleanup authority. Any uncertainty
+    /// retains remaining residue; there is deliberately no Drop cleanup.
+    pub fn settle(self) -> Result<(), AppError> {
+        self.settle_with(|_| Ok(()))
+    }
+
+    fn settle_with(
+        self,
+        mut before_unlink: impl FnMut(usize) -> Result<(), AppError>,
+    ) -> Result<(), AppError> {
+        let mut removed = 0usize;
+        let result = (|| {
+            self.settlement.validate(&self.custody)?;
+            let root = self.custody.directory(&self.custody.repository)?;
+            let parent_path = self
+                .custody
+                .repository
+                .parent()
+                .ok_or_else(|| refuse("assembly parent missing"))?;
+            let parent = self.custody.directory(parent_path)?;
+            let mut paths: Vec<_> = self
+                .settlement
+                .nodes
+                .keys()
+                .filter(|path| path.as_path() != Path::new(STAMP))
+                .collect();
+            paths.sort_by(|a, b| {
+                b.components()
+                    .count()
+                    .cmp(&a.components().count())
+                    .then_with(|| a.cmp(b))
+            });
+            for path in paths {
+                before_unlink(removed)?;
+                parent.validate()?;
+                root.validate()?;
+                remove_inventoried(&root.file, path, &self.settlement)?;
+                removed += 1;
+            }
+            // Keep the original stamp until all other inventoried entries are
+            // gone and no unexpected addition is visible in the owned root.
+            before_unlink(removed)?;
+            if directory_names(&root.file)? != vec![std::ffi::OsString::from(STAMP)] {
+                return Err(refuse("unexpected entry appeared during assembly cleanup"));
+            }
+            parent.validate()?;
+            root.validate()?;
+            remove_inventoried(&root.file, Path::new(STAMP), &self.settlement)?;
+            removed += 1;
+            let name = self
+                .custody
+                .repository
+                .file_name()
+                .ok_or_else(|| refuse("assembly root lacks basename"))?;
+            let observed = open_entry(&parent.file, name)?;
+            let metadata = observed.metadata().map_err(storage)?;
+            if !metadata.is_dir()
+                || metadata.dev() != root.identity.device
+                || metadata.ino() != root.identity.inode
+            {
+                return Err(refuse("assembly root changed before final removal"));
+            }
+            unlink_child(&parent.file, name, true)
+        })();
+        result.map_err(|error| refuse(&format!(
+            "cleanup incomplete at {}; removed {removed} entries; remaining residue retained: {error}",
+            self.custody.repository.display()
+        )))
     }
 
     /// Recheck the still-held native filesystem objects before a later phase.
@@ -323,6 +397,334 @@ fn reject_object_symlinks(objects: &Path) -> Result<(), AppError> {
                 pending.push(entry.path());
             }
         }
+    }
+    Ok(())
+}
+
+/// Native terminal inventory. It is captured once after successful assembly,
+/// never reconstructed from a receipt or refreshed to adopt later additions.
+struct SettlementSnapshot {
+    nodes: std::collections::BTreeMap<PathBuf, SettlementNode>,
+    protected: Vec<(PathBuf, File, String)>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SettlementNode {
+    device: u64,
+    inode: u64,
+    mode: u32,
+    directory: bool,
+    length: u64,
+    modified: (i64, i64),
+    links: u64,
+}
+impl SettlementNode {
+    fn of(metadata: &fs::Metadata) -> Result<Self, AppError> {
+        if !metadata.is_dir() && !metadata.is_file() {
+            return Err(refuse("settlement refuses nonregular private namespace"));
+        }
+        if metadata.is_file() && metadata.nlink() != 1 {
+            return Err(refuse(
+                "settlement refuses shared hard-linked private files",
+            ));
+        }
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            mode: metadata.mode(),
+            directory: metadata.is_dir(),
+            // Removing children changes directory timestamps/link count. Identity
+            // remains exact; file identity also includes its terminal metadata.
+            length: if metadata.is_dir() { 0 } else { metadata.len() },
+            modified: if metadata.is_dir() {
+                (0, 0)
+            } else {
+                (metadata.mtime(), metadata.mtime_nsec())
+            },
+            links: if metadata.is_dir() {
+                0
+            } else {
+                metadata.nlink()
+            },
+        })
+    }
+}
+impl SettlementSnapshot {
+    fn capture(custody: &Custody) -> Result<Self, AppError> {
+        custody.validate()?;
+        let root = custody.directory(&custody.repository)?;
+        let mut nodes = std::collections::BTreeMap::new();
+        inventory(&root.file, Path::new(""), root.identity.device, &mut nodes)?;
+        let mut protected = Vec::new();
+        for relative in ["config", "HEAD", "assembly.index"] {
+            let path = PathBuf::from(relative);
+            let file = open_entry(&root.file, path.as_os_str())?;
+            let expected = nodes
+                .get(&path)
+                .ok_or_else(|| refuse("terminal administration file missing"))?;
+            if expected.directory
+                || SettlementNode::of(&file.metadata().map_err(storage)?)? != *expected
+            {
+                return Err(refuse(
+                    "terminal administration file changed during inventory",
+                ));
+            }
+            let hash = pinned_digest(&file)?;
+            protected.push((path, file, hash));
+        }
+        custody.validate()?;
+        Ok(Self { nodes, protected })
+    }
+    fn validate(&self, custody: &Custody) -> Result<(), AppError> {
+        custody.validate()?;
+        let root = custody.directory(&custody.repository)?;
+        let mut observed = std::collections::BTreeMap::new();
+        inventory(
+            &root.file,
+            Path::new(""),
+            root.identity.device,
+            &mut observed,
+        )?;
+        if observed != self.nodes {
+            return Err(refuse(
+                "private assembly namespace changed after terminal inventory",
+            ));
+        }
+        for (path, held, expected_hash) in &self.protected {
+            let file = open_entry(&root.file, path.as_os_str())?;
+            let observed = SettlementNode::of(&file.metadata().map_err(storage)?)?;
+            if self.nodes.get(path) != Some(&observed)
+                || SettlementNode::of(&held.metadata().map_err(storage)?)? != observed
+                || pinned_digest(&file)? != *expected_hash
+            {
+                return Err(refuse("terminal index/config/HEAD custody changed"));
+            }
+        }
+        custody.validate()
+    }
+}
+
+impl Custody {
+    fn directory(&self, path: &Path) -> Result<&PinnedDirectory, AppError> {
+        self.directories
+            .iter()
+            .find(|pin| pin.identity.path == path)
+            .ok_or_else(|| refuse("missing original native directory pin"))
+    }
+}
+
+fn pinned_digest(file: &File) -> Result<String, AppError> {
+    use std::os::unix::fs::FileExt;
+    let metadata = file.metadata().map_err(storage)?;
+    if !metadata.is_file() || metadata.len() > ANSWER_LIMIT {
+        return Err(refuse("terminal administration exceeds settlement bound"));
+    }
+    let mut bytes = vec![0; metadata.len() as usize];
+    file.read_exact_at(&mut bytes, 0).map_err(storage)?;
+    Ok(digest(&bytes))
+}
+
+fn forbidden_settlement_path(path: &Path) -> bool {
+    [
+        ".git",
+        "commondir",
+        "gitdir",
+        "shallow",
+        "config.worktree",
+        "worktrees",
+        "modules",
+        "objects/info/alternates",
+        "objects/info/http-alternates",
+        "info/grafts",
+        "refs/replace",
+    ]
+    .iter()
+    .any(|forbidden| path == Path::new(forbidden) || path.starts_with(Path::new(forbidden)))
+        || path
+            .extension()
+            .is_some_and(|extension| extension == "lock" || extension == "promisor")
+}
+
+fn inventory(
+    directory: &File,
+    relative: &Path,
+    device: u64,
+    nodes: &mut std::collections::BTreeMap<PathBuf, SettlementNode>,
+) -> Result<(), AppError> {
+    if relative.components().count() > 128 {
+        return Err(refuse("settlement namespace exceeds depth bound"));
+    }
+    for name in directory_names(directory)? {
+        let path = relative.join(&name);
+        if forbidden_settlement_path(&path) {
+            return Err(refuse(
+                "settlement refuses external namespace authority or pending lock",
+            ));
+        }
+        let file = open_entry(directory, &name)?;
+        let node = SettlementNode::of(&file.metadata().map_err(storage)?)?;
+        if node.device != device {
+            return Err(refuse("settlement refuses a mounted private subtree"));
+        }
+        if nodes.len() >= 65_536 {
+            return Err(refuse("settlement namespace exceeds entry bound"));
+        }
+        let is_directory = node.directory;
+        nodes.insert(path.clone(), node);
+        if is_directory {
+            inventory(&file, &path, device, nodes)?;
+        }
+    }
+    Ok(())
+}
+
+fn c_name(name: &std::ffi::OsStr) -> Result<std::ffi::CString, AppError> {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes == b"." || bytes == b".." || bytes.contains(&b'/') {
+        return Err(refuse("settlement requires one native child name"));
+    }
+    std::ffi::CString::new(bytes).map_err(storage)
+}
+fn open_entry(directory: &File, name: &std::ffi::OsStr) -> Result<File, AppError> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let name = c_name(name)?;
+    // SAFETY: a held native directory descriptor and NUL-terminated single
+    // basename. NOFOLLOW prevents redirect traversal; NONBLOCK avoids FIFOs.
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(storage(std::io::Error::last_os_error()));
+    }
+    // SAFETY: this successful openat returned a new uniquely owned descriptor.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+fn directory_names(directory: &File) -> Result<Vec<std::ffi::OsString>, AppError> {
+    use std::os::{fd::AsRawFd, unix::ffi::OsStringExt};
+    // Open "." relative to the directory to obtain an independent stream
+    // offset. dup alone would share readdir's offset with the retained pin.
+    let dot = c".";
+    // SAFETY: valid held directory fd and static NUL-terminated name.
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            dot.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if fd < 0 {
+        return Err(storage(std::io::Error::last_os_error()));
+    }
+    // SAFETY: ownership of fd is transferred to DIR on success.
+    let stream = unsafe { libc::fdopendir(fd) };
+    if stream.is_null() {
+        let error = std::io::Error::last_os_error();
+        // SAFETY: fdopendir failed, so fd remains owned here.
+        unsafe {
+            libc::close(fd);
+        }
+        return Err(storage(error));
+    }
+    struct Stream(*mut libc::DIR);
+    impl Drop for Stream {
+        fn drop(&mut self) {
+            unsafe {
+                libc::closedir(self.0);
+            }
+        }
+    }
+    let stream = Stream(stream);
+    let mut names = Vec::new();
+    loop {
+        // SAFETY: errno is thread-local; readdir returns entries owned by this
+        // live stream, read before the next readdir call.
+        unsafe {
+            *errno_location() = 0;
+        }
+        let entry = unsafe { libc::readdir(stream.0) };
+        if entry.is_null() {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(0) {
+                return Err(storage(error));
+            }
+            break;
+        }
+        let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if name == b"." || name == b".." {
+            continue;
+        }
+        if names.len() >= 65_536 {
+            return Err(refuse("settlement directory exceeds entry bound"));
+        }
+        names.push(std::ffi::OsString::from_vec(name.to_vec()));
+    }
+    names.sort();
+    Ok(names)
+}
+#[cfg(target_os = "macos")]
+unsafe fn errno_location() -> *mut libc::c_int {
+    unsafe { libc::__error() }
+}
+#[cfg(not(target_os = "macos"))]
+unsafe fn errno_location() -> *mut libc::c_int {
+    unsafe { libc::__errno_location() }
+}
+
+fn remove_inventoried(
+    root: &File,
+    relative: &Path,
+    snapshot: &SettlementSnapshot,
+) -> Result<(), AppError> {
+    let mut parent = root.try_clone().map_err(storage)?;
+    let mut prefix = PathBuf::new();
+    for component in relative
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .components()
+    {
+        let std::path::Component::Normal(name) = component else {
+            return Err(refuse("nonrelative settlement path"));
+        };
+        prefix.push(name);
+        let next = open_entry(&parent, name)?;
+        if snapshot.nodes.get(&prefix)
+            != Some(&SettlementNode::of(&next.metadata().map_err(storage)?)?)
+        {
+            return Err(refuse("settlement ancestor changed"));
+        }
+        parent = next;
+    }
+    let name = relative
+        .file_name()
+        .ok_or_else(|| refuse("settlement path lacks basename"))?;
+    let file = open_entry(&parent, name)?;
+    let expected = snapshot
+        .nodes
+        .get(relative)
+        .ok_or_else(|| refuse("settlement node was not inventoried"))?;
+    if SettlementNode::of(&file.metadata().map_err(storage)?)? != *expected {
+        return Err(refuse("settlement target changed before unlink"));
+    }
+    unlink_child(&parent, name, expected.directory)
+}
+fn unlink_child(parent: &File, name: &std::ffi::OsStr, directory: bool) -> Result<(), AppError> {
+    use std::os::fd::AsRawFd;
+    let name = c_name(name)?;
+    // SAFETY: one basename relative to a retained directory fd, never a path
+    // which can follow a substituted ancestor. Caller checked exact identity.
+    if unsafe {
+        libc::unlinkat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            if directory { libc::AT_REMOVEDIR } else { 0 },
+        )
+    } != 0
+    {
+        return Err(storage(std::io::Error::last_os_error()));
     }
     Ok(())
 }
@@ -877,9 +1279,15 @@ fn assemble(
         author,
         committer,
     };
+    // Only the successful terminal state can authorize later local deletion.
+    // All assembly captures have settled; publication/gate reads may not adopt
+    // additional or replaced private artifacts into this immutable inventory.
+    let settlement = SettlementSnapshot::capture(op.custody.as_ref().expect("created above"))?;
+    op.check()?;
     Ok(NativeAssembly {
         evidence,
         custody: op.custody.take().expect("created above"),
+        settlement,
     })
 }
 

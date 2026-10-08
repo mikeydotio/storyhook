@@ -679,3 +679,186 @@ fn sh871_native_assembly_never_accepts_leader_success_with_a_live_writer() {
         "leader success was accepted while its writer remained live"
     );
 }
+
+fn assembled_fixture(fixture: &Fixture) -> NativeAssembly {
+    assemble(
+        fixture.inputs(),
+        &|| Ok(()),
+        deadline(),
+        &Cancellation::default(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn sh871_live_assembly_settlement_removes_only_original_private_root() {
+    let fixture = Fixture::new();
+    let source = snapshot(&fixture.source);
+    let assembled = assembled_fixture(&fixture);
+    let sibling = fixture.workspace.with_file_name("another-owner");
+    fs::create_dir(&sibling).unwrap();
+    fs::write(sibling.join("keep"), "unrelated").unwrap();
+    let git_calls = crate::env::git_env::built_on_this_thread();
+    assembled.settle().unwrap();
+    assert!(!fixture.workspace.exists());
+    assert!(fixture.workspace.parent().unwrap().is_dir());
+    assert_eq!(
+        fs::read_to_string(sibling.join("keep")).unwrap(),
+        "unrelated"
+    );
+    assert_eq!(snapshot(&fixture.source), source);
+    assert_eq!(crate::env::git_env::built_on_this_thread(), git_calls);
+}
+
+#[test]
+fn sh871_live_assembly_settlement_refuses_replaced_administration_and_objects() {
+    for relative in ["config", "HEAD", "assembly.index", STAMP, "objects"] {
+        let fixture = Fixture::new();
+        let assembled = assembled_fixture(&fixture);
+        let path = fixture.workspace.join(relative);
+        let retained = fixture
+            .workspace
+            .with_file_name(format!("retained-{}", relative.replace('/', "-")));
+        fs::rename(&path, &retained).unwrap();
+        if retained.is_dir() {
+            fs::create_dir(&path).unwrap();
+            fs::write(path.join("keep"), "replacement").unwrap();
+        } else {
+            fs::write(&path, fs::read(&retained).unwrap()).unwrap();
+        }
+        let before = snapshot(&fixture.workspace);
+        let error = assembled.settle().unwrap_err().to_string();
+        assert!(error.contains("removed 0 entries"), "{relative}: {error}");
+        assert_eq!(snapshot(&fixture.workspace), before, "{relative}");
+        assert!(retained.exists());
+    }
+}
+
+#[test]
+fn sh871_live_assembly_settlement_refuses_new_files_redirects_and_locks() {
+    for relative in [
+        "operator-note",
+        "objects/info/alternates",
+        "info/grafts",
+        "assembly.index.lock",
+    ] {
+        let fixture = Fixture::new();
+        let assembled = assembled_fixture(&fixture);
+        let path = fixture.workspace.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "keep unknown ownership").unwrap();
+        let before = snapshot(&fixture.workspace);
+        assert!(
+            assembled
+                .settle()
+                .unwrap_err()
+                .to_string()
+                .contains("removed 0 entries")
+        );
+        assert_eq!(snapshot(&fixture.workspace), before);
+    }
+}
+
+#[test]
+fn sh871_live_assembly_settlement_does_not_follow_injected_symlink() {
+    let fixture = Fixture::new();
+    let assembled = assembled_fixture(&fixture);
+    let before = snapshot(&fixture.source);
+    symlink(&fixture.source, fixture.workspace.join("foreign")).unwrap();
+    assert!(
+        assembled
+            .settle()
+            .unwrap_err()
+            .to_string()
+            .contains("removed 0 entries")
+    );
+    assert_eq!(snapshot(&fixture.source), before);
+    assert!(fixture.workspace.join(STAMP).is_file());
+    assert!(
+        fs::symlink_metadata(fixture.workspace.join("foreign"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
+fn sh871_live_assembly_settlement_refuses_renamed_parent_or_root() {
+    for rename_parent in [false, true] {
+        let fixture = Fixture::new();
+        let assembled = assembled_fixture(&fixture);
+        let original = if rename_parent {
+            fixture.workspace.parent().unwrap().to_path_buf()
+        } else {
+            fixture.workspace.clone()
+        };
+        let retained = original.with_file_name("retained-native-root");
+        fs::rename(&original, &retained).unwrap();
+        fs::create_dir_all(&fixture.workspace).unwrap();
+        fs::write(fixture.workspace.join("keep"), "foreign replacement").unwrap();
+        assert!(
+            assembled
+                .settle()
+                .unwrap_err()
+                .to_string()
+                .contains("removed 0 entries")
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.workspace.join("keep")).unwrap(),
+            "foreign replacement"
+        );
+        let original_stamp = if rename_parent {
+            retained.join("integration").join(STAMP)
+        } else {
+            retained.join(STAMP)
+        };
+        assert!(original_stamp.is_file());
+    }
+}
+
+#[test]
+fn sh871_live_assembly_settlement_reports_partial_failure_and_keeps_stamp() {
+    let fixture = Fixture::new();
+    let assembled = assembled_fixture(&fixture);
+    let error = assembled
+        .settle_with(|removed| {
+            if removed == 1 {
+                Err(refuse("fixture interruption after one exact unlink"))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("removed 1 entries"), "{error}");
+    assert!(error.contains("cleanup incomplete"));
+    assert!(fixture.workspace.join(STAMP).is_file());
+}
+
+#[test]
+fn sh871_live_assembly_settlement_keeps_inflight_unknown_addition() {
+    let fixture = Fixture::new();
+    let assembled = assembled_fixture(&fixture);
+    let unknown = fixture.workspace.join("keep-new-owner");
+    let error = assembled
+        .settle_with(|removed| {
+            if removed == 0 {
+                fs::write(&unknown, "new owner").map_err(storage)?;
+            }
+            Ok(())
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("unexpected entry appeared"), "{error}");
+    assert_eq!(fs::read_to_string(unknown).unwrap(), "new owner");
+    assert!(fixture.workspace.join(STAMP).is_file());
+}
+
+#[test]
+fn sh871_live_assembly_drop_retains_native_workspace_without_cleanup() {
+    let fixture = Fixture::new();
+    let assembled = assembled_fixture(&fixture);
+    let before = snapshot(&fixture.workspace);
+    drop(assembled);
+    assert_eq!(snapshot(&fixture.workspace), before);
+}
