@@ -243,8 +243,14 @@ pub(super) fn validate_state(
     state: &IntegrationOwner,
     record: &IntegrationRecovery,
 ) -> Result<(), StoreError> {
-    if (state.phase == IntegrationPhase::Landing) != state.landing.is_some()
-        || (state.phase != IntegrationPhase::Landing && state.landing_started)
+    if matches!(
+        state.phase,
+        IntegrationPhase::Landing | IntegrationPhase::Landed
+    ) != state.landing.is_some()
+        || (!matches!(
+            state.phase,
+            IntegrationPhase::Landing | IntegrationPhase::Landed
+        ) && state.landing_started)
     {
         return Err(invalid(
             "integration landing phase has inconsistent intent custody",
@@ -284,6 +290,12 @@ pub(super) fn validate_state(
             return Err(invalid(
                 "managed landing differs from immutable original owner, native PR or certified tree",
             ));
+        }
+    }
+    if let Some(evidence) = &state.landed {
+        validate_landed(state, record, evidence)?;
+        if !state.landing_started {
+            return Err(invalid("landed owner never retained a merge intent"));
         }
     }
     Ok(())
@@ -428,5 +440,106 @@ fn observation_live(deadline: Instant, cancellation: &Cancellation) -> Result<()
         Err(invalid("managed landing observation expired or cancelled").into())
     } else {
         Ok(())
+    }
+}
+
+// Observation-only validation for retained receipts. Only the opaque native
+// factory can supply a live proof to the completion door below.
+fn validate_landed(
+    state: &IntegrationOwner,
+    record: &IntegrationRecovery,
+    evidence: &IntegrationLandedEvidence,
+) -> Result<(), StoreError> {
+    let intent = state
+        .landing
+        .as_ref()
+        .ok_or_else(|| invalid("landed receipt lacks original intent"))?;
+    let publication = state
+        .publication
+        .as_ref()
+        .ok_or_else(|| invalid("landed receipt lacks publication"))?;
+    let certificate = state
+        .gate
+        .as_ref()
+        .ok_or_else(|| invalid("landed receipt lacks actual certificate"))?;
+    let oid = |s: &str| matches!(s.len(), 40 | 64) && s.bytes().all(|c| c.is_ascii_hexdigit());
+    if evidence.version != 1
+        || evidence.owner != record.id
+        || evidence.intent_id != intent.id
+        || evidence.repository != state.submission.repository
+        || evidence.original_pr != state.submission.pull_request
+        || evidence.original_head != state.plan.head
+        || evidence.managed_pr != publication.pull_request
+        || evidence.managed_head != publication.commit
+        || evidence.merge_tree != certificate.certification.tree
+        || evidence.base_branch != state.submission.base_branch
+        || ![
+            &evidence.merge_commit,
+            &evidence.merge_tree,
+            &evidence.observed_base,
+            &evidence.observed_base_tree,
+        ]
+        .iter()
+        .all(|v| oid(v))
+    {
+        return Err(invalid(
+            "native landing differs from exact owner, original ancestry inputs, managed PR or certified tree",
+        ));
+    }
+    Ok(())
+}
+
+impl<'a, S: Store> IntegrationOwnerService<'a, S> {
+    /// Accept only a fresh, opaque native Git/remote proof. The caller retains
+    /// the proof and explicitly settles its newly owned private repository after
+    /// this transaction, including on refusal. Stopping new work does not make
+    /// an already landed fact unrecordable; human and resource replacement do.
+    pub(crate) fn complete_landing(
+        &self,
+        native: &NativeIntegrationLanded,
+    ) -> Result<bool, AppError> {
+        native.validate_lifetime()?;
+        let query = native.query();
+        if query.record.project != self.ctx.project() {
+            return Err(invalid("landing proof belongs to another project").into());
+        }
+        let now = self.ctx.now();
+        self.ctx.write_stories(|tx|{
+            native.validate_lifetime().map_err(StoreError::from)?;
+            let (mut record,mut state)=find(tx,self.ctx.project(),query.id())?;
+            if record!=query.record || state!=query.owner || !record.active
+                || state.phase!=IntegrationPhase::Landing || !state.landing_started {
+                return Ok(false);
+            }
+            crate::store::landing::validate_intent(tx,query.intent())?;
+            if !tx.landing_intents()?.contains(query.intent()){return Ok(false);}
+            let row=tx.story(record.project,record.story)?.ok_or_else(||invalid("landing story disappeared"))?;
+            if crate::domain::is_human_only(&row.snapshot)
+                || !crate::service::verification::human::permits(tx,&state.candidate)?
+                || !crate::service::verification::submission_is_current(tx,&row,&state.candidate)?
+                || !crate::service::verification::recovery_cleanup_history_is_current(tx,&state.candidate)?
+                || crate::service::project_recovery::recovery_resource_hold(tx,record.project,record.story)? {
+                return Ok(false);
+            }
+            validate_landed(&state,&record,native.evidence())?;
+            let attributions=tx.attributions(record.project)?;
+            if !attributions.contains(&state.attribution) || state.attribution.has_unsettled_diagnosis()
+                || state.attribution.components.len()!=1 || attributions.iter().any(|a| a.id!=state.attribution.id && a.submission==state.attribution.submission && a.held && a.retired.is_none()) {
+                return Err(invalid("unrelated or changed attribution remains held; native integration landing cannot erase it"));
+            }
+            let mut retired=state.attribution.clone();
+            retired.revision+=1;
+            retired.held=false;
+            retired.retired=Some(format!("integration {} landed exact certified tree {} through managed PR {}",record.id,native.evidence().merge_tree,native.evidence().managed_pr));
+            if !tx.update_attribution(&retired,state.attribution.revision)?{return Err(invalid("attribution changed before native landing completion"));}
+            crate::service::landing::complete_integration_story(tx,self.ctx,native)?;
+            state.phase=IntegrationPhase::Landed;
+            state.updated_at=now.clone();
+            state.landed=Some(native.evidence().clone());
+            record.active=false;
+            save(tx,&mut record,&state)?;
+            native.validate_lifetime().map_err(StoreError::from)?;
+            Ok(true)
+        }).map_err(Into::into)
     }
 }

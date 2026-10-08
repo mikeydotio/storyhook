@@ -227,14 +227,17 @@ pub(super) fn validate_inputs(
 ) -> Result<(), StoreError> {
     if matches!(
         state.phase,
-        IntegrationPhase::Running | IntegrationPhase::Certified | IntegrationPhase::Landing
+        IntegrationPhase::Running
+            | IntegrationPhase::Certified
+            | IntegrationPhase::Landing
+            | IntegrationPhase::Landed
     ) != state.gate_inputs.is_some()
     {
         return Err(invalid("integration gate phase lacks exact native inputs"));
     }
     if matches!(
         state.phase,
-        IntegrationPhase::Certified | IntegrationPhase::Landing
+        IntegrationPhase::Certified | IntegrationPhase::Landing | IntegrationPhase::Landed
     ) != state.gate.is_some()
     {
         return Err(invalid(

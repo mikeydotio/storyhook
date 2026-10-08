@@ -35,6 +35,11 @@ pub struct IntegrationLandedEvidence {
 
 /// Opaque fresh proof, not Clone/Deserialize or merge authority. Dropping it
 /// retains resources; the controller must explicitly settle after its CAS.
+///
+/// ```compile_fail
+/// use storyhook::service::integration_recovery::NativeIntegrationLanded;
+/// let _: NativeIntegrationLanded = serde_json::from_str("{}").unwrap();
+/// ```
 pub struct NativeIntegrationLanded {
     query: IntegrationLandingObservation,
     evidence: IntegrationLandedEvidence,

@@ -18,8 +18,12 @@ use sha2::{Digest, Sha256};
 use std::{path::Path, time::Instant};
 mod assembly;
 mod gate_inputs;
+mod landed_observation;
 pub use gate_inputs::{
     IntegrationGateInputsEvidence, NativeIntegrationGateInputs, observe_gate_inputs,
+};
+pub use landed_observation::{
+    IntegrationLandedEvidence, NativeIntegrationLanded, observe_landed_owned,
 };
 mod owner;
 mod pending;

@@ -333,6 +333,7 @@ pub(super) fn validate_state(
             | IntegrationPhase::Running
             | IntegrationPhase::Certified
             | IntegrationPhase::Landing
+            | IntegrationPhase::Landed
     );
     if assembled && state.assembly.is_none()
         || matches!(
@@ -347,6 +348,7 @@ pub(super) fn validate_state(
                 | IntegrationPhase::Running
                 | IntegrationPhase::Certified
                 | IntegrationPhase::Landing
+                | IntegrationPhase::Landed
         ) && !state.publication_effects.is_empty()
         || matches!(
             state.phase,
@@ -355,6 +357,7 @@ pub(super) fn validate_state(
                 | IntegrationPhase::Running
                 | IntegrationPhase::Certified
                 | IntegrationPhase::Landing
+                | IntegrationPhase::Landed
         ) != state.publication.is_some()
         || matches!(
             state.phase,
@@ -362,6 +365,7 @@ pub(super) fn validate_state(
                 | IntegrationPhase::Running
                 | IntegrationPhase::Certified
                 | IntegrationPhase::Landing
+                | IntegrationPhase::Landed
         ) != state.gate_attempt.is_some()
         || state
             .gate_attempt
@@ -390,6 +394,7 @@ pub(super) fn validate_state(
                 | IntegrationPhase::Running
                 | IntegrationPhase::Certified
                 | IntegrationPhase::Landing
+                | IntegrationPhase::Landed
         ) {
             evidence.epoch.checked_add(
                 if matches!(
@@ -398,8 +403,12 @@ pub(super) fn validate_state(
                         | IntegrationPhase::Running
                         | IntegrationPhase::Certified
                         | IntegrationPhase::Landing
+                        | IntegrationPhase::Landed
                 ) {
-                    if state.phase == IntegrationPhase::Landing {
+                    if matches!(
+                        state.phase,
+                        IntegrationPhase::Landing | IntegrationPhase::Landed
+                    ) {
                         3
                     } else {
                         2

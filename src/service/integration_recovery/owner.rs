@@ -37,6 +37,8 @@ pub enum IntegrationPhase {
     Certified,
     /// One durable managed merge intent; uncertainty never permits replay.
     Landing,
+    /// Actual native managed landing completed the original story truthfully.
+    Landed,
     /// Authority, semantic ambiguity, or uncertain effects require reconciliation.
     Held,
 }
@@ -103,6 +105,9 @@ pub struct IntegrationOwner {
     /// A potentially sent merge request; no error may clear it for replay.
     #[serde(default)]
     pub landing_started: bool,
+    /// Retained actual remote landing evidence; JSON grants no completion capability.
+    #[serde(default)]
+    pub landed: Option<IntegrationLandedEvidence>,
 }
 
 /// One native assembly claim, minted only by the durable compare-and-swap.
@@ -229,7 +234,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
                 started_at: attempt.admitted_at, reserved_at: now.clone(), updated_at: now.clone(),
                 label_revision: crate::service::project_recovery::recovery_label_revision(tx, candidate.project, story)?,
                 control_revision, phase: IntegrationPhase::Reserved, effect_epoch: 0, effect_started_at: None, hold: None,
-                assembly: None, publication_effects: Vec::new(), publication: None, gate_attempt: None, gate_inputs: None, gate: None, landing: None, landing_started: false,
+                assembly: None, publication_effects: Vec::new(), publication: None, gate_attempt: None, gate_inputs: None, gate: None, landing: None, landing_started: false, landed: None,
             };
             let record = IntegrationRecovery { id, project: candidate.project, story, generation: candidate.verifying_generation.ok_or_else(|| invalid("submission has no generation"))?, revision: 0, active: true, state: encode(&state)? };
             decode(&record)?;
@@ -369,7 +374,8 @@ pub(super) fn decode(record: &IntegrationRecovery) -> Result<IntegrationOwner, S
     }
     if state.version != 1
         || state.plan.version != 1
-        || !record.active
+        || record.active == (state.phase == IntegrationPhase::Landed)
+        || (state.phase == IntegrationPhase::Landed) != state.landed.is_some()
         || state.candidate.project != record.project
         || state.candidate.verifying_generation != Some(record.generation)
         || state.attribution.submission.story_number() != Some(record.story)
@@ -617,6 +623,10 @@ pub(crate) fn status_snapshot(
                 "landing",
                 "Observe the exact managed merge intent after any uncertainty; never repeat a request or mark the original PR merged from ancestry alone.",
             ),
+            IntegrationPhase::Landed => (
+                "landed",
+                "Native managed landing completed the retained submission; original PR status is unchanged. Reconcile only exact owned residual resources.",
+            ),
             IntegrationPhase::Held => (
                 "held",
                 "Resolve the recorded authority or semantic hold without replacing the original submission.",
@@ -624,12 +634,19 @@ pub(crate) fn status_snapshot(
         };
         let started = chrono::DateTime::parse_from_rfc3339(&state.started_at)
             .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        let observed_at = if state.phase == IntegrationPhase::Landed {
+            chrono::DateTime::parse_from_rfc3339(&state.updated_at)
+                .map_err(|e| StoreError::Corrupt(e.to_string()))?
+                .with_timezone(&chrono::Utc)
+        } else {
+            chrono::Utc::now()
+        };
         result.push(IntegrationRecoveryStatus {
             id: record.id,
             story: state.candidate.story_id,
             phase: phase.into(),
             elapsed_milliseconds: Some(
-                (chrono::Utc::now() - started.with_timezone(&chrono::Utc))
+                (observed_at - started.with_timezone(&chrono::Utc))
                     .num_milliseconds()
                     .max(0) as u64,
             ),

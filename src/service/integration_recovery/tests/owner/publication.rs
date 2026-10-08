@@ -1033,3 +1033,183 @@ fn managed_native_landing_refuses_missing_central_guard_before_consuming_request
     );
     proof.settle().unwrap();
 }
+
+fn landed_proof(
+    f: &OwnedFixture,
+    proof: &BoundIntegrationProposal,
+    change: impl FnOnce(&mut IntegrationLandedEvidence),
+) -> (String, NativeIntegrationLanded, Cancellation) {
+    let ready = certified(f, proof);
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let mut claim = service.claim_landing(ready, proof).unwrap().unwrap();
+    assert!(service.claim_landing_effect(&mut claim).unwrap());
+    let cancellation = Cancellation::default();
+    let query = service
+        .observe_landing(claim.id(), proof.deadline, &cancellation)
+        .unwrap();
+    let publication = query.publication();
+    let mut evidence = IntegrationLandedEvidence {
+        version: 1,
+        owner: query.id().into(),
+        intent_id: query.intent().id.clone(),
+        repository: publication.original.repository.clone(),
+        original_pr: publication.original.pull_request.clone(),
+        original_head: publication.original.head.clone(),
+        managed_pr: publication.pull_request.clone(),
+        managed_head: publication.commit.clone(),
+        merge_commit: "a".repeat(40),
+        merge_tree: publication.tree.clone(),
+        base_branch: publication.original.base_branch.clone(),
+        observed_base: "b".repeat(40),
+        observed_base_tree: "c".repeat(40),
+    };
+    change(&mut evidence);
+    let id = claim.id().to_string();
+    let native = crate::service::integration_recovery::landed_observation::fixture_landed(
+        query,
+        evidence,
+        proof.deadline,
+        cancellation.clone(),
+    )
+    .unwrap();
+    (id, native, cancellation)
+}
+
+#[test]
+fn managed_native_completion_preserves_original_pr_status_after_operator_stop() {
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let (id, native, _) = landed_proof(&f, &proof, |_| {});
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let intent = native.query().intent().clone();
+    let original = service.show(&id).unwrap();
+    let links = f
+        .store
+        .read(|tx| tx.open_pr_links_for_story(intent.project, intent.story))
+        .unwrap();
+    f.store
+        .write(|tx| tx.put_verification_enabled(intent.project, false))
+        .unwrap();
+    proof.cancellation.cancel();
+    assert!(service.complete_landing(&native).unwrap());
+    assert!(
+        !service.complete_landing(&native).unwrap(),
+        "native result replay changed a completed owner"
+    );
+    let complete = service.show(&id).unwrap();
+    assert!(!complete.0.active);
+    assert_eq!(complete.1.phase, IntegrationPhase::Landed);
+    assert_eq!(complete.1.started_at, original.1.started_at);
+    assert_eq!(complete.1.candidate, original.1.candidate);
+    assert_eq!(complete.1.landed.as_ref(), Some(native.evidence()));
+    assert!(f.store.read(|tx| tx.landing_intents()).unwrap().is_empty());
+    assert_eq!(
+        f.store
+            .read(|tx| tx.open_pr_links_for_story(intent.project, intent.story))
+            .unwrap(),
+        links
+    );
+    let events = f
+        .store
+        .read(|tx| tx.events_for(intent.project, intent.story))
+        .unwrap();
+    assert!(events.iter().any(|e|matches!(e.known(),Some(crate::domain::StoryEvent::StoryStateChanged{state,..}) if state=="done")));
+    assert!(
+        !events.iter().any(|e| matches!(
+            e.known(),
+            Some(crate::domain::StoryEvent::StoryPrMerged { .. })
+        )),
+        "ancestry invented original PR merge status"
+    );
+    let attribution = f.store.read(|tx| tx.attributions(intent.project)).unwrap();
+    assert!(
+        attribution
+            .iter()
+            .any(|a| a.id == original.1.attribution.id && !a.held && a.retired.is_some())
+    );
+    let reopened = SqliteStore::open(f.store.path()).unwrap();
+    assert_eq!(
+        reopened
+            .read(|tx| tx.integration_recoveries(intent.project))
+            .unwrap(),
+        [complete.0]
+    );
+    let path = native.observation_path().to_path_buf();
+    native.settle().unwrap();
+    assert!(!path.exists());
+    proof.settle().unwrap();
+}
+
+#[test]
+fn managed_native_completion_rejects_cross_owner_head_tree_and_repository_receipts() {
+    for variant in [
+        "owner",
+        "intent",
+        "repository",
+        "original-head",
+        "managed-pr",
+        "tree",
+    ] {
+        let f = OwnedFixture::new(true);
+        let proof = proof(&f);
+        let (id, native, _) = landed_proof(&f, &proof, |e| match variant {
+            "owner" => e.owner = uuid::Uuid::new_v4().to_string(),
+            "intent" => e.intent_id = uuid::Uuid::new_v4().to_string(),
+            "repository" => e.repository = "elsewhere.example/acme/widgets".into(),
+            "original-head" => e.original_head = "d".repeat(40),
+            "managed-pr" => e.managed_pr = e.original_pr.clone(),
+            "tree" => e.merge_tree = "e".repeat(40),
+            _ => unreachable!(),
+        });
+        let ctx = f.ctx();
+        let service = IntegrationOwnerService::new(&ctx);
+        let before = service.show(&id).unwrap();
+        let events = f
+            .store
+            .read(|tx| tx.events_for(before.0.project, before.0.story))
+            .unwrap();
+        assert!(
+            service.complete_landing(&native).is_err(),
+            "accepted {variant}"
+        );
+        assert_eq!(service.show(&id).unwrap(), before);
+        assert_eq!(
+            f.store
+                .read(|tx| tx.events_for(before.0.project, before.0.story))
+                .unwrap(),
+            events
+        );
+        native.settle().unwrap();
+        proof.settle().unwrap();
+    }
+}
+
+#[test]
+fn managed_native_completion_holds_human_reservation_and_cancelled_observation() {
+    for variant in ["human", "cancelled"] {
+        let f = OwnedFixture::new(true);
+        let proof = proof(&f);
+        let (id, native, cancellation) = landed_proof(&f, &proof, |_| {});
+        let ctx = f.ctx();
+        let service = IntegrationOwnerService::new(&ctx);
+        if variant == "human" {
+            StoryService::new(&ctx)
+                .set_labels(&f.candidate.story_id, &["human-only".into()], &[])
+                .unwrap();
+        } else {
+            cancellation.cancel();
+        }
+        let before = service.show(&id).unwrap();
+        let result = service.complete_landing(&native);
+        assert!(!matches!(result, Ok(true)), "revoked {variant} completed");
+        assert_eq!(service.show(&id).unwrap(), before);
+        assert_eq!(
+            f.store.read(|tx| tx.landing_intents()).unwrap(),
+            [native.query().intent().clone()]
+        );
+        native.settle().unwrap();
+        proof.settle().unwrap();
+    }
+}

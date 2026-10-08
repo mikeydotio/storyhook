@@ -373,3 +373,63 @@ pub(super) fn release_intent(
     intent.require_ordinary_controller()?;
     tx.remove_landing_intent(intent)
 }
+
+/// Dedicated managed completion in the existing landing mutation funnel. Native
+/// ancestry can complete the story without inventing a merge of its author PR.
+/// The integration owner calls this only within its exact guarded CAS.
+pub(super) fn complete_integration_story<S: Store>(
+    tx: &mut impl WriteOps,
+    ctx: &Ctx<'_, S>,
+    native: &super::integration_recovery::NativeIntegrationLanded,
+) -> Result<(), StoreError> {
+    native.validate_lifetime().map_err(StoreError::from)?;
+    let intent = native.query().intent();
+    let evidence = native.evidence();
+    if intent.certification.integration().is_none() || !tx.landing_intents()?.contains(intent) {
+        return Err(StoreError::Validation(
+            "exact managed landing intent missing".into(),
+        ));
+    }
+    crate::store::landing::validate_intent(tx, intent)?;
+    let prefix = super::project_prefix(tx, intent.project)?;
+    let row = tx
+        .story(intent.project, intent.story)?
+        .ok_or_else(|| StoreError::NotFound(intent.story_id.clone()))?;
+    let done = crate::domain::completion_state(&tx.states(intent.project)?)
+        .ok_or_else(|| StoreError::Validation("project lacks required done state".into()))?;
+    let states = tx.state_map(intent.project)?;
+    let now = ctx.now();
+    if let Some(incident) = tx.verification_incident(intent.project)?
+        && incident.generation == intent.generation
+    {
+        tx.clear_verification_incident(&incident.incident_id)?;
+    }
+    tx.remove_landing_intent(intent)?;
+    super::story::append_state_transition(
+        tx,
+        intent.project,
+        intent.story,
+        &row,
+        &prefix,
+        &states,
+        &done,
+        &now,
+        vec![crate::domain::StoryEvent::StoryCommentAdded {
+            at: now.clone(),
+            text: format!(
+                "{} managed integration PR {} landed commit `{}` with certified tree `{}`. Native Git proved original submitted head `{}` and managed head `{}` are ancestors, and the merge is reachable from observed base `{}`. The original PR {} retains its independently observed status.",
+                super::VERIFICATION_GREEN_PREFIX,
+                evidence.managed_pr,
+                evidence.merge_commit,
+                evidence.merge_tree,
+                evidence.original_head,
+                evidence.managed_head,
+                evidence.observed_base,
+                evidence.original_pr
+            ),
+        }],
+        ctx.provenance(),
+    )?;
+    native.validate_lifetime().map_err(StoreError::from)?;
+    Ok(())
+}
