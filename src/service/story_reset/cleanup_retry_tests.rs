@@ -129,7 +129,7 @@ fn sh890_worktree_retry_preserves_replacement_with_the_same_marker_and_branch_ti
     let tip = checked_git(&worktree, &["rev-parse", "HEAD"]);
     let mut report = absent_window_report(&fixture);
     report.worktree = Some(worktree.clone());
-    let paths = super::super::identity::capture(&report).unwrap();
+    let paths = super::super::identity::capture(&fixture.env, &report).unwrap();
     let authority = Authority {
         repository: report.repository.clone(),
         worktree: true,
@@ -201,7 +201,7 @@ fn sh890_branch_retry_preserves_a_replaced_repository_with_the_same_tip() {
     checked_git(fixture.env.home(), &["branch", "worktree-SH-1"]);
     let tip = checked_git(fixture.env.home(), &["rev-parse", "worktree-SH-1"]);
     let report = absent_window_report(&fixture);
-    let paths = super::super::identity::capture(&report).unwrap();
+    let paths = super::super::identity::capture(&fixture.env, &report).unwrap();
     let authority = Authority {
         repository: report.repository.clone(),
         branch: true,
@@ -271,7 +271,7 @@ fn sh890_window_retry_preserves_a_respawned_pane_and_its_git_resources() {
     .unwrap()
     .pop();
     let original = report.pane.clone().unwrap();
-    let paths = super::super::identity::capture(&report).unwrap();
+    let paths = super::super::identity::capture(&fixture.env, &report).unwrap();
     let authority = Authority {
         repository: report.repository.clone(),
         worktree: true,

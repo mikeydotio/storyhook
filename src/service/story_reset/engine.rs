@@ -150,7 +150,7 @@ pub(crate) fn execute<S: Store>(
             resources.status = "invalid".into();
             resources.diagnostics.push(error.to_string());
         }
-        let paths = match identity::capture(&resources) {
+        let paths = match identity::capture(ctx.env(), &resources) {
             Ok(paths) => paths,
             Err(error) => {
                 resources.status = "unavailable".into();
