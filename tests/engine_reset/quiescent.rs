@@ -51,6 +51,8 @@ fn successful_helper_waits_for_its_effect_child_before_releasing_reset_authority
     let run = setup(&fixture, &FakeDispatcher::default(), "todo");
     let repo = fixture.cwd().canonicalize().unwrap();
     storyhook_test_support::approve_fixture_identity(&repo, "Reset fixture", "reset@example.test");
+    git(&repo, &["config", "--local", "user.name", "Reset fixture"]);
+    git(&repo, &["config", "--local", "user.email", "reset@example.test"]);
     git(
         &repo,
         &[
