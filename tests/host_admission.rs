@@ -88,3 +88,12 @@ fn run(script: &str) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn host_restoration_native_bridge_and_module_ship_with_the_verifier() {
+    let files: Vec<_> = storyhook::daemon::verifier_bundle::files()
+        .map(|(path, _, _)| path)
+        .collect();
+    assert!(files.contains(&"host-restoration.py"));
+    assert!(files.contains(&"host_admission/restoration.py"));
+}

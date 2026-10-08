@@ -178,11 +178,28 @@ pub(crate) fn run_captured_private_until(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Captured, CaptureError> {
     run_captured_until(
+        command, TerminationPolicy::Kill, None,
+        CaptureWait { private_output: true, ..CaptureWait::default() },
+        Some(cancelled), |_| Ok(()),
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    ).map_err(|failure| failure.error)
+}
+
+/// Bounded credential-private capture with a regular-file request, never a pipe
+/// that descendants can keep open after the owning helper exits.
+pub(crate) fn run_captured_private_input_until(
+    command: Command,
+    input: Option<std::fs::File>,
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Captured, CaptureError> {
+    run_captured_until(
         command,
         TerminationPolicy::Kill,
-        None,
+        input,
         CaptureWait {
             private_output: true,
+            quiescent: true,
             ..CaptureWait::default()
         },
         Some(cancelled),

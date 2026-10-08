@@ -63,10 +63,12 @@ mod dispatch_policy;
 pub use dispatch_policy::DispatchPolicyOverride;
 pub mod continuation;
 pub mod integration_recovery;
+pub mod host_recovery;
 pub mod project_recovery;
 pub use block_delivery::{BlockAction, BlockDelivery, DeliveryStatus};
 pub use continuation::{Continuation, ContinuationPhase, ContinuationStatus};
 pub use integration_recovery::IntegrationRecovery;
+pub use host_recovery::HostRecovery;
 pub use project_recovery::{ProjectRecovery, ProjectRecoveryObservation};
 pub mod conformance;
 mod dropped_cleanup;
@@ -314,6 +316,8 @@ pub struct WriteWithSnapshot<T> {
 /// project slug stored on the run; machine-wide operational reads support
 /// reconciliation and lane-budget accounting.
 pub trait ReadOps {
+    /// All native host fault owners, shared across projects in this store.
+    fn host_recoveries(&self) -> Result<Vec<HostRecovery>, StoreError>;
     /// Distinct single-submission integration owners, including retained history.
     fn integration_recoveries(
         &self,
@@ -680,6 +684,10 @@ pub trait WriteOps: ReadOps {
     fn derives_block_edges(&self) -> bool;
     /// Acquire a new active fault identity; false means an active owner already exists.
     fn insert_project_recovery(&mut self, record: &ProjectRecovery) -> Result<bool, StoreError>;
+    /// Reserve one new native host fault owner, or report an existing exact key.
+    fn insert_host_recovery(&mut self, record: &HostRecovery) -> Result<bool, StoreError>;
+    /// Advance exactly one host recovery revision without changing its identity.
+    fn update_host_recovery(&mut self, record: &HostRecovery, expected:i64) -> Result<bool, StoreError>;
     /// Acquire the original story's sole live integration owner.
     fn insert_integration_recovery(
         &mut self,
