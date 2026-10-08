@@ -8,7 +8,7 @@ fn key(home: &Path) -> Key {
         home,
         home.to_path_buf(),
         Some(home.join("bin").into_os_string()),
-        [None; 3],
+        [const { None }; 3],
     )
 }
 
