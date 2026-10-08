@@ -119,7 +119,13 @@ impl Fixture {
         };
         store
             .write(|tx| {
-                tx.insert_gate_attempt(&attempt)?;
+                let mut live = attempt.clone();
+                live.finished_at = None;
+                live.verdict = None;
+                live.executions.clear();
+                tx.insert_gate_attempt(&live)?;
+                attempt.revision = 1;
+                assert!(tx.update_gate_attempt(&attempt, 0)?);
                 tx.insert_attribution(&record)
             })
             .unwrap();
