@@ -51,6 +51,13 @@ impl NativePublication {
     }
 }
 
+// Only unit tests substitute the native remote boundary. Production callers
+// cannot reconstruct successful publication from persisted or public JSON.
+#[cfg(test)]
+pub(super) fn fixture_publication(evidence: PublicationEvidence) -> NativePublication {
+    NativePublication { evidence }
+}
+
 /// Publish a distinct managed branch and PR once, using the original lifetime.
 /// A consumed intent is never treated as proof that an effect succeeded.
 pub fn publish_owned<S: Store>(

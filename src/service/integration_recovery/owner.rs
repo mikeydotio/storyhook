@@ -25,6 +25,8 @@ pub enum IntegrationPhase {
     Assembled,
     /// Remote effects are owned separately and may be uncertain after restart.
     Publishing,
+    /// Native publication is observed; the exact tree still needs a fresh gate.
+    Published,
     /// Authority, semantic ambiguity, or uncertain effects require reconciliation.
     Held,
 }
@@ -73,6 +75,9 @@ pub struct IntegrationOwner {
     /// Ordered one-shot remote effect intents, not success receipts.
     #[serde(default)]
     pub publication_effects: Vec<publication::PublicationEffect>,
+    /// Exact managed PR observation, never a gate or original PR merge receipt.
+    #[serde(default)]
+    pub publication: Option<PublicationEvidence>,
 }
 
 /// One native assembly claim, minted only by the durable compare-and-swap.
@@ -199,7 +204,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
                 started_at: attempt.admitted_at, reserved_at: now.clone(), updated_at: now.clone(),
                 label_revision: crate::service::project_recovery::recovery_label_revision(tx, candidate.project, story)?,
                 control_revision, phase: IntegrationPhase::Reserved, effect_epoch: 0, effect_started_at: None, hold: None,
-                assembly: None, publication_effects: Vec::new(),
+                assembly: None, publication_effects: Vec::new(), publication: None,
             };
             let record = IntegrationRecovery { id, project: candidate.project, story, generation: candidate.verifying_generation.ok_or_else(|| invalid("submission has no generation"))?, revision: 0, active: true, state: encode(&state)? };
             decode(&record)?;
@@ -552,6 +557,10 @@ pub(crate) fn status_snapshot(
             IntegrationPhase::Publishing => (
                 "publishing",
                 "Reconcile each possibly begun push/PR effect from native remote identity; intents are not success receipts and must not be replayed.",
+            ),
+            IntegrationPhase::Published => (
+                "published",
+                "The separate managed PR needs a fresh central gate on the exact assembled tree and proven native landing; the original PR remains unchanged.",
             ),
             IntegrationPhase::Held => (
                 "held",

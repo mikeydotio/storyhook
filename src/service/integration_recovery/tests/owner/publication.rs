@@ -235,3 +235,111 @@ fn managed_integration_status_reports_original_time_and_isolates_invalid_evidenc
     assert_eq!(invalid.effect_epoch, None);
     proof.settle().unwrap();
 }
+
+fn publication_evidence(claim: &PublicationClaim) -> PublicationEvidence {
+    let assembly = claim.assembly();
+    PublicationEvidence {
+        version: 1,
+        owner: claim.id().into(),
+        epoch: claim.epoch(),
+        original: claim.submission().clone(),
+        branch: assembly.branch.clone(),
+        commit: assembly.commit.clone(),
+        tree: assembly.tree.clone(),
+        parents: [assembly.plan.base.clone(), assembly.plan.head.clone()],
+        marker: format!(
+            "<!-- storyhook-integration-owner:{}:{}:{} -->",
+            claim.id(),
+            claim.epoch(),
+            assembly.stamp_sha256
+        ),
+        pull_request: "https://github.com/acme/widgets/pull/99".into(),
+        number: 99,
+    }
+}
+
+#[test]
+fn native_publication_acceptance_retains_original_story_and_requires_exact_owned_receipt() {
+    for changed in [
+        "none",
+        "tree",
+        "parents",
+        "original-pr",
+        "repository",
+        "epoch",
+    ] {
+        let f = OwnedFixture::new(true);
+        let proof = proof(&f);
+        let ready = assembled(&f, &proof);
+        let ctx = f.ctx();
+        let service = IntegrationOwnerService::new(&ctx);
+        let mut claim = service.claim_publication(ready, &proof).unwrap().unwrap();
+        assert!(
+            service
+                .claim_publication_effect(&mut claim, &proof, PublicationEffect::PushBranch)
+                .unwrap()
+        );
+        assert!(
+            service
+                .claim_publication_effect(&mut claim, &proof, PublicationEffect::CreatePullRequest)
+                .unwrap()
+        );
+        let mut evidence = publication_evidence(&claim);
+        match changed {
+            "tree" => evidence.tree = "f".repeat(40),
+            "parents" => evidence.parents.reverse(),
+            "original-pr" => {
+                evidence.pull_request = evidence.original.pull_request.clone();
+                evidence.number = 7;
+            }
+            "repository" => {
+                evidence.pull_request = "https://elsewhere.invalid/acme/widgets/pull/99".into()
+            }
+            "epoch" => evidence.epoch += 1,
+            _ => {}
+        }
+        let before = service.show(claim.id()).unwrap();
+        let id = claim.id().to_string();
+        let native =
+            crate::service::integration_recovery::publication::fixture_publication(evidence);
+        let result = service.accept_publication(claim, native, &proof);
+        if changed == "none" {
+            let accepted = result.unwrap().unwrap();
+            assert_eq!(accepted.id(), id);
+            accepted.validate_custody().unwrap();
+            let state = service.show(&id).unwrap();
+            assert_eq!(state.1.phase, IntegrationPhase::Published);
+            assert_eq!(state.1.started_at, before.1.started_at);
+            assert_eq!(state.1.candidate, before.1.candidate);
+            assert_eq!(state.1.attribution, before.1.attribution);
+            let reopened = SqliteStore::open(f.store.path()).unwrap();
+            assert_eq!(
+                reopened
+                    .read(|tx| tx.integration_recoveries(f.candidate.project))
+                    .unwrap(),
+                vec![state.0]
+            );
+            let row = f
+                .store
+                .read(|tx| tx.story(f.candidate.project, before.0.story))
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.state, "verifying");
+            let links = f
+                .store
+                .read(|tx| tx.open_pr_links_for_story(f.candidate.project, before.0.story))
+                .unwrap();
+            assert!(
+                links
+                    .iter()
+                    .any(|link| link.url == "https://github.com/acme/widgets/pull/7"
+                        && link.close_on_merge),
+                "publication fabricated original PR closure"
+            );
+        } else {
+            assert!(result.is_err(), "accepted substituted {changed}");
+            assert_eq!(service.show(&id).unwrap(), before);
+        }
+        proof.settle().unwrap();
+    }
+}

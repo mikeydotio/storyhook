@@ -30,6 +30,36 @@ pub struct PublicationClaim {
     cancellation: Cancellation,
 }
 
+/// Native published custody without gate or landing authority. Persisted
+/// receipts require separate native reconciliation after restart.
+///
+/// ```compile_fail
+/// use storyhook::service::integration_recovery::PublishedIntegration;
+/// let _: PublishedIntegration = serde_json::from_str("{}").unwrap();
+/// ```
+pub struct PublishedIntegration {
+    record: IntegrationRecovery,
+    owner: IntegrationOwner,
+    native: NativeAssembly,
+}
+impl PublishedIntegration {
+    /// Durable original owner identity.
+    pub fn id(&self) -> &str {
+        &self.record.id
+    }
+    /// Exact managed PR. Its existence proves no test result or merge.
+    pub fn evidence(&self) -> &PublicationEvidence {
+        self.owner
+            .publication
+            .as_ref()
+            .expect("native published constructor")
+    }
+    /// Original native path/stamp custody, not remote freshness.
+    pub fn validate_custody(&self) -> Result<(), AppError> {
+        self.native.validate_custody()
+    }
+}
+
 /// An intent records a potentially begun effect. It is not a remote receipt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -76,6 +106,48 @@ impl PublicationClaim {
 }
 
 impl<'a, S: Store> IntegrationOwnerService<'a, S> {
+    /// Consume successful native publication while its exact operation is live.
+    /// This changes no original PR, story, attribution, generation or head.
+    pub fn accept_publication(
+        &self,
+        claim: PublicationClaim,
+        native: NativePublication,
+        proof: &BoundIntegrationProposal,
+    ) -> Result<Option<PublishedIntegration>, AppError> {
+        proof.check_live()?;
+        claim.validate_custody()?;
+        let now = self.ctx.now();
+        let accepted = self.ctx.store().write(|tx| {
+            if !check_claim(tx, self.ctx.project(), &claim, proof)? {
+                return Ok(None);
+            }
+            if claim.owner.publication_effects
+                != [
+                    PublicationEffect::PushBranch,
+                    PublicationEffect::CreatePullRequest,
+                ]
+            {
+                return Err(invalid(
+                    "native publication lacks both owned effect intents",
+                ));
+            }
+            validate_publication(&claim.record, &claim.owner, native.evidence())?;
+            let mut record = claim.record.clone();
+            let mut state = claim.owner.clone();
+            state.publication = Some(native.evidence().clone());
+            state.phase = IntegrationPhase::Published;
+            state.updated_at = now.clone();
+            save(tx, &mut record, &state)?;
+            claim.validate_custody().map_err(StoreError::from)?;
+            proof.check_live().map_err(StoreError::from)?;
+            Ok(Some((record, state)))
+        })?;
+        Ok(accepted.map(|(record, owner)| PublishedIntegration {
+            record,
+            owner,
+            native: claim.native,
+        }))
+    }
     /// Record successful native assembly without releasing the original owner.
     /// A failed CAS loses no durable residue and cannot reopen assembly.
     pub fn accept_assembly(
@@ -254,14 +326,18 @@ pub(super) fn validate_state(
 ) -> Result<(), StoreError> {
     let assembled = matches!(
         state.phase,
-        IntegrationPhase::Assembled | IntegrationPhase::Publishing
+        IntegrationPhase::Assembled | IntegrationPhase::Publishing | IntegrationPhase::Published
     );
     if assembled && state.assembly.is_none()
         || matches!(
             state.phase,
             IntegrationPhase::Reserved | IntegrationPhase::Assembling
         ) && state.assembly.is_some()
-        || state.phase != IntegrationPhase::Publishing && !state.publication_effects.is_empty()
+        || !matches!(
+            state.phase,
+            IntegrationPhase::Publishing | IntegrationPhase::Published
+        ) && !state.publication_effects.is_empty()
+        || (state.phase == IntegrationPhase::Published) != state.publication.is_some()
         || !matches!(
             state.publication_effects.as_slice(),
             [] | [PublicationEffect::PushBranch]
@@ -277,7 +353,10 @@ pub(super) fn validate_state(
     }
     if let Some(evidence) = &state.assembly {
         validate_assembly(record, state, evidence)?;
-        let epoch = if state.phase == IntegrationPhase::Publishing {
+        let epoch = if matches!(
+            state.phase,
+            IntegrationPhase::Publishing | IntegrationPhase::Published
+        ) {
             evidence.epoch.checked_add(1)
         } else {
             Some(evidence.epoch)
@@ -287,6 +366,56 @@ pub(super) fn validate_state(
                 "integration publication epoch differs from assembly".into(),
             ));
         }
+    }
+    if let Some(publication) = &state.publication {
+        if state.publication_effects
+            != [
+                PublicationEffect::PushBranch,
+                PublicationEffect::CreatePullRequest,
+            ]
+        {
+            return Err(invalid("published state lacks complete intent history"));
+        }
+        validate_publication(record, state, publication)?;
+    }
+    Ok(())
+}
+
+fn validate_publication(
+    record: &IntegrationRecovery,
+    state: &IntegrationOwner,
+    evidence: &PublicationEvidence,
+) -> Result<(), StoreError> {
+    let assembly = state
+        .assembly
+        .as_ref()
+        .ok_or_else(|| invalid("published state lacks native assembly"))?;
+    let original = crate::domain::pr_url::parse_pr_url(&state.submission.pull_request)
+        .map_err(|e| invalid(&e.to_string()))?;
+    let managed = crate::domain::pr_url::parse_pr_url(&evidence.pull_request)
+        .map_err(|e| invalid(&e.to_string()))?;
+    if evidence.version != 1
+        || evidence.owner != record.id
+        || evidence.epoch != state.effect_epoch
+        || evidence.original != state.submission
+        || evidence.branch != state.branch
+        || evidence.commit != assembly.commit
+        || evidence.tree != assembly.tree
+        || evidence.parents != [state.plan.base.clone(), state.plan.head.clone()]
+        || evidence.marker
+            != format!(
+                "<!-- storyhook-integration-owner:{}:{}:{} -->",
+                record.id, evidence.epoch, assembly.stamp_sha256
+            )
+        || managed.number != evidence.number
+        || managed.number == original.number
+        || !managed.host.eq_ignore_ascii_case(&original.host)
+        || !managed.owner.eq_ignore_ascii_case(&original.owner)
+        || !managed.repo.eq_ignore_ascii_case(&original.repo)
+    {
+        return Err(invalid(
+            "native publication differs from original owner, tree, parents or repository",
+        ));
     }
     Ok(())
 }
