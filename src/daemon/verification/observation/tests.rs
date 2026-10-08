@@ -334,7 +334,8 @@ fn human_observer_cancels_owned_work_outside_verifying_and_preserves_errors() {
                 .set_labels(&c.story_id, &["human-only".into()], &[])
                 .unwrap();
             bus.publish(Change::Project(c.project_slug.clone()));
-            let deadline = Instant::now() + Duration::from_secs(2);
+            let deadline = Instant::now()
+                + storyhook_test_support::load_grace::graced_now(Duration::from_secs(2));
             while !cancellation.is_cancelled() {
                 assert!(
                     Instant::now() < deadline,

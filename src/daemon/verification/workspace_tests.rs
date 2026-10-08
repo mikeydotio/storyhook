@@ -352,7 +352,8 @@ while True:
                     "termination probe",
                 )
             });
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now()
+                + storyhook_test_support::load_grace::graced_now(Duration::from_secs(5));
             while !fixture.cwd().join("ready").exists() {
                 assert!(Instant::now() < deadline, "child never became ready");
                 std::thread::sleep(Duration::from_millis(10));
@@ -510,4 +511,46 @@ PY
         assert!(args.iter().any(|a| a == "--auto"));
         assert!(!args.iter().any(|a| a == "--full-auto" || a == "--force"));
     }
+}
+
+#[test]
+fn sh846_default_control_inherits_patience_but_explicit_deadlines_remain_literal() {
+    let root = tempfile::tempdir().unwrap();
+    let env = Environment::at(root.path()).with_subprocess_patience_under(2.0);
+    // The declaration stores max(real contention, 2.0) once. Verify that both
+    // constructors preserve that exact policy, without resampling or assuming idle.
+    let expected = env.subprocess_bound(DISPATCH_TIMEOUT);
+    assert!(expected > DISPATCH_TIMEOUT);
+    assert_eq!(
+        ShellVerificationActuator::new(env.clone()).control_bound(),
+        expected
+    );
+    let mut default = ShellVerificationActuator::with_paths(
+        env.clone(),
+        "unused-helper".into(),
+        "unused-story".into(),
+    );
+    assert_eq!(default.control_bound(), expected);
+    let driven = Duration::from_secs(2);
+    default.control_timeout = driven;
+    assert_eq!(
+        default.control_bound(),
+        driven,
+        "a driven lib-test override is literal"
+    );
+    let explicit = ShellVerificationActuator::with_paths_and_timing(
+        env,
+        "unused-helper".into(),
+        "unused-story".into(),
+        DISPATCH_TIMEOUT,
+        DISPATCH_TIMEOUT,
+        RECOVERY_WAKE,
+    );
+    assert_eq!(
+        explicit.control_bound(),
+        DISPATCH_TIMEOUT,
+        "even an explicit deadline equal to the default must not inherit patience"
+    );
+    // Constructing a default without executing a subprocess does not require a declaration.
+    let _unused = ShellVerificationActuator::new(Environment::at(root.path()));
 }

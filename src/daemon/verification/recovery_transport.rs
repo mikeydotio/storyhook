@@ -27,7 +27,7 @@ impl ShellVerificationActuator {
         }
         run_captured_cancellable(
             command,
-            self.control_timeout,
+            self.control_bound(),
             TerminationPolicy::TerminateThenKill {
                 grace: self.termination_grace,
             },
@@ -41,7 +41,7 @@ impl ShellVerificationActuator {
         .map_err(|error| match error {
             CaptureError::Timeout(_) => AppError::Storage(format!(
                 "{operation} did not finish within {:?}; its process group was terminated",
-                self.control_timeout
+                self.control_bound()
             )),
             other => AppError::Storage(format!("could not run {operation}: {}", other.detail())),
         })

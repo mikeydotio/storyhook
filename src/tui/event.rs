@@ -346,7 +346,9 @@ mod tests {
             );
         });
         let (port, token) = rx
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                Duration::from_secs(10),
+            ))
             .expect("the test daemon never became ready");
         (port, token, env, writer, dir)
     }
@@ -386,7 +388,9 @@ mod tests {
             .expect("writing from another connection");
 
         let event = rx
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                Duration::from_secs(10),
+            ))
             .expect("a change must be reported");
         assert!(matches!(event, Event::DataChanged));
         stop.store(true, Ordering::Relaxed);
@@ -434,7 +438,9 @@ mod tests {
             );
         });
         let (port, token) = ready_rx
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                Duration::from_secs(10),
+            ))
             .expect("the test daemon never became ready");
         let daemon = daemon_at(port, &token);
 

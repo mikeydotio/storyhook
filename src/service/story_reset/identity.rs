@@ -23,11 +23,15 @@ fn observe(path: PathBuf, removable: bool) -> Result<ResetPathIdentity, AppError
 }
 
 /// Captures the repository and each existing worktree object before cleanup.
-pub(crate) fn capture(report: &ResourceReport) -> Result<Vec<ResetPathIdentity>, AppError> {
+pub(crate) fn capture(
+    env: &crate::env::Environment,
+    report: &ResourceReport,
+) -> Result<Vec<ResetPathIdentity>, AppError> {
     let Some(repository) = &report.repository else {
         return Ok(Vec::new());
     };
-    let common = git::text(
+    let common = git::text_with_bound(
+        env.subprocess_bound(std::time::Duration::from_secs(60)),
         repository,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     )?;
@@ -38,7 +42,11 @@ pub(crate) fn capture(report: &ResourceReport) -> Result<Vec<ResetPathIdentity>,
             .map_err(|e| AppError::Storage(format!("reset identity {}: {e}", worktree.display())))?
     {
         paths.push(observe(worktree.clone(), true)?);
-        let private = git::text(worktree, &["rev-parse", "--absolute-git-dir"])?;
+        let private = git::text_with_bound(
+            env.subprocess_bound(std::time::Duration::from_secs(60)),
+            worktree,
+            &["rev-parse", "--absolute-git-dir"],
+        )?;
         paths.push(observe(PathBuf::from(private.trim()), true)?);
     }
     Ok(paths)

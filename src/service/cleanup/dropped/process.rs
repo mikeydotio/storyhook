@@ -86,7 +86,11 @@ pub(super) fn stop<S: Store>(
         .arg(target.to_string())
         .arg(journal);
     workspace.dispatch_command(&mut command);
-    let result = run_helper(command, &target);
+    let result = run_helper(
+        command,
+        &target,
+        ctx.env().subprocess_bound(CLEANUP_HELPER_TIMEOUT),
+    );
     match (result, std::fs::remove_dir_all(&bundle)) {
         (result, Ok(())) => result,
         (Ok(()), Err(error)) => Err(AppError::Storage(format!(
@@ -101,10 +105,14 @@ pub(super) fn stop<S: Store>(
 }
 
 /// Runs the helper and requires a receipt for exactly `target`.
-fn run_helper(command: Command, target: &serde_json::Value) -> Result<(), AppError> {
+fn run_helper(
+    command: Command,
+    target: &serde_json::Value,
+    bound: Duration,
+) -> Result<(), AppError> {
     let output = crate::process::run_captured_quiescent(
         command,
-        CLEANUP_HELPER_TIMEOUT,
+        bound,
         crate::process::TerminationPolicy::Kill,
     )
     .map_err(|e| AppError::Validation(format!("dropped pane cleanup uncertain: {}", e.detail())))?;

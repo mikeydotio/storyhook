@@ -465,7 +465,9 @@ fn the_poll_sweeps_at_start_and_stops_when_asked() {
         assert_eq!(status(&repo), "");
         drop(stopping);
         finished
-            .recv_timeout(FIRST_SWEEP_PATIENCE)
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                FIRST_SWEEP_PATIENCE,
+            ))
             .expect("the poll stops when asked");
     });
 }

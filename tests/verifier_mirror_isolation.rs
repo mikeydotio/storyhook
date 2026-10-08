@@ -146,9 +146,12 @@ fn record_actuator_children(env: Environment) -> BTreeMap<String, Option<String>
          printf '%s\\n' '{\"result\":\"certified\",\"gate\":\"make test\",\"head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tree\":\"t\",\"detail\":\"environment recorded\"}'\nfi\n",
     )
     .expect("write environment-recording verification helper");
-    let actuator =
-        ShellVerificationActuator::with_paths(env, helper, PathBuf::from("/usr/bin/true"))
-            .with_verifier_script(verifier);
+    let actuator = ShellVerificationActuator::with_paths(
+        storyhook_test_support::subprocess_patience(env),
+        helper,
+        PathBuf::from("/usr/bin/true"),
+    )
+    .with_verifier_script(verifier);
     actuator
         .notify(&candidate, "environment probe")
         .expect("notification receipt accepted");

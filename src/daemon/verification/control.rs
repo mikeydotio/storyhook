@@ -237,10 +237,13 @@ impl VerificationActivity {
         let workspace = if !candidate.checkout.as_os_str().is_empty()
             && candidate.checkout.join(".git").exists()
         {
-            Some(crate::service::workspace_lock::WorkspaceLock::acquire(
-                &candidate.checkout,
-                &candidate.story_id,
-            )?)
+            Some(
+                crate::service::workspace_lock::WorkspaceLock::acquire_with_bound(
+                    env.subprocess_bound(std::time::Duration::from_secs(30)),
+                    &candidate.checkout,
+                    &candidate.story_id,
+                )?,
+            )
         } else {
             None
         };
@@ -523,7 +526,8 @@ mod tests {
             .unwrap();
         std::thread::scope(|scope| {
             scope.spawn(move || {
-                let deadline = Instant::now() + Duration::from_secs(5);
+                let deadline = Instant::now()
+                    + storyhook_test_support::load_grace::graced_now(Duration::from_secs(5));
                 while !guard.is_cancelled() {
                     assert!(Instant::now() < deadline);
                     std::thread::sleep(Duration::from_millis(10));
@@ -534,7 +538,8 @@ mod tests {
                 .cancel_story_and_wait(
                     project,
                     &candidate.story_id,
-                    Instant::now() + Duration::from_secs(5),
+                    Instant::now()
+                        + storyhook_test_support::load_grace::graced_now(Duration::from_secs(5)),
                 )
                 .unwrap();
         });
@@ -759,11 +764,17 @@ mod tests {
                 );
                 finished.send(result).unwrap();
             });
-            observed.recv_timeout(Duration::from_secs(5)).unwrap();
+            observed
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    Duration::from_secs(5),
+                ))
+                .unwrap();
             token.cancel();
             assert!(
                 completion
-                    .recv_timeout(Duration::from_secs(5))
+                    .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                        Duration::from_secs(5)
+                    ))
                     .unwrap()
                     .unwrap()
                     == ReconcileWait::Ended

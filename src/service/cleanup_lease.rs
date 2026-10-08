@@ -19,17 +19,26 @@ use crate::error::AppError;
 /// marker exists, any unreadable, malformed, unsupported, or contradictory
 /// value fails loudly; silently degrading a claimed lease to legacy cleanup
 /// would recreate the false-success class this contract removes.
-pub(super) fn marker_at(cwd: &Path) -> Result<Option<StoryCleanupLease>, AppError> {
+pub(super) fn marker_at(
+    env: &crate::env::Environment,
+    cwd: &Path,
+) -> Result<Option<StoryCleanupLease>, AppError> {
     if git_env::output(cwd, &["rev-parse", "--show-toplevel"]).is_none() {
         return Ok(None);
     }
-    marker_at_registered(cwd)
+    marker_at_registered(
+        env.subprocess_bound(std::time::Duration::from_secs(60)),
+        cwd,
+    )
 }
 
 /// Reads a known Git worktree without degrading failed queries to no marker.
-pub(super) fn marker_at_registered(cwd: &Path) -> Result<Option<StoryCleanupLease>, AppError> {
+pub(super) fn marker_at_registered(
+    bound: std::time::Duration,
+    cwd: &Path,
+) -> Result<Option<StoryCleanupLease>, AppError> {
     let query = |args: &[&str]| -> Result<String, AppError> {
-        let value = super::resources::git::text(cwd, args)?;
+        let value = super::resources::git::text_with_bound(bound, cwd, args)?;
         Ok(value.strip_suffix('\n').unwrap_or(&value).to_string())
     };
     let toplevel = query(&["rev-parse", "--show-toplevel"])?;
@@ -47,7 +56,7 @@ pub(super) fn marker_at_registered(cwd: &Path) -> Result<Option<StoryCleanupLeas
     };
     let marker_path = git_dir.join(CLEANUP_LEASE_MARKER);
     let actual_worktree = canonical_existing(Path::new(&toplevel), "linked worktree")?;
-    let actual_repository = main_worktree(cwd)?;
+    let actual_repository = main_worktree(bound, cwd)?;
     let actual_branch =
         git_env::output(cwd, &["symbolic-ref", "--short", "HEAD"]).ok_or_else(|| {
             AppError::Validation(format!(
@@ -138,8 +147,8 @@ fn canonical_existing(path: &Path, label: &str) -> Result<PathBuf, AppError> {
     })
 }
 
-fn main_worktree(cwd: &Path) -> Result<PathBuf, AppError> {
-    let records = super::resources::git::inventory(cwd)?;
+fn main_worktree(bound: std::time::Duration, cwd: &Path) -> Result<PathBuf, AppError> {
+    let records = super::resources::git::inventory_with_bound(bound, cwd)?;
     canonical_existing(&records[0].path, "repository")
 }
 

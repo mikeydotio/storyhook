@@ -1,11 +1,8 @@
 //! Generic Git observations: GitHub HTTPS or explicitly file-only transport.
 
-use super::{Repository, git_read};
+use super::{Bounds, Repository, git_read_with_bound};
 use crate::{env::git_env, error::AppError, process::run_captured_private};
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Destination {
@@ -17,19 +14,45 @@ enum Destination {
 pub struct OriginObservation {
     checkout: PathBuf,
     destination: Destination,
+    bounds: Bounds,
 }
 
 impl OriginObservation {
     /// Resolves a checkout's single origin. Filesystem origins remain file-only.
     pub fn resolve(checkout: &Path) -> Result<Self, AppError> {
+        Self::resolve_with_bounds(checkout, Bounds::default())
+    }
+
+    /// Resolves using the owning service's explicit subprocess policy.
+    pub(crate) fn resolve_with_env(
+        checkout: &Path,
+        env: &crate::env::Environment,
+    ) -> Result<Self, AppError> {
+        Self::resolve_with_bounds(checkout, Bounds::for_environment(env))
+    }
+
+    /// Declares fixture patience before the first pinned-origin observation.
+    #[cfg(feature = "test-seam")]
+    pub fn resolve_for_fixture(
+        checkout: &Path,
+        env: &crate::env::Environment,
+    ) -> Result<Self, AppError> {
+        Self::resolve_with_env(checkout, env)
+    }
+
+    fn resolve_with_bounds(checkout: &Path, bounds: Bounds) -> Result<Self, AppError> {
         let checkout = checkout.canonicalize()?;
-        let root = git_read(&checkout, &["rev-parse", "--show-toplevel"])?;
+        let root = git_read_with_bound(bounds.read, &checkout, &["rev-parse", "--show-toplevel"])?;
         if Path::new(root.trim()).canonicalize()? != checkout {
             return Err(AppError::Validation(
                 "origin observation requires a checkout root".into(),
             ));
         }
-        let raw = git_read(&checkout, &["config", "--get-all", "remote.origin.url"])?;
+        let raw = git_read_with_bound(
+            bounds.read,
+            &checkout,
+            &["config", "--get-all", "remote.origin.url"],
+        )?;
         let origins: Vec<_> = raw.lines().collect();
         if origins.len() != 1 || origins[0].is_empty() || origins[0].chars().any(char::is_control) {
             return Err(AppError::Validation(
@@ -42,11 +65,19 @@ impl OriginObservation {
                 AppError::Validation(format!("local origin is unavailable: {error}"))
             })?)
         } else {
-            Destination::Github(Repository::resolve(&checkout)?.identity().clone())
+            Destination::Github(
+                Repository::resolve_with_bounds(&checkout, bounds)?
+                    .identity()
+                    .clone(),
+            )
         };
         // A mirror must not discard a source checkout's redirect policy when
         // it copies raw origin. Validate the effective read destination here.
-        let effective = git_read(&checkout, &["remote", "get-url", "--all", "origin"])?;
+        let effective = git_read_with_bound(
+            bounds.read,
+            &checkout,
+            &["remote", "get-url", "--all", "origin"],
+        )?;
         let urls: Vec<_> = effective.lines().collect();
         let matches = urls.len() == 1
             && match &destination {
@@ -66,6 +97,7 @@ impl OriginObservation {
         Ok(Self {
             checkout,
             destination,
+            bounds,
         })
     }
 
@@ -88,7 +120,7 @@ impl OriginObservation {
         ) {
             return Err(refuse("only ls-remote and fetch are allowed"));
         }
-        if Self::resolve(&self.checkout)?.destination != self.destination {
+        if Self::resolve_with_bounds(&self.checkout, self.bounds)?.destination != self.destination {
             return Err(refuse("origin changed; resolve it again before retrying"));
         }
         let path = match &self.destination {
@@ -96,6 +128,7 @@ impl OriginObservation {
                 return Repository {
                     checkout: self.checkout.clone(),
                     identity: identity.clone(),
+                    bounds: self.bounds,
                 }
                 .git(arguments);
             }
@@ -125,7 +158,11 @@ impl OriginObservation {
         {
             return Err(refuse("unsupported observation arguments"));
         }
-        let configured = git_read(&self.checkout, &["remote", "get-url", "--all", "origin"])?;
+        let configured = git_read_with_bound(
+            self.bounds.read,
+            &self.checkout,
+            &["remote", "get-url", "--all", "origin"],
+        )?;
         let urls: Vec<_> = configured.lines().collect();
         if urls.len() != 1
             || urls[0].contains(':')
@@ -139,7 +176,11 @@ impl OriginObservation {
         // Refuse even local rewrites: the configured path, not a Git alias, is
         // the observation authority. File-only protocol enforcement is also
         // passed to the actual operation to cover concurrent config changes.
-        let effective = git_read(&self.checkout, &["ls-remote", "--get-url", path])?;
+        let effective = git_read_with_bound(
+            self.bounds.read,
+            &self.checkout,
+            &["ls-remote", "--get-url", path],
+        )?;
         if effective.trim() != path {
             return Err(refuse("a URL rewrite changes the local origin"));
         }
@@ -157,7 +198,7 @@ impl OriginObservation {
                 "core.askPass=",
             ])
             .args(args);
-        let output = run_captured_private(command, Duration::from_secs(120))
+        let output = run_captured_private(command, self.bounds.operation)
             .map_err(|e| refuse(&e.detail()))?;
         if !output.status.success() {
             return Err(refuse(&format!(

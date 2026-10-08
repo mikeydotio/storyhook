@@ -774,7 +774,7 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
             pull_request: Err(VerificationProblem::MissingPullRequest),
         };
         let actuator = ShellVerificationActuator::with_paths(
-            env,
+            storyhook_test_support::subprocess_patience(env),
             std::env::var_os("STORY_CALLBACK_HELPER")
                 .expect("callback helper")
                 .into(),

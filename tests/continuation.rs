@@ -965,16 +965,22 @@ fn provider_transport_passes_literal_json_on_stdin_and_reports_invalid_replies()
     let f = ServiceFixture::new();
     let helper = f.cwd().join("runtime.py");
     std::fs::write(&helper,"import json,sys\nv=json.load(sys.stdin)\nprint(json.dumps({'ok':True,'phase':'busy','echo':v,'operation':sys.argv[1]}))\n").unwrap();
-    let runtime = PythonRuntime::at(&helper, f.env().clone());
+    let runtime = PythonRuntime::at(
+        &helper,
+        storyhook_test_support::subprocess_patience(f.env().clone()),
+    );
     let document = json!({"capture":{"provider":"codex"},"evidence":"literal\n$(never execute) `never execute` ' \""});
     let answer = runtime.call("observe", &document).unwrap();
     assert_eq!(answer["echo"], document);
     assert_eq!(answer["operation"], "observe");
     let broken = f.cwd().join("invalid-runtime.py");
     std::fs::write(&broken, "print('not JSON')\n").unwrap();
-    let error = PythonRuntime::at(&broken, f.env().clone())
-        .call("observe", &document)
-        .unwrap_err();
+    let error = PythonRuntime::at(
+        &broken,
+        storyhook_test_support::subprocess_patience(f.env().clone()),
+    )
+    .call("observe", &document)
+    .unwrap_err();
     assert!(
         error
             .to_string()
@@ -995,9 +1001,12 @@ fn provider_transport_hands_the_helper_this_process_own_binary() {
         "import json,os\nprint(json.dumps({'ok':True,'story_bin':os.environ.get('STORY_BIN')}))\n",
     )
     .unwrap();
-    let answer = PythonRuntime::at(&helper, f.env().clone())
-        .call("observe", &json!({"capture":{"provider":"codex"}}))
-        .unwrap();
+    let answer = PythonRuntime::at(
+        &helper,
+        storyhook_test_support::subprocess_patience(f.env().clone()),
+    )
+    .call("observe", &json!({"capture":{"provider":"codex"}}))
+    .unwrap();
     let own = std::env::current_exe().unwrap();
     assert_eq!(answer["story_bin"], json!(own.to_str().unwrap()));
 }

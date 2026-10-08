@@ -581,7 +581,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         }
         let now = self.ctx.now();
         let cleanup_lease = if automated && state == VERIFYING_STATE_SLUG {
-            super::cleanup_lease::marker_at(self.ctx.cwd())?
+            super::cleanup_lease::marker_at(self.ctx.env(), self.ctx.cwd())?
         } else {
             None
         };

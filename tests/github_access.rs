@@ -36,7 +36,7 @@ fn public_and_enterprise_origins_keep_their_destination() {
             format!("ssh://git@{host}:22/Acme/Widgets.git"),
         ] {
             let root = checkout(&origin);
-            let resolved = Repository::resolve(root.path()).unwrap();
+            let resolved = fixture_repository(root.path()).unwrap();
             assert_eq!(resolved.qualified(), format!("{host}/acme/widgets"));
             assert_eq!(
                 resolved.transport_url(),
@@ -50,7 +50,7 @@ fn public_and_enterprise_origins_keep_their_destination() {
 fn https_port_is_preserved_and_ssh_port_is_not_guessed() {
     let root = checkout("https://github.example.com:8443/acme/widgets.git");
     assert_eq!(
-        Repository::resolve(root.path()).unwrap().identity().host,
+        fixture_repository(root.path()).unwrap().identity().host,
         "github.example.com:8443"
     );
     git(
@@ -63,7 +63,7 @@ fn https_port_is_preserved_and_ssh_port_is_not_guessed() {
         ],
     );
     assert!(
-        Repository::resolve(root.path())
+        fixture_repository(root.path())
             .unwrap_err()
             .to_string()
             .contains("HTTPS")
@@ -74,7 +74,7 @@ fn https_port_is_preserved_and_ssh_port_is_not_guessed() {
 fn changed_origin_is_read_again_instead_of_registered_or_cached_identity() {
     let root = checkout("https://github.com/old/widgets.git");
     assert_eq!(
-        Repository::resolve(root.path()).unwrap().qualified(),
+        fixture_repository(root.path()).unwrap().qualified(),
         "github.com/old/widgets"
     );
     git(
@@ -87,7 +87,7 @@ fn changed_origin_is_read_again_instead_of_registered_or_cached_identity() {
         ],
     );
     assert_eq!(
-        Repository::resolve(root.path()).unwrap().qualified(),
+        fixture_repository(root.path()).unwrap().qualified(),
         "github.example.com/new/moved"
     );
 }
@@ -103,7 +103,7 @@ fn unsupported_and_credential_bearing_origins_are_refused_without_secrets() {
         "https://host/acme/widgets/tree/main",
     ] {
         let root = checkout(origin);
-        let error = Repository::resolve(root.path()).unwrap_err().to_string();
+        let error = fixture_repository(root.path()).unwrap_err().to_string();
         assert!(!error.contains("never-print-me"), "{error}");
     }
 }
@@ -111,9 +111,9 @@ fn unsupported_and_credential_bearing_origins_are_refused_without_secrets() {
 #[test]
 fn missing_checkout_missing_origin_and_multiple_origins_fail_closed() {
     let root = checkout("https://host/acme/widgets");
-    assert!(Repository::resolve(&root.path().join("missing")).is_err());
+    assert!(fixture_repository(&root.path().join("missing")).is_err());
     git(root.path(), &["remote", "remove", "origin"]);
-    assert!(Repository::resolve(root.path()).is_err());
+    assert!(fixture_repository(root.path()).is_err());
     git(
         root.path(),
         &[
@@ -132,7 +132,7 @@ fn missing_checkout_missing_origin_and_multiple_origins_fail_closed() {
             "https://other/acme/widgets",
         ],
     );
-    assert!(Repository::resolve(root.path()).is_err());
+    assert!(fixture_repository(root.path()).is_err());
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn a_directory_inside_an_unrelated_checkout_is_not_a_checkout() {
     let root = checkout("https://host/acme/widgets");
     let child = root.path().join("missing-project");
     std::fs::create_dir(&child).unwrap();
-    assert!(Repository::resolve(&child).is_err());
+    assert!(fixture_repository(&child).is_err());
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn raw_origin_is_not_changed_by_transport_rewrites() {
         ],
     );
     assert_eq!(
-        Repository::resolve(root.path()).unwrap().identity().host,
+        fixture_repository(root.path()).unwrap().identity().host,
         "github.example.com"
     );
 }
@@ -189,7 +189,7 @@ fn linked_worktree_uses_its_actual_shared_origin() {
         ],
     );
     assert_eq!(
-        Repository::resolve(&lane).unwrap().identity().host,
+        fixture_repository(&lane).unwrap().identity().host,
         "github.example.com"
     );
 }
@@ -669,7 +669,11 @@ fn a_multistep_operation_refuses_to_reinterpret_identity_after_origin_changes() 
         "github.example.com/acme/widgets",
     ]
     .map(String::from);
-    storyhook::github_access::run_local(&args).expect("initial identity agrees");
+    storyhook::github_access::run_local_for_fixture(
+        &args,
+        &storyhook_test_support::subprocess_patience(storyhook::env::Environment::at(root.path())),
+    )
+    .expect("initial identity agrees");
     git(
         root.path(),
         &[
@@ -679,7 +683,11 @@ fn a_multistep_operation_refuses_to_reinterpret_identity_after_origin_changes() 
             "https://github.com/other/widgets.git",
         ],
     );
-    let error = storyhook::github_access::run_local(&args).unwrap_err();
+    let error = storyhook::github_access::run_local_for_fixture(
+        &args,
+        &storyhook_test_support::subprocess_patience(storyhook::env::Environment::at(root.path())),
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("origin changed"), "{error}");
 }
 
@@ -836,7 +844,7 @@ fn generic_observations_keep_filesystem_origins_off_the_network() {
     assert!(!redirected.status.success());
     assert!(String::from_utf8_lossy(&redirected.stderr).contains("rewrite"));
     assert!(
-        Repository::resolve(root.path()).is_err(),
+        fixture_repository(root.path()).is_err(),
         "local origin never grants GitHub authority"
     );
 }
@@ -845,7 +853,11 @@ fn generic_observations_keep_filesystem_origins_off_the_network() {
 fn observations_pin_origin_and_cannot_write_remotes() {
     use storyhook::github_access::OriginObservation;
     let root = checkout("https://github.example.com/acme/widgets.git");
-    let observation = OriginObservation::resolve(root.path()).unwrap();
+    let observation = OriginObservation::resolve_for_fixture(
+        root.path(),
+        &storyhook_test_support::subprocess_patience(storyhook::env::Environment::at(root.path())),
+    )
+    .unwrap();
     let push = ["push".into(), "origin".into(), "main".into()];
     assert!(
         observation
@@ -979,4 +991,9 @@ fn a_competing_exact_rewrite_cannot_restore_ssh_transport() {
         output.stdout.is_empty(),
         "transport must not run: {output:?}"
     );
+}
+
+fn fixture_repository(path: &std::path::Path) -> Result<Repository, storyhook::error::AppError> {
+    let env = storyhook_test_support::subprocess_patience(storyhook::env::Environment::at(path));
+    Repository::resolve_for_fixture(path, &env)
 }

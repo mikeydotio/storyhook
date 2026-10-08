@@ -638,9 +638,11 @@ fn real_shell_cancellation_reaches_the_owned_process_and_preserves_the_queue() {
     let journal = journal_path(fixture.env(), &candidate);
     let started = std::path::PathBuf::from(format!("{}.started", journal.display()));
     let terminated = std::path::PathBuf::from(format!("{}.terminated", journal.display()));
-    let actuator = ShellVerificationActuator::new(fixture.env().clone())
-        .with_verifier_script(script)
-        .with_activity(activity.clone());
+    let actuator = ShellVerificationActuator::new(storyhook_test_support::subprocess_patience(
+        fixture.env().clone(),
+    ))
+    .with_verifier_script(script)
+    .with_activity(activity.clone());
     std::thread::scope(|scope| {
         let worker = scope.spawn(|| {
             tick_with_activity(

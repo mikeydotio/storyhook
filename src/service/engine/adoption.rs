@@ -112,7 +112,7 @@ impl DispatchInspector for LiveDispatchInspector {
             .filter_map(|field| field.strip_prefix("worktree "))
         {
             let path = Path::new(path);
-            if let Some(lease) = crate::service::cleanup_lease::marker_at(path)?
+            if let Some(lease) = crate::service::cleanup_lease::marker_at(&self.env, path)?
                 && lease.project_slug == project
                 && lease.story_id == story
             {
@@ -482,7 +482,15 @@ impl<S: Store, D: Dispatcher> EngineService<'_, S, D> {
         lock_ids.sort_unstable();
         let workspaces: Vec<_> = lock_ids
             .into_iter()
-            .map(|id| crate::service::workspace_lock::WorkspaceLock::acquire(&checkout, id))
+            .map(|id| {
+                crate::service::workspace_lock::WorkspaceLock::acquire_with_bound(
+                    self.ctx
+                        .env()
+                        .subprocess_bound(std::time::Duration::from_secs(30)),
+                    &checkout,
+                    id,
+                )
+            })
             .collect::<Result<_, _>>()?;
         let mut found = Vec::new();
         for row in &before {
