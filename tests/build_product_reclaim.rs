@@ -429,3 +429,14 @@ fn reset_and_new_build_survive_a_purge_paused_after_detachment() {
         Duration::from_secs(60)
     );
 }
+
+#[test]
+fn ordinary_move_handoff_runs_configured_detachment() {
+    let f = Fixture::new(no_purge());
+    f.move_to("in-progress");
+    StoryService::new(&f.ctx())
+        .set_state("SH-1", "verifying", None, None, None)
+        .unwrap();
+    assert!(!f.original().exists());
+    assert!(f.journal().parent().unwrap().join("products/old").exists());
+}
