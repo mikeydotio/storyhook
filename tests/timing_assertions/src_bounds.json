@@ -198,11 +198,6 @@
       "kind": "delegated",
       "reason": "run_shell_capabilities reads bound through Environment::subprocess_bound. kill_window uses the remaining shared deadline derived from subprocess_bound(TMUX_TIMEOUT), after ownership inspection."
     },
-    "production run_captured(timeout": {
-      "count": 1,
-      "kind": "delegated",
-      "reason": "probe_window_at's timeout comes from its TmuxBudget, whose per-call bound is subprocess_bound(TMUX_TIMEOUT)."
-    },
     "production run_captured_cancellable(DISPATCH_TIMEOUT": {
       "count": 1,
       "kind": "unrouted",
@@ -214,11 +209,11 @@
       "reason": "A 20 ms bound on `sleep 30` must terminate the process group; the test expects the timeout."
     }
   },
-  "src/service/engine/adoption.rs": {
+  "src/service/engine/probe_runtime.rs": {
     "production run_captured(timeout": {
       "count": 1,
       "kind": "delegated",
-      "reason": "capture's timeout comes from its TmuxBudget, whose per-call bound is subprocess_bound(TMUX_TIMEOUT)."
+      "reason": "LiveProbeRuntime receives each regular/adopted probe timeout from TmuxBudget (subprocess_bound(TMUX_TIMEOUT)), capped by the remaining absolute ownership/restart deadline. The logical-clock tests replace only this external boundary."
     }
   },
   "src/service/engine/reset.rs": {
