@@ -541,6 +541,20 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
             },
         ),
         (
+            "reset_preview",
+            Response::ResetPreview(Box::new(storyhook::service::story_reset::ResetPreview {
+                story_id: "SH-1".into(),
+                original_state: "in-progress".into(),
+                awaiting: Some("Waiting".into()),
+                existing_reset: None,
+                window: None,
+                worktree: Some("/repo/worktree".into()),
+                branch: Some("worktree-SH-1".into()),
+                recovery: Default::default(),
+                residue: Vec::new(),
+            })),
+        ),
+        (
             "engine_reset",
             Response::EngineReset(Box::new(storyhook::store::EngineReset {
                 project: storyhook::store::ProjectId::new(1),
@@ -1187,6 +1201,7 @@ fn the_response_corpus_covers_every_variant() {
             Response::Stories { .. } => "stories",
             Response::EngineRun(_) => "engine_run",
             Response::EngineReset(_) => "engine_reset",
+            Response::ResetPreview(_) => "reset_preview",
             Response::Cleanup(_) => "cleanup",
             Response::Resources(_) => "resources",
             Response::Summary(_) => "summary",
@@ -2154,6 +2169,10 @@ fn invocation_corpus() -> Vec<Invocation> {
         // and be composed by the store (SH-483).
         Invocation::SupersedeBlockDeliveries { id: "SH-42".into() },
         Invocation::SupersedeContinuations { id: "SH-42".into() },
+        Invocation::ResetPreview {
+            id: "SH-42".into(),
+            caller: Default::default(),
+        },
         Invocation::Reset {
             id: "SH-42".into(),
             force: false,
@@ -2312,6 +2331,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Claim { .. } => "Claim",
         Invocation::Unclaim { .. } => "Unclaim",
         Invocation::Reset { .. } => "Reset",
+        Invocation::ResetPreview { .. } => "ResetPreview",
         Invocation::SupersedeBlockDeliveries { .. } => "SupersedeBlockDeliveries",
         Invocation::SupersedeContinuations { .. } => "SupersedeContinuations",
         Invocation::Engine { .. } => "Engine",

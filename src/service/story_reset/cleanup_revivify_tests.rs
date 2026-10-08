@@ -131,3 +131,34 @@ fn a_window_that_appeared_after_reservation_is_left_and_reported() {
     assert!(residue[0].reason.contains("new tmux window"), "{residue:?}");
     assert_eq!(windows(&fixture, &fixture.endpoint), "SH-1\n");
 }
+
+#[test]
+fn preview_window_proof_never_closes_any_window_and_keeps_caller_and_generation_guards() {
+    let mut fixture = Fixture::new();
+    fixture.start(&fixture.socket.clone(), "SH-1");
+    fixture.start(&fixture.endpoint.clone(), "SH-1");
+    let report = report(&fixture, &fixture.endpoint);
+    let (target, pane) = window_authority(&report, &ResetCaller::default(), &fixture.env)
+        .unwrap()
+        .expect("owned window");
+    assert_eq!(target.endpoint, fixture.endpoint);
+    assert_eq!(pane.window_name, "SH-1");
+    let caller = ResetCaller {
+        pane: Some(pane.pane_id.clone()),
+        socket: Some(fixture.endpoint.clone()),
+    };
+    assert!(
+        window_authority(&report, &caller, &fixture.env)
+            .unwrap_err()
+            .contains("caller")
+    );
+    let mut stale = report.clone();
+    stale.socket_path = Some(fixture.socket.clone());
+    assert!(
+        window_authority(&stale, &ResetCaller::default(), &fixture.env)
+            .unwrap_err()
+            .contains("generation changed")
+    );
+    assert_eq!(windows(&fixture, &fixture.socket), "SH-1\n");
+    assert_eq!(windows(&fixture, &fixture.endpoint), "SH-1\n");
+}
