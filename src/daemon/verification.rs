@@ -3432,8 +3432,8 @@ enum AuthorityRefresh {
 }
 
 /// Link metadata changes independently of submission authority. The queue has
-/// already checked registration, openness and close-on-merge eligibility; only
-/// the normalized repository identity and PR number identify an eligible PR.
+/// already checked registration and close-on-merge eligibility; the parsed
+/// host (including port), repository identity and number identify the PR.
 /// Keep invalid/missing submissions distinct, including their diagnostic facts.
 fn same_pull_request_authority(
     current: &Result<PrLink, VerificationProblem>,
@@ -3444,6 +3444,10 @@ fn same_pull_request_authority(
             current.owner == owned.owner
                 && current.repo == owned.repo
                 && current.number == owned.number
+                && matches!(
+                    (parse_pr_url(&current.url), parse_pr_url(&owned.url)),
+                    (Ok(current), Ok(owned)) if current == owned
+                )
         }
         (Err(current), Err(owned)) => current == owned,
         _ => false,

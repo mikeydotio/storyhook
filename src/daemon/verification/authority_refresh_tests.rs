@@ -247,3 +247,111 @@ fn repository_identity_and_invalid_link_transitions_remain_authority_changes() {
         CandidateAuthority::Superseded(Some(_))
     ));
 }
+
+#[test]
+fn different_pr_host_or_port_replaces_attempt_after_origin_and_link_change() {
+    for origin in [
+        "https://enterprise.example/acme/widgets",
+        "https://github.com:8443/acme/widgets",
+    ] {
+        let board = Board::new();
+        let mut candidate = board.candidate();
+        let original = candidate.clone();
+        let activity = VerificationActivity::new();
+        let mut guard = activity.acquire(&candidate, T0.into());
+        let before = guard.active.attempt_id.clone();
+        let inflight = InFlight::new(board.env.clone());
+        let entry = inflight.enter();
+
+        // Change the fixture's registered authority and link together. Both
+        // candidates must be eligible; an invalid-link refusal would conceal
+        // a comparison that incorrectly drops the host or port.
+        assert_eq!(board._fixture.github_checkout(origin), board.checkout);
+        let url = format!("{origin}/pull/1");
+        PrLinkService::new(&board.ctx(T1))
+            .link(&board.story, &url, true)
+            .unwrap();
+        let refreshed = board.candidate();
+        let previous = original.pull_request.as_ref().unwrap();
+        let current = refreshed.pull_request.as_ref().unwrap();
+        assert_eq!(
+            (&current.owner, &current.repo, current.number),
+            (&previous.owner, &previous.repo, previous.number)
+        );
+        assert_ne!(
+            parse_pr_url(&current.url).unwrap().host,
+            parse_pr_url(&previous.url).unwrap().host
+        );
+        assert_eq!(
+            refreshed.verifying_generation,
+            original.verifying_generation
+        );
+        assert_eq!(refreshed.checkout, original.checkout);
+        assert!(matches!(
+            refresh_authority(
+                &board.store,
+                &VerificationQueue::new(&board.store),
+                &mut guard,
+                &entry,
+                &board.env,
+                &mut candidate
+            )
+            .unwrap(),
+            AuthorityRefresh::Replaced
+        ));
+        assert_ne!(guard.active.attempt_id, before);
+        assert_eq!(candidate.pull_request, refreshed.pull_request);
+    }
+}
+
+#[test]
+fn normalized_same_pr_url_spelling_keeps_the_admitted_attempt() {
+    for url in [
+        "https://GitHub.com/ACME/Widgets/pull/1/",
+        "  https://github.com/acme/widgets/pull/1  ",
+        "http://github.com/acme/widgets/pull/1",
+    ] {
+        let board = Board::new();
+        let mut candidate = board.candidate();
+        let activity = VerificationActivity::new();
+        let mut guard = activity.acquire(&candidate, T0.into());
+        let before = guard.active.clone();
+        let inflight = InFlight::new(board.env.clone());
+        let entry = inflight.enter();
+        PrLinkService::new(&board.ctx(T1))
+            .link(&board.story, url, true)
+            .unwrap();
+        let refreshed = board.candidate();
+        assert_ne!(refreshed.pull_request, candidate.pull_request);
+        assert!(matches!(
+            refresh_authority(
+                &board.store,
+                &VerificationQueue::new(&board.store),
+                &mut guard,
+                &entry,
+                &board.env,
+                &mut candidate
+            )
+            .unwrap(),
+            AuthorityRefresh::Current
+        ));
+        assert_eq!(guard.active, before);
+        assert_eq!(candidate.pull_request, refreshed.pull_request);
+    }
+}
+
+#[test]
+fn malformed_pr_urls_never_supply_equal_authority() {
+    let board = Board::new();
+    let valid = board.candidate().pull_request;
+    for url in [
+        "not-a-pull-request",
+        "https://github.com/acme/widgets/pull/1?untrusted=1",
+    ] {
+        let mut malformed = valid.clone();
+        malformed.as_mut().unwrap().url = url.into();
+        assert!(!same_pull_request_authority(&valid, &malformed));
+        assert!(!same_pull_request_authority(&malformed, &valid));
+        assert!(!same_pull_request_authority(&malformed, &malformed));
+    }
+}
