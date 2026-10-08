@@ -402,7 +402,7 @@ fn terminal_questionnaire_can_cancel_without_creating_a_project() {
 #[test]
 fn final_surface_keeps_assignment_retired_and_later_capabilities_reachable() {
     let env = TestEnv::isolated();
-    let project = env.project().build();
+    let project = env.project().git().build();
     let dir = project.path();
     let document = value(&env, dir, &["describe", "--audience", "all"]);
     let commands = document["commands"].as_array().unwrap();
