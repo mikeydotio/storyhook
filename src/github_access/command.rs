@@ -7,6 +7,27 @@ use std::process::Command;
 use std::time::Duration;
 
 impl Repository {
+    /// Native recovery reads share one deadline with origin revalidation and
+    /// preserve credential-private output and ordinary destination restrictions.
+    pub(crate) fn gh_controlled(
+        &self,
+        arguments: &[String],
+        deadline: std::time::Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, AppError> {
+        if Self::resolve_controlled(&self.checkout, deadline, cancelled)?.identity != self.identity
+        {
+            return Err(AppError::Validation(
+                "GitHub origin changed during bounded recovery inspection".into(),
+            ));
+        }
+        execute_controlled(
+            &self.identity,
+            &self.checkout,
+            arguments,
+            Some((deadline, cancelled)),
+        )
+    }
     /// Executes gh only against this repository, after revalidating its origin.
     pub fn gh(&self, arguments: &[String]) -> Result<Vec<u8>, AppError> {
         let current = Self::resolve(&self.checkout)?;
@@ -26,6 +47,15 @@ pub(super) fn execute(
     checkout: &std::path::Path,
     arguments: &[String],
 ) -> Result<Vec<u8>, AppError> {
+    execute_controlled(identity, checkout, arguments, None)
+}
+
+fn execute_controlled(
+    identity: &crate::domain::github_remote::GithubRepo,
+    checkout: &std::path::Path,
+    arguments: &[String],
+    control: Option<(std::time::Instant, &dyn Fn() -> bool)>,
+) -> Result<Vec<u8>, AppError> {
     let arguments = routed_arguments(identity, arguments)?;
     let mut command = Command::new("gh");
     crate::env::spawn_env::apply_verification_allowlist(&mut command);
@@ -39,7 +69,15 @@ pub(super) fn execute(
         .env("GH_NO_UPDATE_NOTIFIER", "1")
         .env("GH_NO_EXTENSION_UPDATE_NOTIFIER", "1")
         .env("GIT_TERMINAL_PROMPT", "0");
-    let output = run_captured_private(command, Duration::from_secs(120)).map_err(|error| {
+    let output = match control {
+        Some((deadline, cancelled)) => crate::process::run_captured_private_until(
+            command,
+            deadline.min(std::time::Instant::now() + Duration::from_secs(120)),
+            cancelled,
+        ),
+        None => run_captured_private(command, Duration::from_secs(120)),
+    }
+    .map_err(|error| {
         let detail = match error {
             CaptureError::Spawn(ref source) if source.kind() == std::io::ErrorKind::NotFound => {
                 "install gh and make it available on the StoryHook process PATH".to_owned()

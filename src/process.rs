@@ -169,6 +169,28 @@ pub(crate) fn run_captured_private(
     .map_err(|failure| failure.error)
 }
 
+/// Credential-private capture under an existing operation deadline and owner
+/// cancellation. Sub-queries cannot renew the caller's remaining budget.
+pub(crate) fn run_captured_private_until(
+    command: Command,
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Captured, CaptureError> {
+    run_captured_until(
+        command,
+        TerminationPolicy::Kill,
+        None,
+        CaptureWait {
+            private_output: true,
+            ..CaptureWait::default()
+        },
+        Some(cancelled),
+        |_| Ok(()),
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    )
+    .map_err(|failure| failure.error)
+}
+
 /// Journals a supervisory child only when it fails (SH-761): no start
 /// record, no output mirroring, and a finish record only for a non-zero
 /// exit. A periodic reconcile whose success is the steady state would

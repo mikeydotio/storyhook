@@ -27,13 +27,31 @@ pub struct Repository {
 impl Repository {
     /// Reads the actual origin of an existing checkout, without cached routing.
     pub fn resolve(checkout: &Path) -> Result<Self, AppError> {
+        Self::resolve_with(checkout, git_read)
+    }
+
+    /// Resolve under one caller-owned deadline, including every origin query.
+    pub(crate) fn resolve_controlled(
+        checkout: &Path,
+        deadline: std::time::Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, AppError> {
+        Self::resolve_with(checkout, |checkout, arguments| {
+            git_read_controlled(checkout, arguments, deadline, cancelled)
+        })
+    }
+
+    fn resolve_with(
+        checkout: &Path,
+        mut read: impl FnMut(&Path, &[&str]) -> Result<String, AppError>,
+    ) -> Result<Self, AppError> {
         let checkout = checkout.canonicalize().map_err(|error| {
             AppError::Validation(format!(
                 "GitHub checkout {} is unavailable: {error}",
                 checkout.display()
             ))
         })?;
-        let root = git_read(&checkout, &["rev-parse", "--show-toplevel"])?;
+        let root = read(&checkout, &["rev-parse", "--show-toplevel"])?;
         let root = Path::new(root.trim()).canonicalize().map_err(|error| {
             AppError::Validation(format!("cannot resolve GitHub checkout root: {error}"))
         })?;
@@ -44,7 +62,7 @@ impl Repository {
                 root.display()
             )));
         }
-        let origins = git_read(&checkout, &["config", "--get-all", "remote.origin.url"])?;
+        let origins = read(&checkout, &["config", "--get-all", "remote.origin.url"])?;
         let origins: Vec<_> = origins.lines().collect();
         if origins.len() != 1 {
             return Err(AppError::Validation(format!(
@@ -75,6 +93,29 @@ impl Repository {
     pub fn transport_url(&self) -> String {
         format!("https://{}.git", self.qualified())
     }
+}
+
+fn git_read_controlled(
+    checkout: &Path,
+    arguments: &[&str],
+    deadline: std::time::Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<String, AppError> {
+    let mut command = git_env::command(checkout);
+    command.args(arguments);
+    let output = crate::process::run_captured_private_until(
+        command,
+        deadline.min(std::time::Instant::now() + Duration::from_secs(30)),
+        cancelled,
+    )
+    .map_err(|e| AppError::Validation(format!("bounded GitHub origin read: {}", e.detail())))?;
+    if !output.status.success() || output.stdout.len() >= 64 * 1024 {
+        return Err(AppError::Validation(
+            "bounded GitHub origin query failed or exceeded capture limit".into(),
+        ));
+    }
+    String::from_utf8(output.stdout)
+        .map_err(|_| AppError::Validation("GitHub origin query is not UTF-8".into()))
 }
 
 fn git_read(checkout: &Path, arguments: &[&str]) -> Result<String, AppError> {

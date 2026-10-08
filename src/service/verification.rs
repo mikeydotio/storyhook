@@ -1440,6 +1440,9 @@ fn held_verifying_for_purpose(
             Some(QueueHold::StoppedRepair) => {
                 "verification stopped: managed repair requires certification".to_string()
             }
+            Some(QueueHold::IntegrationRecovery) => {
+                "managed integration retains this original submission and its resources".to_string()
+            }
             Some(QueueHold::ProjectRecovery) => {
                 "project recovery owns this verification generation".to_string()
             }
@@ -1579,6 +1582,8 @@ pub(crate) enum QueueHold {
     Reset,
     /// Project recovery has observed this verification generation.
     ProjectRecovery,
+    /// A distinct integration owner retains this story, even if its generation changes.
+    IntegrationRecovery,
     /// Retained causal evidence has not released this submission.
     Attribution,
     /// A managed repair must certify its fix before resolving its recovery.
@@ -1608,6 +1613,12 @@ fn queue_hold(
             .is_some_and(|reset| !reset.completed)
     {
         Some(QueueHold::Reset)
+    } else if tx
+        .integration_recoveries(project)?
+        .iter()
+        .any(|owner| owner.active && owner.story == row.story_no)
+    {
+        Some(QueueHold::IntegrationRecovery)
     } else if match super::project_recovery::shared_blocks_admission(
         tx,
         project,

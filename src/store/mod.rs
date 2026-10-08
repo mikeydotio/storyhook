@@ -62,9 +62,11 @@ pub mod block_delivery;
 mod dispatch_policy;
 pub use dispatch_policy::DispatchPolicyOverride;
 pub mod continuation;
+pub mod integration_recovery;
 pub mod project_recovery;
 pub use block_delivery::{BlockAction, BlockDelivery, DeliveryStatus};
 pub use continuation::{Continuation, ContinuationPhase, ContinuationStatus};
+pub use integration_recovery::IntegrationRecovery;
 pub use project_recovery::{ProjectRecovery, ProjectRecoveryObservation};
 pub mod conformance;
 mod dropped_cleanup;
@@ -312,6 +314,11 @@ pub struct WriteWithSnapshot<T> {
 /// project slug stored on the run; machine-wide operational reads support
 /// reconciliation and lane-budget accounting.
 pub trait ReadOps {
+    /// Distinct single-submission integration owners, including retained history.
+    fn integration_recoveries(
+        &self,
+        project: ProjectId,
+    ) -> Result<Vec<IntegrationRecovery>, StoreError>;
     /// Project-fault coordinators in creation order, including retained history.
     fn project_recoveries(&self, project: ProjectId) -> Result<Vec<ProjectRecovery>, StoreError>;
     /// Immutable observations belonging to this project and recovery identity.
@@ -673,6 +680,17 @@ pub trait WriteOps: ReadOps {
     fn derives_block_edges(&self) -> bool;
     /// Acquire a new active fault identity; false means an active owner already exists.
     fn insert_project_recovery(&mut self, record: &ProjectRecovery) -> Result<bool, StoreError>;
+    /// Acquire the original story's sole live integration owner.
+    fn insert_integration_recovery(
+        &mut self,
+        record: &IntegrationRecovery,
+    ) -> Result<bool, StoreError>;
+    /// Advance state once, preserving project, story and original generation.
+    fn update_integration_recovery(
+        &mut self,
+        record: &IntegrationRecovery,
+        expected: i64,
+    ) -> Result<bool, StoreError>;
     /// Advance coordination state once without changing immutable identity.
     fn update_project_recovery(
         &mut self,

@@ -1,0 +1,23 @@
+//! Durable single-submission integration ownership, independent of batches.
+use super::{GlobalSeq, ProjectId, StoryNo};
+use serde::{Deserialize, Serialize};
+
+/// Immutable submission envelope with guarded versioned lifecycle state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntegrationRecovery {
+    /// Global owner identity, also naming its private integration branch.
+    pub id: String,
+    /// Explicit owning project.
+    pub project: ProjectId,
+    /// Original submitted story.
+    pub story: StoryNo,
+    /// Original submitted verification generation.
+    pub generation: GlobalSeq,
+    /// Monotonic compare-and-swap revision.
+    pub revision: i64,
+    /// Retains exclusive ownership until all effects/resources are reconciled.
+    pub active: bool,
+    /// Strict service lifecycle; serialized evidence cannot mint native proof.
+    pub state: serde_json::Value,
+}

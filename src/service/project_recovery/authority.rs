@@ -22,7 +22,7 @@ pub(super) fn state_revision(
         .ok_or_else(|| StoreError::Corrupt("recovery subject has no state transition".into()))
 }
 
-pub(super) fn label_revision(
+pub(crate) fn label_revision(
     tx: &impl ReadOps,
     project: ProjectId,
     story: StoryNo,

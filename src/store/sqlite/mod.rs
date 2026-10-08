@@ -47,6 +47,7 @@ mod dispatch_policy;
 mod dropped_cleanup;
 mod engine_reset;
 mod gate_evidence;
+mod integration_recovery;
 mod landing;
 mod ownership;
 mod project_recovery;
@@ -954,6 +955,12 @@ impl Store for SqliteStore {
 macro_rules! impl_read_ops {
     ($ty:ident) => {
         impl ReadOps for $ty<'_> {
+            fn integration_recoveries(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<crate::store::IntegrationRecovery>, StoreError> {
+                integration_recovery::list(&self.conn, project)
+            }
             fn project_recoveries(
                 &self,
                 project: ProjectId,
@@ -1373,6 +1380,19 @@ impl WriteOps for SqliteWriteTx<'_> {
         record: &crate::store::ProjectRecovery,
     ) -> Result<bool, StoreError> {
         project_recovery::insert(&self.conn, record)
+    }
+    fn insert_integration_recovery(
+        &mut self,
+        record: &crate::store::IntegrationRecovery,
+    ) -> Result<bool, StoreError> {
+        integration_recovery::insert(&self.conn, record)
+    }
+    fn update_integration_recovery(
+        &mut self,
+        record: &crate::store::IntegrationRecovery,
+        expected: i64,
+    ) -> Result<bool, StoreError> {
+        integration_recovery::update(&self.conn, record, expected)
     }
     fn update_project_recovery(
         &mut self,

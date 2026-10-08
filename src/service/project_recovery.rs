@@ -57,6 +57,8 @@ pub use status::RecoveryStatus;
 pub(crate) use status::snapshot as status_snapshot;
 pub use work::{WorkDelivery, WorkKind, WorkStatus};
 pub use work_holds::WorkHold;
+pub(crate) use authority::label_revision as recovery_label_revision;
+pub(crate) use resume::resource_hold as recovery_resource_hold;
 
 /// Coordinates project recovery using the selected project's ordinary story transactions.
 pub struct ProjectRecoveryService<'a, S: Store> {

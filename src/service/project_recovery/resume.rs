@@ -91,7 +91,7 @@ pub(super) fn eligible(
     ))
 }
 
-pub(super) fn resource_hold(
+pub(crate) fn resource_hold(
     tx: &impl ReadOps,
     project: ProjectId,
     story: StoryNo,

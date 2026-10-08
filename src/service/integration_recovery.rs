@@ -16,6 +16,12 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{path::Path, time::Instant};
+mod owner;
+mod submission;
+pub use owner::{AssemblyClaim, IntegrationOwner, IntegrationOwnerService, IntegrationPhase};
+pub use submission::{
+    BoundInspection, BoundIntegrationProposal, SubmissionObservation, inspect_submission,
+};
 
 /// No single-submission integration is enabled by default or by `[batch]`.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -204,3 +204,40 @@ fn cancelled_single_inspection_creates_no_repository_effects() {
     );
     assert_eq!(f.snapshot(), before);
 }
+
+mod owner;
+
+#[test]
+fn integration_native_origin_inspection_honors_existing_deadline_and_cancellation() {
+    let f = Fixture::new(
+        SINGLE,
+        "docs/guide.md",
+        b"start\nbase\nend\n",
+        b"start\nauthor\nend\n",
+    );
+    git(
+        f.root.path(),
+        &[
+            "config",
+            "remote.origin.url",
+            "https://github.com/acme/widgets.git",
+        ],
+    );
+    let before = f.snapshot();
+    let expired = Instant::now() - Duration::from_secs(1);
+    assert!(
+        crate::github_access::Repository::resolve_controlled(f.root.path(), expired, &|| false)
+            .is_err(),
+        "origin subquery renewed an expired operation deadline"
+    );
+    assert!(
+        crate::github_access::Repository::resolve_controlled(
+            f.root.path(),
+            Instant::now() + Duration::from_secs(30),
+            &|| true
+        )
+        .is_err(),
+        "origin inspection ignored its owner cancellation"
+    );
+    assert_eq!(f.snapshot(), before);
+}

@@ -1,0 +1,382 @@
+//! Real local Git proposals and durable store boundaries; no remote effects.
+use super::*;
+use crate::{
+    env::Environment,
+    service::{
+        Ctx, NewStoryInput, PrLinkService, StoryService, VerificationCandidate, VerificationQueue,
+        attribution::{AttributionRecord, FailureCause, FailureComponent},
+    },
+    store::{
+        GateAttempt, GateInputs, GateSubmission, ProjectId, ReadOps, SqliteStore, Store, WriteOps,
+    },
+};
+
+const AT: &str = "2026-10-05T00:00:00Z";
+
+struct OwnedFixture {
+    native: Fixture,
+    fixture: storyhook_test_support::ServiceFixture,
+    store: SqliteStore,
+    candidate: VerificationCandidate,
+}
+
+impl OwnedFixture {
+    fn new(settled: bool) -> Self {
+        let native = Fixture::new(
+            SINGLE,
+            "docs/guide.md",
+            b"start\nbase addition\nend\n",
+            b"start\nauthor addition\nend\n",
+        );
+        let fixture = storyhook_test_support::ServiceFixture::new();
+        fixture.github_checkout_at(
+            fixture.project(),
+            native.root.path(),
+            "https://github.com/acme/widgets.git",
+        );
+        let store = SqliteStore::open(fixture.store().path()).unwrap();
+        let project = ProjectId::new(fixture.project().get());
+        let ctx = Ctx::new(
+            &store,
+            project,
+            native.root.path(),
+            Environment::at(fixture.cwd()),
+        )
+        .no_hooks(true);
+        let id = StoryService::new(&ctx)
+            .create(&NewStoryInput {
+                title: "retained integration submission".into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .id;
+        PrLinkService::new(&ctx)
+            .link(&id, "https://github.com/acme/widgets/pull/7", true)
+            .unwrap();
+        StoryService::new(&ctx)
+            .set_state(&id, "verifying", None, None, None)
+            .unwrap();
+        let candidate = VerificationQueue::new(&store).next().unwrap().unwrap();
+        let submission = GateSubmission {
+            project,
+            story_id: id,
+            generation: candidate.verifying_generation,
+            submitted_at: candidate.verifying_since.clone(),
+        };
+        let mut attempt = GateAttempt::new("original-conflict".into(), submission.clone(), AT);
+        attempt.control_revision = Some(
+            store
+                .read(|tx| tx.verification_control_revision(project))
+                .unwrap(),
+        );
+        if settled {
+            attempt.finished_at = Some(AT.into());
+            attempt.verdict = Some("conflict".into());
+        }
+        let record = AttributionRecord {
+            version: 1,
+            id: "original-attribution".into(),
+            revision: 0,
+            submission,
+            attempt: attempt.id.clone(),
+            inputs: GateInputs {
+                head: Some(native.head.clone()),
+                base: Some(native.base.clone()),
+                ..Default::default()
+            },
+            created_at: AT.into(),
+            components: vec![FailureComponent {
+                id: "integration".into(),
+                check: "native-merge".into(),
+                signature: "insertions conflict".into(),
+                requirement: "both original parents must be preserved".into(),
+                log: "retained native merge fixture".into(),
+                observed_cause: FailureCause::Integration,
+            }],
+            preparation: None,
+            settlement: None,
+            plans: vec![],
+            probes: vec![],
+            assessments: vec![],
+            diagnosis_ms: 0,
+            held: true,
+            retired: None,
+        };
+        store
+            .write(|tx| {
+                tx.insert_gate_attempt(&attempt)?;
+                tx.insert_attribution(&record)
+            })
+            .unwrap();
+        Self {
+            native,
+            fixture,
+            store,
+            candidate,
+        }
+    }
+
+    fn ctx(&self) -> Ctx<'_, SqliteStore> {
+        Ctx::new(
+            &self.store,
+            self.candidate.project,
+            self.native.root.path(),
+            Environment::at(self.fixture.cwd()),
+        )
+        .no_hooks(true)
+    }
+
+    fn proof(&self) -> BoundIntegrationProposal {
+        let Inspection::Proposed(proposal) = self.native.inspect() else {
+            panic!("real Git conflict was not smoothable")
+        };
+        // Only the native metadata adapter is substituted by this in-module fixture;
+        // the resolution capability comes from real private Git inspection.
+        BoundIntegrationProposal {
+            proposal,
+            submission: SubmissionObservation {
+                checkout: self.candidate.checkout.clone(),
+                repository: "github.com/acme/widgets".into(),
+                pull_request: "https://github.com/acme/widgets/pull/7".into(),
+                base_branch: "dev".into(),
+                base: self.native.base.clone(),
+                head: self.native.head.clone(),
+            },
+        }
+    }
+
+    fn reserve(&self, proof: &BoundIntegrationProposal) -> crate::store::IntegrationRecovery {
+        IntegrationOwnerService::new(&self.ctx())
+            .reserve(
+                &self.candidate,
+                "original-attribution",
+                "integration",
+                proof,
+            )
+            .unwrap()
+    }
+}
+
+#[test]
+fn integration_claim_survives_restart_without_replaying_or_rewriting_submission() {
+    let f = OwnedFixture::new(true);
+    let before = f.native.snapshot();
+    let proof = f.proof();
+    let record = f.reserve(&proof);
+    assert_eq!(
+        f.reserve(&proof),
+        record,
+        "reservation replay created a second owner/comment"
+    );
+    let reopened = SqliteStore::open(f.store.path()).unwrap();
+    let ctx = Ctx::new(
+        &reopened,
+        f.candidate.project,
+        f.native.root.path(),
+        Environment::at(f.fixture.cwd()),
+    )
+    .no_hooks(true);
+    let service = IntegrationOwnerService::new(&ctx);
+    let claim = service
+        .claim_assembly(&record.id, 0, &proof)
+        .unwrap()
+        .unwrap();
+    assert!(service.assembly_permitted(&claim, &proof).unwrap());
+    assert!(
+        service
+            .claim_assembly(&record.id, 0, &proof)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        service
+            .claim_assembly(&record.id, 1, &proof)
+            .unwrap()
+            .is_none(),
+        "restart replayed an uncertain external operation"
+    );
+    let (_, owner) = service.show(&record.id).unwrap();
+    assert_eq!(owner.started_at, AT);
+    assert_eq!(owner.effect_epoch, 1);
+    assert_eq!(
+        owner.candidate.verifying_generation,
+        f.candidate.verifying_generation
+    );
+    assert_eq!(owner.phase, IntegrationPhase::Assembling);
+    assert!(VerificationQueue::new(&reopened).next().unwrap().is_none());
+    proof.settle().unwrap();
+    assert_eq!(
+        f.native.snapshot(),
+        before,
+        "reservation or claim changed Git source/ref/object custody"
+    );
+}
+
+#[test]
+fn integration_claim_refuses_unfinished_cleanup_and_manual_control_changes() {
+    for mode in [
+        "unfinished",
+        "manual-off",
+        "stopped",
+        "label-episode",
+        "changed-generation",
+    ] {
+        let f = OwnedFixture::new(mode != "unfinished");
+        let proof = f.proof();
+        let record = f.reserve(&proof);
+        let ctx = f.ctx();
+        match mode {
+            "manual-off" => f
+                .store
+                .write(|tx| {
+                    let mut settings = tx.settings(f.candidate.project)?;
+                    settings.automations_enabled = Some(false);
+                    tx.put_settings(f.candidate.project, &settings)
+                })
+                .unwrap(),
+            "stopped" => f
+                .store
+                .write(|tx| tx.put_verification_enabled(f.candidate.project, false))
+                .unwrap(),
+            "label-episode" => {
+                let stories = StoryService::new(&ctx);
+                stories
+                    .set_labels(&f.candidate.story_id, &["no-auto".into()], &[])
+                    .unwrap();
+                stories
+                    .set_labels(&f.candidate.story_id, &[], &["no-auto".into()])
+                    .unwrap();
+            }
+            "changed-generation" => {
+                let stories = StoryService::new(&ctx);
+                stories
+                    .set_state(&f.candidate.story_id, "in-progress", None, None, None)
+                    .unwrap();
+                stories
+                    .set_state(&f.candidate.story_id, "verifying", None, None, None)
+                    .unwrap();
+            }
+            _ => {}
+        }
+        let service = IntegrationOwnerService::new(&ctx);
+        assert!(
+            service.claim_assembly(&record.id, 0, &proof).is_err(),
+            "admitted {mode}"
+        );
+        assert_eq!(
+            service.show(&record.id).unwrap().0,
+            record,
+            "refusal consumed or replaced owner for {mode}"
+        );
+        proof.settle().unwrap();
+    }
+}
+
+#[test]
+fn integration_claim_rechecks_exact_policy_inputs_and_revokes_cached_effect() {
+    let f = OwnedFixture::new(true);
+    let mut proof = f.proof();
+    let record = f.reserve(&proof);
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let original = proof.submission.clone();
+    proof.submission.head = "f".repeat(40);
+    assert!(service.claim_assembly(&record.id, 0, &proof).is_err());
+    proof.submission = original;
+    let old_policy = proof.proposal.plan.policy.clone();
+    proof.proposal.plan.policy = "e".repeat(64);
+    assert!(service.claim_assembly(&record.id, 0, &proof).is_err());
+    proof.proposal.plan.policy = old_policy;
+    let claim = service
+        .claim_assembly(&record.id, 0, &proof)
+        .unwrap()
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_awaiting(&f.candidate.story_id, "operator retains original work")
+        .unwrap();
+    assert!(
+        service.assembly_permitted(&claim, &proof).is_err(),
+        "cached capability bypassed an operator hold"
+    );
+    assert_eq!(service.show(&record.id).unwrap().1.effect_epoch, 1);
+    proof.settle().unwrap();
+}
+
+#[test]
+fn integration_store_fences_duplicate_owner_stale_revision_and_identity_replacement() {
+    let f = OwnedFixture::new(true);
+    let proof = f.proof();
+    let record = f.reserve(&proof);
+    let mut duplicate = record.clone();
+    duplicate.id = uuid::Uuid::new_v4().simple().to_string();
+    assert!(
+        !f.store
+            .write(|tx| tx.insert_integration_recovery(&duplicate))
+            .unwrap()
+    );
+    let mut next = record.clone();
+    next.revision = 1;
+    next.state["hold"] = serde_json::json!("opaque persistence fixture");
+    assert!(
+        f.store
+            .write(|tx| tx.update_integration_recovery(&next, 0))
+            .unwrap()
+    );
+    assert!(
+        !f.store
+            .write(|tx| tx.update_integration_recovery(&next, 0))
+            .unwrap()
+    );
+    let mut replaced = next.clone();
+    replaced.generation = crate::store::GlobalSeq::new(next.generation.get() + 1);
+    replaced.revision = 2;
+    assert!(
+        !f.store
+            .write(|tx| tx.update_integration_recovery(&replaced, 1))
+            .unwrap()
+    );
+    next.revision = 2;
+    next.active = false;
+    assert!(
+        f.store
+            .write(|tx| tx.update_integration_recovery(&next, 1))
+            .unwrap()
+    );
+    next.revision = 3;
+    next.active = true;
+    assert!(
+        !f.store
+            .write(|tx| tx.update_integration_recovery(&next, 2))
+            .unwrap()
+    );
+    proof.settle().unwrap();
+}
+
+#[test]
+fn integration_owner_retains_history_when_original_story_is_manually_closed() {
+    let f = OwnedFixture::new(true);
+    let proof = f.proof();
+    let record = f.reserve(&proof);
+    let ctx = f.ctx();
+    let stories = StoryService::new(&ctx);
+    stories
+        .set_state(
+            &f.candidate.story_id,
+            "done",
+            Some("manual closure is not native integration landing"),
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(
+        stories
+            .delete(&f.candidate.story_id)
+            .unwrap_err()
+            .to_string()
+            .contains("integration recovery")
+    );
+    let service = IntegrationOwnerService::new(&ctx);
+    assert_eq!(service.show(&record.id).unwrap().0, record);
+    assert!(service.claim_assembly(&record.id, 0, &proof).is_err());
+    proof.settle().unwrap();
+}
