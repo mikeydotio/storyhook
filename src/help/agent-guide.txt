@@ -47,7 +47,8 @@ Write with care
 - story move <id> <state> --if-state <expected> guards a state transition.
   Exit 9 means the current state differs. Read the story and reassess.
 - story set changes several fields together. Read its help for supported
-  fields. Its --json <object> is input; a separate --json requests JSON output.
+  fields. Use --input-json <object> for JSON input. Legacy --json <object>
+  remains supported; a separate --json requests JSON output. Choose one input form.
 - story block <id> --on <blocker-id> "reason" records a dependency. A reason
   without --on does not clear itself when another story closes.
 - To file a new story that must wait on another, name the blocker when you

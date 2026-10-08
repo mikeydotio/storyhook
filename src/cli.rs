@@ -393,7 +393,7 @@ Usage:
   story set <id> [--title "<title>"] [--state <slug>] [--priority <level>]
                  [--complexity low|medium|high]
                   [--labels "<csv>"] [--blocked "<reason>"]
-                  [--unblocked] [--json "<json>"] [--type <slug>]
+                  [--unblocked] [--input-json "<object>" | --json "<object>"] [--type <slug>]
                   [--description "<text>"]
   story relate <a> <relationship-type> <b>
   story unrelate <a> <relationship-type> <b>
@@ -1676,6 +1676,8 @@ pub struct GlobalFlags {
 pub fn split_global_flags(args: &[String]) -> Result<(GlobalFlags, Vec<String>), AppError> {
     let mut flags = GlobalFlags::default();
     let mut filtered = Vec::new();
+    let mut explicit_set_input = false;
+    let mut legacy_set_input_candidate = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -1690,7 +1692,26 @@ pub fn split_global_flags(args: &[String]) -> Result<(GlobalFlags, Vec<String>),
             break;
         }
         match args[i].as_str() {
+            "--input-json" if set_option_position(&filtered) => {
+                explicit_set_input = true;
+                filtered.push(args[i].clone());
+                if let Some(value) = args.get(i + 1) {
+                    // This is input even when empty or shaped like a global
+                    // flag. Let the JSON validator report malformed input.
+                    filtered.push(value.clone());
+                    i += 2;
+                    continue;
+                }
+            }
             "--json" => {
+                if set_option_position(&filtered)
+                    && args.get(i + 1).is_some_and(|value| !value.starts_with('-'))
+                {
+                    // In a set option position a following non-option is an
+                    // attempted legacy input, even if malformed or empty.
+                    // This affects only calls that opt into --input-json.
+                    legacy_set_input_candidate = true;
+                }
                 // If --json is followed by a JSON object literal, treat it as a
                 // subcommand-specific --json <value> (e.g. `story set SH-1 --json '{...}'`)
                 // rather than the global JSON-output flag.
@@ -1771,7 +1792,38 @@ pub fn split_global_flags(args: &[String]) -> Result<(GlobalFlags, Vec<String>),
         i += 1;
     }
 
+    if explicit_set_input && legacy_set_input_candidate {
+        return Err(set_json_input_conflict());
+    }
     Ok((flags, filtered))
+}
+
+/// Is the next token an option, rather than a value, in `set <id> ...`?
+/// Globals already removed from this prefix do not affect its positions.
+fn set_option_position(args: &[String]) -> bool {
+    if args.first().map(String::as_str) != Some("set") || args.len() < 2 {
+        return false;
+    }
+    let declared = declared_flags(args).unwrap_or(&[]);
+    let mut index = 2;
+    while index < args.len() {
+        let Some(name) = args[index].strip_prefix("--") else {
+            return false;
+        };
+        let Some(flag) = declared.iter().find(|flag| flag.name == name) else {
+            return false;
+        };
+        index += if flag.takes_value { 2 } else { 1 };
+    }
+    index == args.len()
+}
+
+fn set_json_input_conflict() -> AppError {
+    AppError::Usage(
+        "choose one JSON input: --input-json <object> or legacy --json <object>, not both. \
+         Use a separate --json with no value to request JSON output."
+            .to_string(),
+    )
 }
 
 /// The error for `--deadline` given no value at all.
@@ -2138,6 +2190,7 @@ static VERB_FLAGS: &[VerbFlags] = &[
             value("labels"),
             value("blocked"),
             value("json"),
+            value("input-json"),
             value("type"),
             value("description"),
             bare("unblocked"),
@@ -5818,10 +5871,11 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
     let mut blocked = None;
     let mut unblocked = false;
     let mut json = None;
+    let mut explicit_json = false;
     let mut story_type = None;
     let mut description = None;
     let mut index = 2;
-    let usage = "usage: story set <id> [--title \"<title>\"] [--state <slug>] [--priority <level>] [--complexity low|medium|high] [--labels \"<csv>\"] [--blocked \"<reason>\"] [--unblocked] [--json \"<json>\"] [--type <slug>] [--description \"<text>\"]";
+    let usage = "usage: story set <id> [--title \"<title>\"] [--state <slug>] [--priority <level>] [--complexity low|medium|high] [--labels \"<csv>\"] [--blocked \"<reason>\"] [--unblocked] [--input-json \"<object>\" | --json \"<object>\"] [--type <slug>] [--description \"<text>\"]";
 
     while index < args.len() {
         match args[index].as_str() {
@@ -5872,11 +5926,16 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
                 unblocked = true;
                 index += 1;
             }
-            "--json" => {
+            "--json" | "--input-json" => {
+                let is_explicit = args[index] == "--input-json";
+                if json.is_some() && (explicit_json || is_explicit) {
+                    return Err(set_json_input_conflict());
+                }
                 let value = args
                     .get(index + 1)
                     .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 json = Some(value.clone());
+                explicit_json = is_explicit;
                 index += 2;
             }
             "--type" => {
