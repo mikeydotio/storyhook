@@ -30,7 +30,7 @@ impl MemberLocks {
         members: &[(StoryNo, String)],
     ) -> Result<(Self, Vec<String>), AppError> {
         Self::acquire_with_bound(
-            crate::testing::load_grace::graced_now(std::time::Duration::from_secs(30)),
+            storyhook_test_support::load_grace::graced_now(std::time::Duration::from_secs(30)),
             checkout,
             members,
         )

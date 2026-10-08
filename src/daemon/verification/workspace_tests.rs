@@ -517,7 +517,7 @@ PY
 fn sh846_default_control_inherits_patience_but_explicit_deadlines_remain_literal() {
     let root = tempfile::tempdir().unwrap();
     let env = Environment::at(root.path()).with_subprocess_patience_under(2.0);
-    let expected = crate::testing::load_grace::graced_by(DISPATCH_TIMEOUT, Some(2.0));
+    let expected = storyhook_test_support::load_grace::graced_by(DISPATCH_TIMEOUT, Some(2.0));
     assert!(expected > DISPATCH_TIMEOUT);
     assert_eq!(
         ShellVerificationActuator::new(env.clone()).control_bound(),

@@ -757,7 +757,7 @@ fn canonical(path: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 fn git(cwd: &Path, args: &[&str]) -> Result<Captured, String> {
     git_with_bound(
-        crate::testing::load_grace::graced_now(Duration::from_secs(60)),
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(60)),
         cwd,
         args,
     )
@@ -772,7 +772,7 @@ fn git_with_bound(bound: Duration, cwd: &Path, args: &[&str]) -> Result<Captured
 #[cfg(test)]
 fn git_text(cwd: &Path, args: &[&str]) -> Result<String, String> {
     git_text_with_bound(
-        crate::testing::load_grace::graced_now(Duration::from_secs(60)),
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(60)),
         cwd,
         args,
     )

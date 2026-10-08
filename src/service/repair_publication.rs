@@ -117,7 +117,7 @@ pub(crate) fn guard_merged_pr<S: Store>(
 #[cfg(test)]
 fn guard_tip(repository: &Path, branch: &str, merged_head: &str) -> Result<(), AppError> {
     guard_tip_with_bound(
-        crate::testing::load_grace::graced_now(std::time::Duration::from_secs(60)),
+        storyhook_test_support::load_grace::graced_now(std::time::Duration::from_secs(60)),
         repository,
         branch,
         merged_head,

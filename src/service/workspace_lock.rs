@@ -36,7 +36,7 @@ impl WorkspaceLock {
     #[cfg(test)]
     pub(crate) fn try_acquire(checkout: &Path, id: &str) -> Result<Option<Self>, AppError> {
         Self::try_acquire_with_bound(
-            crate::testing::load_grace::graced_now(Duration::from_secs(30)),
+            storyhook_test_support::load_grace::graced_now(Duration::from_secs(30)),
             checkout,
             id,
         )
@@ -172,7 +172,7 @@ pub(crate) fn git(
     lock: Option<&WorkspaceLock>,
 ) -> Result<String, AppError> {
     git_with_bound(
-        crate::testing::load_grace::graced_now(Duration::from_secs(30)),
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(30)),
         checkout,
         args,
         lock,
