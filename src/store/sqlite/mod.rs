@@ -971,6 +971,12 @@ macro_rules! impl_read_ops {
             ) -> Result<Vec<crate::store::IntegrationRecovery>, StoreError> {
                 integration_recovery::list(&self.conn, project)
             }
+            fn integration_pending(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<crate::store::IntegrationPending>, StoreError> {
+                integration_recovery::pending(&self.conn, project)
+            }
             fn project_recoveries(
                 &self,
                 project: ProjectId,
@@ -1415,6 +1421,12 @@ impl WriteOps for SqliteWriteTx<'_> {
         record: &crate::store::IntegrationRecovery,
     ) -> Result<bool, StoreError> {
         integration_recovery::insert(&self.conn, record)
+    }
+    fn insert_integration_pending(
+        &mut self,
+        record: &crate::store::IntegrationPending,
+    ) -> Result<(), StoreError> {
+        integration_recovery::insert_pending(&self.conn, record)
     }
     fn update_integration_recovery(
         &mut self,

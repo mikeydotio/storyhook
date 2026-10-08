@@ -53,3 +53,15 @@ CREATE TABLE host_recovery_pending (
 );
 CREATE TRIGGER host_pending_immutable BEFORE UPDATE ON host_recovery_pending
     BEGIN SELECT RAISE(ABORT, 'pending native host custody is immutable'); END;
+
+-- An uninspected conflict retains original custody without granting effects.
+CREATE TABLE integration_pending (
+    id TEXT PRIMARY KEY NOT NULL CHECK(length(id)>0),
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+    story_no INTEGER NOT NULL,
+    generation INTEGER NOT NULL CHECK(generation>0),
+    evidence TEXT NOT NULL CHECK(json_valid(evidence) AND json_type(evidence)='object'),
+    FOREIGN KEY(project_id,story_no) REFERENCES stories(project_id,story_no) ON DELETE RESTRICT
+);
+CREATE TRIGGER integration_pending_immutable BEFORE UPDATE ON integration_pending
+    BEGIN SELECT RAISE(ABORT, 'pending integration custody is immutable'); END;

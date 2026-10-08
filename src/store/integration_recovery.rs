@@ -21,3 +21,20 @@ pub struct IntegrationRecovery {
     /// Strict service lifecycle; serialized evidence cannot mint native proof.
     pub state: serde_json::Value,
 }
+
+/// Immutable original conflict custody awaiting native policy inspection.
+/// This record is an observation, never permission to assemble or publish.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntegrationPending {
+    /// Exact original attribution identity.
+    pub id: String,
+    /// Owning project.
+    pub project: ProjectId,
+    /// Original submitted story.
+    pub story: StoryNo,
+    /// Original submitted generation.
+    pub generation: GlobalSeq,
+    /// Strict retained candidate/operator/evidence observation.
+    pub evidence: serde_json::Value,
+}

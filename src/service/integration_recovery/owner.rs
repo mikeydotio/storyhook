@@ -175,6 +175,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
             let retained = tx.attributions(candidate.project)?.into_iter().find(|record| record.id == attribution)
                 .ok_or_else(|| invalid("original attribution is missing"))?;
             retained.validate()?;
+            super::pending::validate_retained(tx, candidate, &retained)?;
             if !retained.held || retained.retired.is_some() || retained.has_unsettled_diagnosis()
                 || retained.submission.project != candidate.project
                 || retained.submission.story_number() != Some(story)
@@ -382,7 +383,10 @@ fn same_original_pr(candidate: &VerificationCandidate, submission: &SubmissionOb
         ))
 }
 
-fn check_candidate(tx: &impl ReadOps, candidate: &VerificationCandidate) -> Result<(), StoreError> {
+pub(super) fn check_candidate(
+    tx: &impl ReadOps,
+    candidate: &VerificationCandidate,
+) -> Result<(), StoreError> {
     let prefix = crate::service::project_prefix(tx, candidate.project)?;
     let story = StoryNo::parse_id(&prefix, &candidate.story_id)?;
     let row = tx

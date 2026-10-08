@@ -18,6 +18,8 @@ use sha2::{Digest, Sha256};
 use std::{path::Path, time::Instant};
 mod assembly;
 mod owner;
+mod pending;
+pub(crate) use pending::{retain as retain_conflict_observation, subjects as pending_subjects};
 mod submission;
 pub use assembly::{AssemblyEvidence, NativeAssembly, assemble_owned};
 pub use owner::IntegrationRecoveryStatus;

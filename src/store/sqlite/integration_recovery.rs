@@ -1,5 +1,7 @@
 //! SQLite identity and revision guards for single integration owners.
-use crate::store::{GlobalSeq, IntegrationRecovery, ProjectId, StoreError, StoryNo};
+use crate::store::{
+    GlobalSeq, IntegrationPending, IntegrationRecovery, ProjectId, StoreError, StoryNo,
+};
 use rusqlite::{Connection, params};
 
 pub(super) fn list(
@@ -78,4 +80,63 @@ pub(super) fn update(
     Ok(conn.execute("UPDATE integration_recoveries SET revision=?1,active=?2,state=?3 WHERE id=?4 AND project_id=?5 AND story_no=?6 AND generation=?7 AND revision=?8 AND (active=1 OR ?2=0)",
         params![record.revision, record.active, record.state.to_string(), record.id, record.project.get(), record.story.get(), record.generation.get(), expected])
         .map_err(|e| StoreError::from_sqlite(e, "updating integration ownership"))? == 1)
+}
+
+pub(super) fn pending(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<Vec<IntegrationPending>, StoreError> {
+    if !crate::store::migrate::has_columns(
+        conn,
+        "integration_pending",
+        &["id", "project_id", "story_no", "generation", "evidence"],
+    )? {
+        return Ok(Vec::new());
+    }
+    let mut statement = conn.prepare("SELECT id,story_no,generation,evidence FROM integration_pending WHERE project_id=?1 ORDER BY rowid").map_err(|e| StoreError::from_sqlite(e,"reading pending integration custody"))?;
+    let rows = statement
+        .query_map([project.get()], |row| {
+            let raw: String = row.get(3)?;
+            let evidence = serde_json::from_str(&raw).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+            Ok(IntegrationPending {
+                id: row.get(0)?,
+                project,
+                story: row.get(1)?,
+                generation: row.get(2)?,
+                evidence,
+            })
+        })
+        .map_err(|e| StoreError::from_sqlite(e, "querying pending integration custody"))?;
+    rows.collect::<Result<_, _>>()
+        .map_err(|e| StoreError::from_sqlite(e, "decoding pending integration custody"))
+}
+pub(super) fn insert_pending(
+    conn: &Connection,
+    record: &IntegrationPending,
+) -> Result<(), StoreError> {
+    if record.id.is_empty() || !record.evidence.is_object() {
+        return Err(StoreError::Validation(
+            "pending integration custody lacks identity/evidence".into(),
+        ));
+    }
+    if let Some(previous) = pending(conn, record.project)?
+        .iter()
+        .find(|p| p.id == record.id)
+    {
+        return if previous == record {
+            Ok(())
+        } else {
+            Err(StoreError::Validation(
+                "pending integration custody cannot be replaced".into(),
+            ))
+        };
+    }
+    conn.execute("INSERT INTO integration_pending(id,project_id,story_no,generation,evidence) VALUES(?1,?2,?3,?4,?5)",params![record.id,record.project.get(),record.story,record.generation,record.evidence.to_string()]).map_err(|e|StoreError::from_sqlite(e,"retaining pending integration custody"))?;
+    Ok(())
 }

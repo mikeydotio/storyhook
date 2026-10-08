@@ -68,7 +68,7 @@ pub mod project_recovery;
 pub use block_delivery::{BlockAction, BlockDelivery, DeliveryStatus};
 pub use continuation::{Continuation, ContinuationPhase, ContinuationStatus};
 pub use host_recovery::{HostRecovery, HostRecoveryPending};
-pub use integration_recovery::IntegrationRecovery;
+pub use integration_recovery::{IntegrationPending, IntegrationRecovery};
 pub use project_recovery::{ProjectRecovery, ProjectRecoveryObservation};
 pub mod conformance;
 mod dropped_cleanup;
@@ -328,6 +328,11 @@ pub trait ReadOps {
         &self,
         project: ProjectId,
     ) -> Result<Vec<IntegrationRecovery>, StoreError>;
+    /// Immutable original integration holds, without publication authority.
+    fn integration_pending(
+        &self,
+        project: ProjectId,
+    ) -> Result<Vec<IntegrationPending>, StoreError>;
     /// Project-fault coordinators in creation order, including retained history.
     fn project_recoveries(&self, project: ProjectId) -> Result<Vec<ProjectRecovery>, StoreError>;
     /// Immutable observations belonging to this project and recovery identity.
@@ -707,6 +712,9 @@ pub trait WriteOps: ReadOps {
         &mut self,
         record: &IntegrationRecovery,
     ) -> Result<bool, StoreError>;
+    /// Record immutable conflict custody; exact replay is idempotent.
+    fn insert_integration_pending(&mut self, record: &IntegrationPending)
+    -> Result<(), StoreError>;
     /// Advance state once, preserving project, story and original generation.
     fn update_integration_recovery(
         &mut self,
