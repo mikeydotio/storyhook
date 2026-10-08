@@ -341,6 +341,75 @@ fn shared_test_output_parser_preserves_ledger_identity_and_ignores_chatter() {
 }
 
 #[test]
+fn shared_test_output_parser_handles_verbose_commands_and_refuses_unknown_targets() {
+    let input = concat!(
+        "     Running tests/alpha.rs (target/debug/deps/alpha-0123456789abcdef)\n",
+        "test normal ... ok\n",
+        "     Running `'/tmp/path with spaces/target/debug/deps/alpha-0123456789abcdef' --test-threads=1`\n",
+        "test verbose ... FAILED\n",
+        "     Running `/checkout/scripts/host-admit.py --entry cargo-test-binary -- /tmp/target/debug/deps/beta-fedcba9876543210 --exact named`\n",
+        "test wrapped ... ok\n",
+        "     Running `RUST_BACKTRACE=1 /tmp/target/debug/deps/hyphen-name-0123456789abcdef --test-threads=1`\n",
+        "test environment ... ok\n",
+        // Cargo's normal library source alias is preserved. Verbose output
+        // has only the crate executable identity, not enough to infer lib.rs.
+        "     Running unittests src/lib.rs (target/debug/deps/storyhook-0123456789abcdef)\n",
+        "test normal_library ... ok\n",
+        "     Running `/tmp/target/debug/deps/storyhook-0123456789abcdef --test-threads=1`\n",
+        "test verbose_library ... ok\n",
+        "     Running `rustc --crate-name stray --test tests/stray.rs --out-dir /tmp/target/debug/deps`\n",
+        "test compiler_chatter ... ok\n",
+        "     Running tests/previous.rs (target/previous)\n",
+        "     Running `/tmp/target/debug/build/fixture-0123456789abcdef/build-script-build`\n",
+        "test build_chatter ... ok\n",
+        "     Running tests/previous.rs (target/previous)\n",
+        "     Running `/tmp/target/debug/deps/beta-not-a-cargo-hash --test-threads=1`\n",
+        "test invalid_hash ... ok\n",
+        "     Running tests/previous.rs (target/previous)\n",
+        "     Running `/tmp/target/debug/deps/beta-fedcba9876543210 --test-threads=1\n",
+        "test unterminated ... ok\n",
+        "     Running tests/previous.rs (target/previous)\n",
+        "     Running `'/tmp/target/debug/deps/beta-fedcba9876543210`\n",
+        "test invalid_quoting ... ok\n",
+        "     Running tests/previous.rs (target/previous)\n",
+        "     Running `/checkout/scripts/host-admit.py --entry rustc -- /tmp/target/debug/deps/beta-fedcba9876543210`\n",
+        "test wrong_runner ... ok\n",
+        "     Running tests/previous.rs (target/previous)\n",
+        "     Running unknown command\n",
+        "test unknown_header ... ok\n",
+        "     Running tests/omega.rs (target/debug/deps/omega-0123456789abcdef)\n",
+        "  Executable `/tmp/target/debug/deps/not_running-fedcba9876543210`\n",
+        "test resumed ... ok\n",
+    );
+    let mut command = Command::new("python3");
+    command
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/scripts/test_output.py"
+        ))
+        .stdin(Stdio::piped());
+    let mut child = ChildGuard::spawn_with_output(&mut command)
+        .expect("starting the verbose test-output parser");
+    child.stdin().unwrap().write_all(input.as_bytes()).unwrap();
+    let output = child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "verbose test-output parser did not finish".into(),
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        concat!(
+            "alpha\tnormal\tPASS\nalpha\tverbose\tFAIL\nbeta\twrapped\tPASS\n",
+            "hyphen-name\tenvironment\tPASS\nlib\tnormal_library\tPASS\nstoryhook\tverbose_library\tPASS\n",
+            "(unknown)\tcompiler_chatter\tPASS\n(unknown)\tbuild_chatter\tPASS\n",
+            "(unknown)\tinvalid_hash\tPASS\n(unknown)\tunterminated\tPASS\n",
+            "(unknown)\tinvalid_quoting\tPASS\n(unknown)\twrong_runner\tPASS\n",
+            "(unknown)\tunknown_header\tPASS\nomega\tresumed\tPASS\n",
+        )
+    );
+}
+
+#[test]
 fn importing_the_shared_parser_does_not_dirty_the_checkout() {
     let root = scratch_dir();
     let scripts = root.path().join("scripts");
