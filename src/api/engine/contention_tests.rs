@@ -1,6 +1,6 @@
 //! SH-889: real separate SQLite handles contend inside one daemon.
 use super::*;
-use crate::store::{EngineRunState, StoreError, WriteOps};
+use crate::store::{EngineLaneState, EngineRunState, StoreError, WriteOps};
 use std::sync::mpsc;
 use std::time::Duration;
 
