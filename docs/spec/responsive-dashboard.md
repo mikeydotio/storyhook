@@ -247,6 +247,26 @@ merely cosmetic. The reset is now scoped with
 `:not(.section-toggle):not(.filter-toggle-btn)`, fixing both the new disclosure and a
 latent SH-169 sibling defect it shared the same shape with.
 
+### Held touch dragging (SH-893)
+
+SH-893 adds direct board dragging for touch devices, including iPad. Hold the
+card face still for 250 ms to pick it up, then move and release over a column.
+The floating title and destination highlight show the drag. Holding near an
+edge scrolls the board horizontally or the destination's cards vertically.
+Moving more than 8 CSS pixels before pickup leaves native scrolling in charge;
+a quick tap still opens details. Card text cannot be selected or invoke the iOS
+callout. Actions and relationship buttons retain their own taps.
+
+Touch and desktop drops share the existing state transition function, including
+same-column no-ops, the optional Blocked reason, and the required automation
+verification override. Closed or pending cards cannot be dragged. Cancellation,
+multiple fingers, blur, hidden tabs, changing board scope, or removal/change of
+the source story cancels the gesture without a move. Progressive replies remain
+free to paint after pickup; each frame and the final drop revalidate the source.
+The actions menu remains an alternative. WebKit/Chromium browser regressions
+cover event handling; Chromium additionally exercises trusted protocol touch
+movement. Physical iPad Safari gesture behavior still needs device verification.
+
 ### Touch drag-and-drop: the decision D9 asked for
 
 SH-256's own comment framed this precisely: "the context menu's Set Status is the
