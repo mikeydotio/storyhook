@@ -1123,6 +1123,35 @@ impl Store for WriteGateStore {
         result
     }
 
+    fn try_write<T>(
+        &self,
+        f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        let gated = self.write_index.fetch_add(1, Ordering::SeqCst) == self.gated_index;
+        if gated && !self.gate_after_commit {
+            self.entered.send(()).expect("announce gated engine write");
+            self.release
+                .lock()
+                .expect("write gate release mutex")
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    Duration::from_secs(5),
+                ))
+                .expect("release gated engine write");
+        }
+        let result = self.inner.try_write(f);
+        if gated && self.gate_after_commit {
+            self.entered.send(()).expect("announce gated engine write");
+            self.release
+                .lock()
+                .expect("write gate release mutex")
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    Duration::from_secs(5),
+                ))
+                .expect("release gated engine write");
+        }
+        result
+    }
+
     fn migrate(&self) -> Result<MigrationReport, StoreError> {
         self.inner.migrate()
     }

@@ -3068,3 +3068,39 @@ alike. The lane story and dependency graph are read in the same transaction,
 using the query projection's computed epic states. An open dependency produces
 `AgentBlocked` on steady and restart passes; closed or removed dependencies do
 not. Existing completion, verification and reserved-label precedence still applies.
+
+### SH-889: dashboard control writes under contention
+
+The HTTP engine controller keeps its owned store handle so per-connection
+workers remain outside the fixed REST dispatcher pool. Start, configure, pause,
+resume, graceful stop, acknowledgement and Stop Now admission use bounded
+transaction-admission patience on that handle. Read-only status and the agents
+census remain reads. Ordinary service callers retain their existing policy.
+
+The admission deadline is 60 seconds, matching card-reset reservation patience.
+The controller caps each SQLite busy timeout at five seconds (a shorter configured
+timeout remains shorter). A last SQLite admission attempt can therefore extend the
+retry budget by at most five seconds, below the dashboard's default 75-second
+mutation deadline. Local contention on the controller's shared store mutex
+returns a retryable admission refusal immediately; it cannot queue the request
+past this same deadline. These bounds govern contention retries, not arbitrary thread
+scheduling or Stop Now's durable resource cleanup.
+
+Only `Busy` returned before the control operation begins is retryable. After
+SQLite grants the transaction, the deadline is checked again before the control
+can apply. The control closure runs at most once; its error, commit error, or
+subsequent status-read failure is returned unchanged. The controller never repeats an entire service
+operation or post-commit hook. Stop Now's already-admitted cleanup and final writes
+retain their existing patient recovery rules.
+
+Start and resume recheck `automations.enabled` inside the admitted transaction.
+If a disable commits while a request waits, the request refuses without starting
+or resuming the run. Existing project, state, lane and ownership validation stays
+inside the same transaction.
+
+Regression coverage uses separate real SQLite handles: one holds a daemon write
+while the HTTP controller attempts each control. Added cases also cover a disable
+committed by that writer, admission deadline exhaustion, a `Busy` error after the
+closure starts, rollback without replay, nested-write refusal, local mutex
+contention, a controlled post-BEGIN scheduling delay, and the relationship to
+the dashboard mutation deadline.

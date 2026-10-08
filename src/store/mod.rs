@@ -193,6 +193,16 @@ pub trait Store: Send + Sync + 'static {
         f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
     ) -> Result<T, StoreError>;
 
+    /// Runs one write attempt without queuing behind another writer on this
+    /// handle. Returns `Busy` without invoking `f` if local admission is held.
+    /// The database may still wait up to its configured busy timeout. Callers
+    /// own any retry/deadline policy, and must never replay an invoked closure.
+    /// Nested writes and read-only stores retain the ordinary write refusal.
+    fn try_write<T>(
+        &self,
+        f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError>;
+
     /// Brings the database up to the schema version this binary understands,
     /// taking a verified backup first if anything is pending.
     fn migrate(&self) -> Result<MigrationReport, StoreError>;

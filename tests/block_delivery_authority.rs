@@ -355,6 +355,21 @@ impl Store for ClaimWriteGate {
         }
         self.inner.write(f)
     }
+    fn try_write<T>(
+        &self,
+        f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, storyhook::store::StoreError>,
+    ) -> Result<T, storyhook::store::StoreError> {
+        let release = self.release.lock().unwrap().take();
+        if let Some(release) = release {
+            self.entered.send(()).expect("announce the claim write");
+            release
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    Duration::from_secs(5),
+                ))
+                .expect("release the claim write");
+        }
+        self.inner.try_write(f)
+    }
     fn migrate(&self) -> Result<storyhook::store::MigrationReport, storyhook::store::StoreError> {
         self.inner.migrate()
     }
