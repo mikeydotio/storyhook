@@ -3,6 +3,13 @@
 use super::*;
 
 fn assembled(f: &OwnedFixture, proof: &BoundIntegrationProposal) -> AssembledIntegration {
+    assembled_with_id(f, proof).1
+}
+
+fn assembled_with_id(
+    f: &OwnedFixture,
+    proof: &BoundIntegrationProposal,
+) -> (String, AssembledIntegration) {
     let record = f.reserve(proof);
     let ctx = f.ctx();
     let service = IntegrationOwnerService::new(&ctx);
@@ -12,10 +19,11 @@ fn assembled(f: &OwnedFixture, proof: &BoundIntegrationProposal) -> AssembledInt
         .unwrap();
     let native =
         assemble_owned(&service, &claim, proof, proof.deadline, &proof.cancellation).unwrap();
-    service
+    let ready = service
         .accept_assembly(claim, native, proof)
         .unwrap()
-        .unwrap()
+        .unwrap();
+    (record.id, ready)
 }
 
 fn proof(f: &OwnedFixture) -> BoundIntegrationProposal {
@@ -1497,10 +1505,10 @@ fn managed_completed_owner_retains_cleanup_failure_without_reactivating_effects(
 fn retained_branch_diagnostic_cannot_replace_owner_custody_or_claim_landing() {
     let f = OwnedFixture::new(true);
     let proof = proof(&f);
-    let ready = assembled(&f, &proof);
+    let (id, _ready) = assembled_with_id(&f, &proof);
     let ctx = f.ctx();
     let service = IntegrationOwnerService::new(&ctx);
-    let before = service.show(ready.id()).unwrap();
+    let before = service.show(&id).unwrap();
     let assembly = before.1.assembly.as_ref().unwrap();
     let observed = RetainedBranchObservation {
         version: 1,
@@ -1524,18 +1532,18 @@ fn retained_branch_diagnostic_cannot_replace_owner_custody_or_claim_landing() {
         }
         assert!(
             service
-                .record_branch_observation(ready.id(), before.0.revision, &other)
+                .record_branch_observation(&id, before.0.revision, &other)
                 .is_err(),
             "{changed}"
         );
-        assert_eq!(service.show(ready.id()).unwrap(), before);
+        assert_eq!(service.show(&id).unwrap(), before);
     }
     assert!(
         service
-            .record_branch_observation(ready.id(), before.0.revision, &observed)
+            .record_branch_observation(&id, before.0.revision, &observed)
             .unwrap()
     );
-    let after = service.show(ready.id()).unwrap();
+    let after = service.show(&id).unwrap();
     assert!(after.0.active);
     assert_eq!(after.1.phase, before.1.phase);
     assert_eq!(after.1.effect_epoch, before.1.effect_epoch);
@@ -1543,7 +1551,7 @@ fn retained_branch_diagnostic_cannot_replace_owner_custody_or_claim_landing() {
     assert!(after.1.landed.is_none());
     assert!(
         !service
-            .record_branch_observation(ready.id(), before.0.revision, &observed)
+            .record_branch_observation(&id, before.0.revision, &observed)
             .unwrap()
     );
     let status = f

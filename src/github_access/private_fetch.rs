@@ -562,7 +562,9 @@ mod tests {
         let mut command = git_env::command(&source);
         command.args(arguments(&[head.trim()]).unwrap());
         private.configure(&mut command).unwrap();
-        let result = c.capture(command).unwrap();
+        let result = c
+            .capture(command)
+            .unwrap_or_else(|error| panic!("private fetch fixture capture: {}", error.detail()));
         assert!(
             result.status.success(),
             "{}",

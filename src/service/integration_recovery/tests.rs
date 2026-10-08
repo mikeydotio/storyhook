@@ -270,9 +270,10 @@ fn integration_native_origin_inspection_honors_existing_deadline_and_cancellatio
     let environment = crate::env::Environment::at(f.root.path()).with_subprocess_proof();
     let expired = Instant::now() - Duration::from_secs(1);
     assert!(
-        crate::github_access::Repository::resolve_controlled(
+        crate::github_access::Repository::resolve_publication(
             f.root.path(),
             &environment,
+            "github.com/acme/widgets",
             expired,
             &|| false
         )
@@ -280,9 +281,10 @@ fn integration_native_origin_inspection_honors_existing_deadline_and_cancellatio
         "origin subquery renewed an expired operation deadline"
     );
     assert!(
-        crate::github_access::Repository::resolve_controlled(
+        crate::github_access::Repository::resolve_publication(
             f.root.path(),
             &environment,
+            "github.com/acme/widgets",
             Instant::now() + Duration::from_secs(30),
             &|| true
         )

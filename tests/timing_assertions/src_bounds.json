@@ -70,11 +70,6 @@
       "count": 1,
       "kind": "delegated",
       "reason": "Origin reads receive an explicit 30s default or the owning Environment's read allowance. The bound survives revalidation; no command is retried by this leaf."
-    },
-    "production run_captured_private_until(deadline.min(std::time::Instant::now()+bound)": {
-      "count": 1,
-      "kind": "delegated",
-      "reason": "Native submission inspection preserves the caller absolute deadline, further capped by the existing repository read/operation bound; it never renews the original deadline."
     }
   },
   "src/github_access/command.rs": {
@@ -82,11 +77,6 @@
       "count": 1,
       "kind": "delegated",
       "reason": "The shared routed capture receives the Repository operation allowance from ordinary execution or the single protected merge. Release-source execution retains its existing 120s default. Captured refusal diagnostics and mutation non-retry semantics are preserved."
-    },
-    "production run_captured_private_until(deadline.min(std::time::Instant::now()+bound)": {
-      "count": 1,
-      "kind": "delegated",
-      "reason": "Native submission inspection preserves the caller absolute deadline, further capped by the existing repository read/operation bound; it never renews the original deadline."
     }
   },
   "src/github_access/observation.rs": {

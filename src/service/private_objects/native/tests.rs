@@ -11,7 +11,7 @@ fn fixture() -> (tempfile::TempDir, NativeObjects) {
     init.args(["init", "--bare", "--quiet", "--template=", "."]);
     let result =
         run_captured_query_quiescent(init, Instant::now() + allowance(), &|| false, LIMIT, &[])
-            .unwrap();
+            .unwrap_or_else(|error| panic!("private object fixture init: {}", error.detail()));
     assert!(result.status.success());
     let native = NativeObjects::open(
         source.path(),

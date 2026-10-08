@@ -462,8 +462,10 @@ fn integration_leased_claim_allows_replay_but_rejects_conflicting_custody_and_ab
     })).unwrap();
     // No story event follows the original Verifying transition yet, so this
     // is the generation's actual adjacent lease, not a late replacement.
-    f.fixture
-        .append_cleanup_lease(&f.candidate.story_id, original.clone());
+    f.fixture.append_cleanup_lease(
+        &f.candidate.story_id,
+        serde_json::from_value(serde_json::to_value(original.clone()).unwrap()).unwrap(),
+    );
     f.candidate = VerificationQueue::new(&f.store)
         .with_environment(f.ctx().env().clone())
         .next()
@@ -479,8 +481,10 @@ fn integration_leased_claim_allows_replay_but_rejects_conflicting_custody_and_ab
         .unwrap()
         .unwrap();
     assert!(service.assembly_permitted(&claim, &proof).unwrap());
-    f.fixture
-        .append_cleanup_lease(&f.candidate.story_id, original.clone());
+    f.fixture.append_cleanup_lease(
+        &f.candidate.story_id,
+        serde_json::from_value(serde_json::to_value(original.clone()).unwrap()).unwrap(),
+    );
     assert!(
         service.assembly_permitted(&claim, &proof).unwrap(),
         "identical custody replay revoked the claim"
@@ -488,11 +492,15 @@ fn integration_leased_claim_allows_replay_but_rejects_conflicting_custody_and_ab
     let mut replacement = original.clone();
     replacement.worktree_path = f.native.root.path().join("replacement");
     replacement.branch = "replacement-work".into();
-    f.fixture
-        .append_cleanup_lease(&f.candidate.story_id, replacement);
+    f.fixture.append_cleanup_lease(
+        &f.candidate.story_id,
+        serde_json::from_value(serde_json::to_value(replacement).unwrap()).unwrap(),
+    );
     assert!(service.assembly_permitted(&claim, &proof).is_err());
-    f.fixture
-        .append_cleanup_lease(&f.candidate.story_id, original.clone());
+    f.fixture.append_cleanup_lease(
+        &f.candidate.story_id,
+        serde_json::from_value(serde_json::to_value(original.clone()).unwrap()).unwrap(),
+    );
     assert!(
         service.assembly_permitted(&claim, &proof).is_err(),
         "ABA restored revoked custody"
@@ -512,7 +520,10 @@ fn recovery_cleanup_history_does_not_adopt_prior_generation_lease() {
         "repository_path":f.native.root.path(),"worktree_path":f.native.root.path().join("old"),
         "branch":"old-work","tmux":{"socket_path":f.native.root.path().join("fixture-socket"),"revivify":null}
     })).unwrap();
-    f.fixture.append_cleanup_lease(&f.candidate.story_id, old);
+    f.fixture.append_cleanup_lease(
+        &f.candidate.story_id,
+        serde_json::from_value(serde_json::to_value(old).unwrap()).unwrap(),
+    );
     let ctx = f.ctx();
     let stories = StoryService::new(&ctx);
     stories

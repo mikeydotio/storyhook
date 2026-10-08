@@ -13,9 +13,9 @@ mod local;
 mod merge;
 mod observation;
 pub use observation::OriginObservation;
+pub(crate) mod private_fetch;
 mod release;
 mod transport;
-pub(crate) mod private_fetch;
 pub use local::run_local;
 #[cfg(feature = "test-seam")]
 pub use local::run_local_for_fixture;
@@ -75,32 +75,6 @@ impl Repository {
         env: &crate::env::Environment,
     ) -> Result<Self, AppError> {
         Self::resolve_with_env(checkout, env)
-    }
-
-    /// Resolve every native origin query under the same caller deadline.
-    pub(crate) fn resolve_controlled(
-        checkout: &Path,
-        env: &crate::env::Environment,
-        deadline: std::time::Instant,
-        cancelled: &dyn Fn() -> bool,
-    ) -> Result<Self, AppError> {
-        Self::resolve_controlled_with_bounds(
-            checkout,
-            Bounds::for_environment(env),
-            deadline,
-            cancelled,
-        )
-    }
-
-    fn resolve_controlled_with_bounds(
-        checkout: &Path,
-        bounds: Bounds,
-        deadline: std::time::Instant,
-        cancelled: &dyn Fn() -> bool,
-    ) -> Result<Self, AppError> {
-        Self::resolve_reading(checkout, bounds, |path, arguments| {
-            git_read_controlled(bounds.read, path, arguments, deadline, cancelled)
-        })
     }
 
     fn resolve_with_bounds(checkout: &Path, bounds: Bounds) -> Result<Self, AppError> {
@@ -166,30 +140,6 @@ impl Repository {
     pub fn transport_url(&self) -> String {
         format!("https://{}.git", self.qualified())
     }
-}
-
-fn git_read_controlled(
-    bound: Duration,
-    checkout: &Path,
-    arguments: &[&str],
-    deadline: std::time::Instant,
-    cancelled: &dyn Fn() -> bool,
-) -> Result<String, AppError> {
-    let mut command = git_env::command(checkout);
-    command.args(arguments);
-    let output = crate::process::run_captured_private_until(
-        command,
-        deadline.min(std::time::Instant::now() + bound),
-        cancelled,
-    )
-    .map_err(|e| AppError::Validation(format!("bounded GitHub origin read: {}", e.detail())))?;
-    if !output.status.success() || output.stdout_truncated || output.stdout.len() >= 64 * 1024 {
-        return Err(AppError::Validation(
-            "bounded GitHub origin query failed or exceeded capture limit".into(),
-        ));
-    }
-    String::from_utf8(output.stdout)
-        .map_err(|_| AppError::Validation("GitHub origin query is not UTF-8".into()))
 }
 
 fn git_read_with_bound(

@@ -7,30 +7,6 @@ use std::process::Command;
 use std::time::Duration;
 
 impl Repository {
-    /// Revalidate origin and execute under one original operation deadline.
-    pub(crate) fn gh_controlled(
-        &self,
-        arguments: &[String],
-        deadline: std::time::Instant,
-        cancelled: &dyn Fn() -> bool,
-    ) -> Result<Vec<u8>, AppError> {
-        if Self::resolve_controlled_with_bounds(&self.checkout, self.bounds, deadline, cancelled)?
-            .identity
-            != self.identity
-        {
-            return Err(AppError::Validation(
-                "GitHub origin changed during bounded recovery inspection".into(),
-            ));
-        }
-        execute_controlled(
-            self.bounds.operation,
-            &self.identity,
-            &self.checkout,
-            arguments,
-            Some((deadline, cancelled)),
-        )
-    }
-
     /// Publication uses quiescent origin reads and effect capture under one
     /// original absolute deadline. No failed or ambiguous call is replayed.
     pub(crate) fn gh_publication(
@@ -94,17 +70,7 @@ fn execute_with_bound(
     checkout: &std::path::Path,
     arguments: &[String],
 ) -> Result<Vec<u8>, AppError> {
-    execute_controlled(bound, identity, checkout, arguments, None)
-}
-
-fn execute_controlled(
-    bound: Duration,
-    identity: &crate::domain::github_remote::GithubRepo,
-    checkout: &std::path::Path,
-    arguments: &[String],
-    control: Option<(std::time::Instant, &dyn Fn() -> bool)>,
-) -> Result<Vec<u8>, AppError> {
-    let output = capture_controlled(bound, identity, checkout, arguments, control)?;
+    let output = capture(bound, identity, checkout, arguments)?;
     answer(identity, output)
 }
 
@@ -248,26 +214,8 @@ pub(super) fn capture(
     checkout: &std::path::Path,
     arguments: &[String],
 ) -> Result<crate::process::Captured, AppError> {
-    capture_controlled(bound, identity, checkout, arguments, None)
-}
-
-fn capture_controlled(
-    bound: Duration,
-    identity: &crate::domain::github_remote::GithubRepo,
-    checkout: &std::path::Path,
-    arguments: &[String],
-    control: Option<(std::time::Instant, &dyn Fn() -> bool)>,
-) -> Result<crate::process::Captured, AppError> {
     let command = routed_command(identity, checkout, arguments)?;
-    match control {
-        Some((deadline, cancelled)) => crate::process::run_captured_private_until(
-            command,
-            deadline.min(std::time::Instant::now() + bound),
-            cancelled,
-        ),
-        None => run_captured_private(command, bound),
-    }
-    .map_err(|error| {
+    run_captured_private(command, bound).map_err(|error| {
         let detail = match error {
             CaptureError::Spawn(ref source) if source.kind() == std::io::ErrorKind::NotFound => {
                 "install gh and make it available on the StoryHook process PATH".to_owned()

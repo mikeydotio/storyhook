@@ -925,9 +925,12 @@ mod tests {
         );
         assert!(
             observed.load(Ordering::SeqCst),
-            "capture returned before observing surviving descendants: {result:?}"
+            "capture returned before observing surviving descendants"
         );
-        assert!(matches!(result, Err(CaptureError::Cancelled)), "{result:?}");
+        assert!(
+            matches!(result, Err(CaptureError::Cancelled)),
+            "owned capture did not report original cancellation"
+        );
         assert!(!registered.load(Ordering::SeqCst));
     }
 
@@ -1230,8 +1233,9 @@ mod tests {
         // A nonexistent executable distinguishes preflight refusal from spawning
         // and terminating a child after discovering an exhausted budget.
         let command = Command::new("storyhook-sh871-must-not-spawn-expired-host-request");
-        let failure =
-            run_captured_private_input_until(command, None, Instant::now(), &|| false).unwrap_err();
+        let failure = run_captured_private_input_until(command, None, Instant::now(), &|| false)
+            .err()
+            .expect("expired private request must refuse before spawning");
         assert!(
             matches!(failure, CaptureError::Wait(ref error) if error.kind() == std::io::ErrorKind::TimedOut),
             "{}",

@@ -251,7 +251,7 @@ fn local_git(root: &Path, args: &[&str]) -> String {
     let deadline = Instant::now()
         + storyhook_test_support::load_grace::graced_now(std::time::Duration::from_secs(30));
     let output = run_captured_query_quiescent(command, deadline, &|| false, 1024 * 1024, &[])
-        .expect("owned fixture Git query");
+        .unwrap_or_else(|error| panic!("owned fixture Git query: {}", error.detail()));
     assert!(
         output.status.success(),
         "git {args:?}: {}: {}",

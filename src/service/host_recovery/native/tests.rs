@@ -2,6 +2,7 @@
 //! stands in for authenticated transport only; real broker peer/ledger tests
 //! live in test_host_restoration.py. No public JSON can construct these types.
 use super::*;
+use crate::service::host_recovery::blocks_admission;
 use crate::{
     service::attribution::FailureComponent,
     service::{NewStoryInput, PrLinkService, StoryService, host_recovery::HostRecoveryService},
