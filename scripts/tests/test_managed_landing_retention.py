@@ -21,6 +21,8 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from load_grace import contention, patience
 
@@ -48,15 +50,62 @@ def owner_cancelled():
             and os.read(sys.stdin.fileno(), 1) == b"")
 
 
-def session_members(session, boot):
-    """Fresh native identities; missing members grant no signal authority."""
+class PinnedChild:
+    """Only this unreaped Popen child can supply a terminal PID witness."""
+
+    def __init__(self, child, boot):
+        self.child = child
+        self.pid = child.pid
+        self.boot = boot
+        self.last_exit = None
+
+    def exited(self):
+        if self.child.returncode is not None:
+            raise RuntimeError("cannot reuse reaped child as a session pin")
+        observed = os.waitid(os.P_PID, self.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        if observed is None:
+            return False
+        if observed.si_pid != self.pid:
+            raise RuntimeError("waitid returned a different child identity")
+        self.last_exit = dict(pid=observed.si_pid, code=observed.si_code,
+                              status=observed.si_status)
+        return True
+
+    def diagnostic(self):
+        return dict(child_pid=self.pid, session=self.pid, boot=self.boot,
+                    reaped=self.child.returncode is not None, last_exit=self.last_exit)
+
+
+def session_member(owner, pid):
+    """Skip only an exactly proven exited root, never an unreadable descendant."""
+    if pid == owner.pid and owner.exited():
+        return None
+    try:
+        if os.getsid(pid) != owner.pid:
+            return None
+        # The root can exit after getsid but before the incarnation read.
+        if pid == owner.pid and owner.exited():
+            return None
+        value = native.process(pid, owner.boot)
+    except OSError as error:
+        if pid == owner.pid:
+            # Includes exit racing either getsid or native.process. No error
+            # itself proves root exit, even ESRCH; waitid must identify it.
+            if owner.exited():
+                return None
+            raise
+        if isinstance(error, ProcessLookupError):
+            return None
+        raise
+    return value if value["session"] == owner.pid and value["live"] else None
+
+
+def session_members(owner):
+    """Enumerate before getsid, so a pinned Darwin zombie need not be queried."""
     found = []
-    for pid in native.session_members(session):
-        try:
-            value = native.process(pid, boot)
-        except ProcessLookupError:
-            continue
-        if value["session"] == session and value["live"]:
+    for pid in native.pids():
+        value = session_member(owner, pid)
+        if value is not None:
             found.append(value)
     return found
 
@@ -77,6 +126,7 @@ def bounded(args, cwd, env, root, deadline, *, own_session=True, cancel_when_exi
     with tempfile.TemporaryFile(dir=root) as out, tempfile.TemporaryFile(dir=root) as err:
         child = subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                  stdout=out, stderr=err, start_new_session=own_session)
+        owner = PinnedChild(child, boot) if own_session else None
         failure = None
         try:
             if not own_session:
@@ -88,29 +138,28 @@ def bounded(args, cwd, env, root, deadline, *, own_session=True, cancel_when_exi
                 while True:
                     # WNOWAIT pins the session ID even when macOS can no longer
                     # inspect the exact zombie through proc_pidinfo/getsid.
-                    exited = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
-                    exited = exited is not None and exited.si_pid == child.pid
+                    exited = owner.exited()
                     detector_cancel = exited and cancel_when_exited is not None and cancel_when_exited(child.pid)
                     if failure is None and (owner_cancelled() or detector_cancel or time.monotonic() >= deadline):
                         failure = "fixture command deadline or owner cancellation"
                         (root / "preserve").touch()
                         cleanup_deadline = time.monotonic() + patience(5, contention())
-                    members = session_members(child.pid, boot)
+                    members = session_members(owner)
                     if exited and not members:
                         # A second census AFTER positive direct-root exit proof
                         # closes an enumerate/fork/exit window before reaping.
-                        if not session_members(child.pid, boot):
+                        if not session_members(owner):
                             child.wait(timeout=max(0.01, (cleanup_deadline or deadline) - time.monotonic()))
                             break
                     if failure is not None:
                         for value in members:
-                            try:
-                                now = native.process(value["pid"], boot)
-                                if (now["start"] == value["start"] and now["boot"] == value["boot"]
-                                        and now["session"] == child.pid and now["live"]):
+                            now = session_member(owner, value["pid"])
+                            if (now is not None and now["start"] == value["start"] and now["boot"] == value["boot"]
+                                    and now["session"] == child.pid and now["live"]):
+                                try:
                                     os.kill(now["pid"], signal.SIGKILL)
-                            except ProcessLookupError:
-                                continue
+                                except ProcessLookupError:
+                                    continue  # Exit raced the exact-incarnation signal.
                         if time.monotonic() >= cleanup_deadline:
                             raise FixtureAborted("owned session did not settle; scratch root retained")
                     # Observation cadence, not a workload completion allowance.
@@ -121,9 +170,24 @@ def bounded(args, cwd, env, root, deadline, *, own_session=True, cancel_when_exi
             if not own_session:
                 child.kill()  # Unreaped direct Git only; outer owner still holds the session.
                 child.wait(timeout=patience(2, contention()))
-            raise FixtureAborted(f"fixture custody is uncertain: {error}") from error
+            identity = (owner.diagnostic() if owner is not None else
+                        dict(child_pid=child.pid, session=None, boot=boot,
+                             reaped=child.returncode is not None, last_exit=None))
+            diagnostic = dict(identity, error=str(error))
+            diagnostic_path = root / "custody-failure.json"
+            try:
+                diagnostic_path.write_text(json.dumps(diagnostic, sort_keys=True) + "\n")
+                receipt = str(diagnostic_path)
+            except OSError as receipt_error:
+                receipt = f"diagnostic write refused: {receipt_error}"
+            raise FixtureAborted(
+                f"fixture custody is uncertain: {json.dumps(diagnostic, sort_keys=True)}; {receipt}"
+            ) from error
         if failure is not None:
-            raise FixtureAborted(failure + "; owned session settled, root retained")
+            raise FixtureAborted(
+                failure + "; owned session settled, root retained; "
+                + json.dumps(owner.diagnostic(), sort_keys=True)
+            )
         out.seek(0)
         err.seek(0)
         return subprocess.CompletedProcess(args, child.returncode,
@@ -197,6 +261,93 @@ def transport(root, argv):
     config["merged"] = merged
     (root / "transport.json").write_text(json.dumps(config))
     print('{"result":"accepted"}')
+
+
+class PinnedChildCensus(unittest.TestCase):
+    """Deterministic native-denial boundaries; no child or signal is created."""
+
+    def setUp(self):
+        self.owner = PinnedChild(SimpleNamespace(pid=42, returncode=None), "fixture-boot")
+        self.exit = SimpleNamespace(si_pid=42, si_code=os.CLD_EXITED, si_status=0)
+
+    def test_exact_unreaped_exit_skips_root_before_native_queries(self):
+        with patch.object(os, "waitid", return_value=self.exit) as wait, \
+                patch.object(native, "pids", return_value=[42]), \
+                patch.object(os, "getsid", side_effect=PermissionError(1, "zombie")) as sid, \
+                patch.object(native, "process", side_effect=PermissionError(1, "zombie")) as process:
+            self.assertEqual(session_members(self.owner), [])
+            sid.assert_not_called()
+            process.assert_not_called()
+            wait.assert_called_once_with(os.P_PID, 42, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        self.assertEqual(self.owner.diagnostic(), dict(
+            child_pid=42, session=42, boot="fixture-boot", reaped=False,
+            last_exit=dict(pid=42, code=os.CLD_EXITED, status=0)))
+
+    def test_exact_root_exit_racing_getsid_requires_fresh_witness(self):
+        with patch.object(os, "waitid", side_effect=[None, self.exit]) as wait, \
+                patch.object(native, "pids", return_value=[42]), \
+                patch.object(os, "getsid", side_effect=PermissionError(1, "exited during getsid")), \
+                patch.object(native, "process") as process:
+            self.assertEqual(session_members(self.owner), [])
+            self.assertEqual(wait.call_count, 2)
+            process.assert_not_called()
+
+    def test_exact_root_exit_racing_process_requires_fresh_witness(self):
+        with patch.object(os, "waitid", side_effect=[None, None, self.exit]) as wait, \
+                patch.object(native, "pids", return_value=[42]), \
+                patch.object(os, "getsid", return_value=42), \
+                patch.object(native, "process", side_effect=PermissionError(1, "exited during process")):
+            self.assertEqual(session_members(self.owner), [])
+            self.assertEqual(wait.call_count, 3)
+
+    def test_unproven_root_denial_remains_unknown(self):
+        for boundary in ("getsid", "process"):
+            for error in (PermissionError(1, "unreadable root"), ProcessLookupError(3, "unproven exit")):
+                with self.subTest(boundary=boundary, error=type(error).__name__), \
+                        patch.object(os, "waitid", return_value=None), \
+                        patch.object(native, "pids", return_value=[42]), \
+                        patch.object(os, "getsid", side_effect=error if boundary == "getsid" else None,
+                                     return_value=42), \
+                        patch.object(native, "process", side_effect=error):
+                    with self.assertRaises(type(error)):
+                        session_members(self.owner)
+
+    def test_descendant_denial_is_not_excused_by_root_exit(self):
+        for boundary in ("getsid", "process"):
+            with self.subTest(boundary=boundary), \
+                    patch.object(os, "waitid", return_value=self.exit), \
+                    patch.object(native, "pids", return_value=[42, 43]), \
+                    patch.object(os, "getsid", side_effect=PermissionError(1, "descendant")
+                                 if boundary == "getsid" else None, return_value=42), \
+                    patch.object(native, "process", side_effect=PermissionError(1, "descendant")):
+                with self.assertRaises(PermissionError):
+                    session_members(self.owner)
+
+    def test_wrong_child_witness_cannot_exempt_root(self):
+        wrong = SimpleNamespace(si_pid=43, si_code=os.CLD_EXITED, si_status=0)
+        with patch.object(os, "waitid", return_value=wrong), \
+                patch.object(native, "pids", return_value=[42]), \
+                patch.object(os, "getsid") as sid:
+            with self.assertRaisesRegex(RuntimeError, "different child identity"):
+                session_members(self.owner)
+            sid.assert_not_called()
+
+    def test_reaped_child_cannot_pin_reused_session(self):
+        self.owner.child.returncode = 0
+        with patch.object(os, "waitid", return_value=self.exit) as wait, \
+                patch.object(native, "pids", return_value=[42]):
+            with self.assertRaisesRegex(RuntimeError, "reaped child"):
+                session_members(self.owner)
+            wait.assert_not_called()
+
+    def test_live_descendant_is_retained_and_foreign_session_is_not_adopted(self):
+        live = dict(pid=43, start="fixture:43", boot="fixture-boot", session=42, live=True)
+        with patch.object(os, "waitid", return_value=self.exit), \
+                patch.object(native, "pids", return_value=[42, 43, 44]), \
+                patch.object(os, "getsid", side_effect=[42, 99]), \
+                patch.object(native, "process", return_value=live) as process:
+            self.assertEqual(session_members(self.owner), [live])
+            process.assert_called_once_with(43, "fixture-boot")
 
 
 class ManagedLandingRetention(unittest.TestCase):
