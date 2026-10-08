@@ -155,6 +155,43 @@ _cleanup() {
     done
   fi
 
+  # Fake panes deliberately outlive their launch commands. Their native
+  # ledger is separate from mutable pane_pid/state files and covers every
+  # overridden state directory. Nested sources never retire their caller's
+  # ledger. Refusal must preserve all paths a surviving writer might borrow.
+  if [ -n "${_STORYHOOK_FAKE_SCOPE:-}" ]; then
+    if ! python3 -B "$TESTS_DIR/fake-process-owner.py" cleanup-scope \
+        "$FAKE_TMUX_PROCESS_LEDGER" "$_STORYHOOK_FAKE_SCOPE" "$$"; then
+      printf 'fake scope cleanup uncertain; retaining all fixture roots: %s\n' \
+        "$FAKE_TMUX_PROCESS_LEDGER" >&2
+      [ "$status" -ne 0 ] || status=1
+      exit "$status"
+    fi
+  fi
+  if [ "${_STORYHOOK_OWNS_FAKE_PROCESSES:-0}" = 1 ]; then
+    if ! python3 -B "$TESTS_DIR/fake-process-owner.py" cleanup "$FAKE_TMUX_PROCESS_LEDGER" "$$"; then
+      printf 'fake process cleanup uncertain; retaining fixture roots and ledger %s\n' \
+        "$FAKE_TMUX_PROCESS_LEDGER" >&2
+      [ "$status" -ne 0 ] || status=1
+      exit "$status"
+    fi
+  fi
+  # A hook admitted before the first stop can finish a request while its
+  # publisher drains. With every owned writer now settled, the owning fixture
+  # closes that final daemon-start race before deleting its home.
+  if [ "${_STORYHOOK_OWNS_TEST_HOME:-0}" = 1 ]; then
+    if ! story daemon stop --force >/dev/null 2>&1 \
+        || ! python3 -B "$TESTS_DIR/fake-process-owner.py" daemon-settled "$STORYHOOK_TEST_HOME"; then
+      printf 'failed to settle the test daemon after fixture writers settled\n' >&2
+      cleanup_failed=1
+    fi
+  fi
+  if [ "$cleanup_failed" -ne 0 ]; then
+    printf 'fixture cleanup failed; retaining all temporary roots\n' >&2
+    [ "$status" -ne 0 ] || status=1
+    exit "$status"
+  fi
+
   for d in "${_TMP_REPOS[@]:-}"; do
     [ -n "$d" ] && rm -rf -- "$d"
   done
@@ -378,6 +415,30 @@ else
   unset _STORY_INHERITED
 fi
 unset _STORY_TARGET_DIR
+
+# The scope's native process and writer settlement is patient under the same
+# bounded load policy as its pane. A test may explicitly exercise refusal with
+# a shorter allowance; this never shortens the pane's own lifetime.
+if [ -z "${FAKE_TMUX_CLEANUP_SECONDS:-}" ]; then
+  FAKE_TMUX_CLEANUP_SECONDS="$(python3 "$TESTS_DIR/../../../scripts/tests/load_grace.py" patience 30)" || exit 1
+  export FAKE_TMUX_CLEANUP_SECONDS
+fi
+
+# Only the instance minting a process ledger owns its teardown. A nested
+# library shares registration but cannot adopt cleanup ownership.
+if [ "${_STORYHOOK_OWNS_TEST_HOME:-0}" = 1 ] || [ -z "${FAKE_TMUX_PROCESS_LEDGER:-}" ]; then
+  FAKE_TMUX_PROCESS_LEDGER="$(mktemp -d /tmp/story-test-processes.XXXXXX)" || exit 1
+  export FAKE_TMUX_PROCESS_LEDGER
+  python3 -B "$TESTS_DIR/fake-process-owner.py" init "$FAKE_TMUX_PROCESS_LEDGER" "$$" || exit 1
+  _STORYHOOK_OWNS_FAKE_PROCESSES=1
+  _TMP_REPOS+=("$FAKE_TMUX_PROCESS_LEDGER")
+else
+  _STORYHOOK_OWNS_FAKE_PROCESSES=0
+fi
+
+_STORYHOOK_FAKE_SCOPE="$(python3 -B "$TESTS_DIR/fake-process-owner.py" scope \
+  "$FAKE_TMUX_PROCESS_LEDGER" "$$")" || exit 1
+export FAKE_TMUX_PROCESS_SCOPE="$_STORYHOOK_FAKE_SCOPE"
 
 # --- fake-tmux state isolation ---------------------------------------------
 #

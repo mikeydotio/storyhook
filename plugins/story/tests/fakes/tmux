@@ -291,6 +291,36 @@ if [ -n "${FAKE_TMUX_CUSTODY:-}" ]; then
   python3 -B "$FAKE_TMUX_CUSTODY_HELPER" writer-admit "$FAKE_TMUX_CUSTODY" 9 || exit 64
 fi
 
+# Ordinary plugin fixtures have a separate owner ledger. The pointer in a
+# state directory lets a cleared native tmux call recover that same owner;
+# pane_pid remains display data, never native signal authority.
+process_owner="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/fake-process-owner.py"
+if [ -z "${FAKE_TMUX_PROCESS_LEDGER:-}" ] && [ -f "$STATE/process-ledger" ]; then
+  FAKE_TMUX_PROCESS_LEDGER=$(cat "$STATE/process-ledger")
+  FAKE_TMUX_PROCESS_SCOPE=$(cat "$STATE/process-scope")
+fi
+if [ -n "${FAKE_TMUX_PROCESS_LEDGER:-}" ]; then
+  export FAKE_TMUX_PROCESS_LEDGER FAKE_TMUX_PROCESS_SCOPE
+  exec 7<"$FAKE_TMUX_PROCESS_LEDGER/${FAKE_TMUX_PROCESS_SCOPE:?fixture scope required}.scope-writers" || exit 64
+  exec 8<"$FAKE_TMUX_PROCESS_LEDGER/writers" || exit 64
+  python3 -B "$process_owner" writer "$FAKE_TMUX_PROCESS_LEDGER" "$FAKE_TMUX_PROCESS_SCOPE" 8 7 || exit 64
+  printf '%s' "$FAKE_TMUX_PROCESS_LEDGER" > "$STATE/process-ledger"
+  printf '%s' "$FAKE_TMUX_PROCESS_SCOPE" > "$STATE/process-scope"
+fi
+retire_fixture_processes() {
+  if [ -n "${FAKE_TMUX_PROCESS_LEDGER:-}" ]; then
+    python3 -B "$process_owner" retire "$FAKE_TMUX_PROCESS_LEDGER" "$STATE" "$@"
+  elif [ -n "${FAKE_TMUX_CUSTODY:-}" ]; then
+    # Browser slices retain their existing independently owned custody path.
+    local old_pid
+    old_pid=$(cat "$STATE/pane_pid" 2>/dev/null || printf '')
+    case "$old_pid" in ''|*[!0-9]*) ;; *) kill -9 "$old_pid" 2>/dev/null || true ;; esac
+  elif [ -f "$STATE/pane_pid" ]; then
+    printf 'fake tmux refuses to retire a pane without native fixture ownership\n' >&2
+    return 1
+  fi
+}
+
 # Mock the provider event and timing, never Storyhook publication.
 publish_claude_hook() {
   local hook_root payload hook_cwd="$1"
@@ -307,6 +337,10 @@ publish_claude_hook() {
     cp "$STATE/foreign-sentinel" "$hook_cwd/.claude/dispatch-sentinel.json"
   fi
 }
+if [ "${1:-}" = --publish-owned-hook ]; then
+  publish_claude_hook "${2:?owned hook cwd required}"
+  exit $?
+fi
 identity_row() {
   local pid dead command
   pid=$(cat "$STATE/pane_pid" 2>/dev/null || printf '')
@@ -556,13 +590,9 @@ case "${1:-}" in
     if [ "${FAKE_TMUX_INTERNAL_RESPAWN:-}" != 1 ]; then
       printf '%s\n' "${nw_args[*]}" >> "$STATE/new_window_args.log" 2>/dev/null || true
     fi
-    # A pane process from a PRIOR new-window call in this same STATE dir (the
-    # shared default dir outlives one test) is no longer this pane's occupant
-    # — kill it best-effort before a new one replaces it, so the fake never
-    # accumulates background processes across calls.
-    if [ -f "$STATE/pane_pid" ]; then
-      kill -9 "$(cat "$STATE/pane_pid" 2>/dev/null)" >/dev/null 2>&1 || true
-    fi
+    # Settle prior occupants belonging to this exact library scope before
+    # replacing the display fields. A nested scope cannot adopt an outer pane.
+    retire_fixture_processes || exit 1
     rm -f "$STATE/input" "$STATE/launched" "$STATE/absorb" "$STATE/pastes.log" \
           "$STATE/submitted" "$STATE/prompt_submits" "$STATE/pane_pid" \
           "$STATE/pane_command" "$STATE/launch_mangled" "$STATE/window_options.log" \
@@ -625,19 +655,27 @@ case "${1:-}" in
       # pid-exited) or the next new-window call's own cleanup above ends it.
       # `#{pane_pid}` below answers with its real pid, so wait_ready_sentinel's
       # `kill -0` has something genuine to check — a canned fake pid would
-      # make every dispatch test fail that check unconditionally. Short
-      # (${FAKE_TMUX_PANE_LIFETIME:-30}s) rather than long-lived, so a test
-      # that forgets to kill it explicitly still self-heals fast; stdio is
+      # make every dispatch test fail that check unconditionally. The graced
+      # lifetime is a fallback; native fixture custody owns teardown. Stdio is
       # redirected away from the inherited pipe so the caller's own
       # `$(tmux new-window ...)` returns immediately instead of blocking on
       # this background job's fd (SH-231 — verified empirically: an
       # un-redirected background job keeps a command substitution's pipe open
       # until the job itself exits).
-      if [ "${FAKE_TMUX_PANE_CHILD:-}" = 1 ]; then
-        # The parent reaps the child; both share the caller's graced lifetime.
+      if [ -n "${FAKE_TMUX_PROCESS_LEDGER:-}" ]; then
+        pane_role=pane
+        [ "${FAKE_TMUX_PANE_CHILD:-}" != 1 ] || pane_role=pane-child
+        pane_pid=$(python3 -B "$process_owner" start "$FAKE_TMUX_PROCESS_LEDGER" "$STATE" \
+          "$pane_role" "${FAKE_TMUX_PANE_LIFETIME:-30}" "$nw_session") || exit 1
+        printf '%s' "$pane_pid" > "$STATE/pane_pid"
+      elif [ "${FAKE_TMUX_PANE_CHILD:-}" = 1 ] && [ -n "${FAKE_TMUX_CUSTODY:-}" ]; then
+        # Browser ownership retains its existing parent/child shape.
         ( python3 -c 'import pathlib,subprocess,sys; child=subprocess.Popen(["sleep",sys.argv[2]]); pathlib.Path(sys.argv[1]).write_text(str(child.pid)); child.wait()' "$STATE/child_pid" "${FAKE_TMUX_PANE_LIFETIME:-30}" </dev/null >/dev/null 2>&1 & printf '%s' "$!" > "$STATE/pane_pid" )
-      else
+      elif [ -n "${FAKE_TMUX_CUSTODY:-}" ]; then
         ( sleep "${FAKE_TMUX_PANE_LIFETIME:-30}" </dev/null >/dev/null 2>&1 & printf '%s' "$!" > "$STATE/pane_pid" )
+      else
+        printf 'fake tmux pane launch requires fixture or browser ownership\n' >&2
+        exit 64
       fi
       printf '%s' "$nw_cwd" > "$STATE/window_cwd"
       printf '%s' "$nw_name" > "$STATE/window_name" 2>/dev/null || true
@@ -688,7 +726,12 @@ case "${1:-}" in
           if [ -n "${FAKE_TMUX_SENTINEL_ON_PROBE:-}" ]; then
             printf '%s' "$nw_cwd" > "$STATE/pending_claude_hook_cwd"
           elif [ -n "${FAKE_TMUX_SENTINEL_DELAY_SECS:-}" ]; then
-            (sleep "$FAKE_TMUX_SENTINEL_DELAY_SECS"; publish_claude_hook "$nw_cwd") </dev/null >/dev/null 2>&1 &
+            if [ -n "${FAKE_TMUX_PROCESS_LEDGER:-}" ]; then
+              python3 -B "$process_owner" start "$FAKE_TMUX_PROCESS_LEDGER" "$STATE" publisher \
+                "$FAKE_TMUX_SENTINEL_DELAY_SECS" "$nw_session" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/tmux" "$nw_cwd" >/dev/null || exit 1
+            else
+              (sleep "$FAKE_TMUX_SENTINEL_DELAY_SECS"; publish_claude_hook "$nw_cwd") </dev/null >/dev/null 2>&1 &
+            fi
           else
             publish_claude_hook "$nw_cwd"
           fi
@@ -783,6 +826,9 @@ case "${1:-}" in
     tname="${tname#=}"
     grep -qxF "$tname" "$STATE/sessions" 2>/dev/null || exit 1
     [ "${FAKE_TMUX_FAIL_KILL_SESSION:-}" != 1 ] || exit 1
+    if [ -n "${FAKE_TMUX_PROCESS_LEDGER:-}" ]; then
+      retire_fixture_processes "$tname" || exit 1
+    fi
     sessions_temp=$(mktemp "$STATE/.sessions.XXXXXX") || exit 1
     awk -v target="$tname" '$0 != target' "$STATE/sessions" >"$sessions_temp" \
       || { rm -f "$sessions_temp"; exit 1; }
@@ -906,7 +952,7 @@ case "${1:-}" in
         if [ "${FAKE_TMUX_EXIT_ON_REPROBE:-}" = 1 ] && [ "$reads" -gt 0 ]; then
           # End the owned process after launch-token capture, at readiness's
           # next OS observation; machine load cannot move this death earlier.
-          kill -9 "$dm_pid" 2>/dev/null || true
+          retire_fixture_processes || exit 1
           for _attempt in {1..20}; do
             kill -0 "$dm_pid" 2>/dev/null || break
             sleep 0.05
@@ -1134,15 +1180,11 @@ case "${1:-}" in
         || { rm -f "$windows_temp"; exit 1; }
       mv -f "$windows_temp" "$STATE/windows" || { rm -f "$windows_temp"; exit 1; }
     fi
-    # A real kill-window ends every pane in the target window. The fake models
-    # one pane, so terminate only the exact placeholder PID it recorded; do not
-    # leave a fixture-owned process alive past the window ownership boundary.
+    # The display PID can be overwritten by a test. Signal authority comes
+    # only from this invocation's native fixture scope ledger.
     killed_pid="$(cat "$STATE/pane_pid" 2>/dev/null || printf '')"
     printf '%s' "$killed_pid" > "$STATE/stopped_pid"
-    case "$killed_pid" in
-      '' | *[!0-9]*) : ;;
-      *) kill -9 "$killed_pid" >/dev/null 2>&1 || true ;;
-    esac
+    retire_fixture_processes || exit 1
     rm -f "$STATE/pane_pid" 2>/dev/null || true
     printf '%s' "${FAKE_TMUX_PANES:-}" >"$STATE/killed_window"
     ;;
