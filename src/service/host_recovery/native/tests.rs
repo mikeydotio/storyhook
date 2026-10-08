@@ -278,7 +278,7 @@ fn host_owner_restarts_once_and_readmits_only_original_head_with_fresh_restorati
     let reopened = SqliteStore::open(f.store.path()).unwrap();
     assert!(
         reopened
-            .read(super::super::owner::blocks_admission)
+            .read(|tx| super::super::owner::blocks_admission(tx))
             .unwrap()
     );
     let restored = HostRestorationEvidence {
@@ -293,7 +293,7 @@ fn host_owner_restarts_once_and_readmits_only_original_head_with_fresh_restorati
     assert_eq!(view.readmitted, 1);
     assert!(
         !reopened
-            .read(super::super::owner::blocks_admission)
+            .read(|tx| super::super::owner::blocks_admission(tx))
             .unwrap()
     );
     // The next central gate records its own admission before pinned-input
