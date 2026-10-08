@@ -1848,3 +1848,6 @@ impl WriteOps for SqliteWriteTx<'_> {
         write::delete_attachment_blob(&self.conn, project, story, attachment_id)
     }
 }
+
+#[cfg(test)]
+mod recovery_identity_tests;

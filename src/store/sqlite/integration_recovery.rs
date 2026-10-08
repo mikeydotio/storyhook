@@ -107,8 +107,8 @@ pub(super) fn pending(
             Ok(IntegrationPending {
                 id: row.get(0)?,
                 project,
-                story: row.get(1)?,
-                generation: row.get(2)?,
+                story: StoryNo::new(row.get(1)?),
+                generation: GlobalSeq::new(row.get(2)?),
                 evidence,
             })
         })
@@ -137,7 +137,7 @@ pub(super) fn insert_pending(
             ))
         };
     }
-    conn.execute("INSERT INTO integration_pending(id,project_id,story_no,generation,evidence) VALUES(?1,?2,?3,?4,?5)",params![record.id,record.project.get(),record.story,record.generation,record.evidence.to_string()]).map_err(|e|StoreError::from_sqlite(e,"retaining pending integration custody"))?;
+    conn.execute("INSERT INTO integration_pending(id,project_id,story_no,generation,evidence) VALUES(?1,?2,?3,?4,?5)",params![record.id,record.project.get(),record.story.get(),record.generation.get(),record.evidence.to_string()]).map_err(|e|StoreError::from_sqlite(e,"retaining pending integration custody"))?;
     Ok(())
 }
 
@@ -166,8 +166,8 @@ pub(super) fn readmissions(
             Ok(crate::store::IntegrationReadmission {
                 id: row.get(0)?,
                 project,
-                story: row.get(1)?,
-                generation: row.get(2)?,
+                story: StoryNo::new(row.get(1)?),
+                generation: GlobalSeq::new(row.get(2)?),
                 evidence,
             })
         })
@@ -196,6 +196,6 @@ pub(super) fn insert_readmission(
             ))
         };
     }
-    conn.execute("INSERT INTO integration_readmissions(id,project_id,story_no,generation,evidence) VALUES(?1,?2,?3,?4,?5)",params![record.id,record.project.get(),record.story,record.generation,record.evidence.to_string()]).map_err(|e|StoreError::from_sqlite(e,"retaining clean integration readmission"))?;
+    conn.execute("INSERT INTO integration_readmissions(id,project_id,story_no,generation,evidence) VALUES(?1,?2,?3,?4,?5)",params![record.id,record.project.get(),record.story.get(),record.generation.get(),record.evidence.to_string()]).map_err(|e|StoreError::from_sqlite(e,"retaining clean integration readmission"))?;
     Ok(())
 }

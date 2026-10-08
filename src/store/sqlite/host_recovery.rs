@@ -1,4 +1,4 @@
-use crate::store::{HostRecovery, HostRecoveryPending, ProjectId, StoreError};
+use crate::store::{GlobalSeq, HostRecovery, HostRecoveryPending, ProjectId, StoreError, StoryNo};
 use rusqlite::{Connection, params};
 pub(super) fn list(conn: &Connection) -> Result<Vec<HostRecovery>, StoreError> {
     if !crate::store::migrate::has_columns(
@@ -80,8 +80,8 @@ pub(super) fn pending(
             Ok(HostRecoveryPending {
                 id: row.get(0)?,
                 project,
-                story: row.get(1)?,
-                generation: row.get(2)?,
+                story: StoryNo::new(row.get(1)?),
+                generation: GlobalSeq::new(row.get(2)?),
                 evidence,
             })
         })
@@ -110,6 +110,6 @@ pub(super) fn insert_pending(
             ))
         };
     }
-    conn.execute("INSERT INTO host_recovery_pending(id,project_id,story_no,generation,evidence) VALUES(?1,?2,?3,?4,?5)",params![record.id,record.project.get(),record.story,record.generation,record.evidence.to_string()]).map_err(|e|StoreError::from_sqlite(e,"retaining pending host custody"))?;
+    conn.execute("INSERT INTO host_recovery_pending(id,project_id,story_no,generation,evidence) VALUES(?1,?2,?3,?4,?5)",params![record.id,record.project.get(),record.story.get(),record.generation.get(),record.evidence.to_string()]).map_err(|e|StoreError::from_sqlite(e,"retaining pending host custody"))?;
     Ok(())
 }
