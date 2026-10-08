@@ -17,6 +17,10 @@ use std::time::Duration;
 #[path = "cleanup_revivify_tests.rs"]
 mod revivify_tests;
 
+#[cfg(test)]
+#[path = "cleanup_retry_tests.rs"]
+mod retry_tests;
+
 /// Attempts for one removal whose failure may be transient.
 const STEP_ATTEMPTS: u32 = 3;
 
@@ -622,6 +626,9 @@ pub(super) fn remove_checked(
                     .iter()
                     .any(|record| &record.path == worktree);
                 if registered {
+                    super::identity::validate(paths)?;
+                    #[cfg(test)]
+                    retry_tests::before_removal(retry_tests::Removal::Worktree)?;
                     workspace_lock::git(
                         repository,
                         &["worktree", "remove", "--force", "--force", "--", &path],
@@ -638,6 +645,7 @@ pub(super) fn remove_checked(
                         check()?;
                         window_absent(report, env)?;
                     }
+                    super::identity::validate(paths)?;
                     std::fs::remove_dir_all(worktree).map_err(|error| {
                         AppError::Validation(format!("removing {}: {error}", worktree.display()))
                     })?;
@@ -658,6 +666,9 @@ pub(super) fn remove_checked(
                 window_absent(report, env)?;
             }
             if git::branch_exists(repository, branch)? {
+                super::identity::validate(paths)?;
+                #[cfg(test)]
+                retry_tests::before_removal(retry_tests::Removal::Branch)?;
                 workspace_lock::git(repository, &["branch", "-D", "--", branch], workspace)?;
             }
             Ok(())
@@ -762,17 +773,26 @@ fn close_window(
     engine_owner: Option<&dyn Fn() -> Result<(), AppError>>,
 ) {
     let resource = window_resource(report);
-    let (target, expected) = match window_authority(report, caller, env) {
-        Ok(Some(proof)) => proof,
+    match window_authority(report, caller, env) {
+        Ok(Some(_)) => {}
         Ok(None) => return,
         Err(reason) => return residue.leave(resource, reason),
-    };
+    }
     let socket = report.socket_path.as_ref().expect("proven window socket");
     let names = BTreeSet::from([report.window_name.clone()]);
     let closed = attempt(|| {
         if let Some(check) = engine_owner {
             check()?;
         }
+        // A failed kill may be followed by a respawn or a new server. Reuse
+        // the original report, never numeric identifiers from a replacement.
+        let Some((target, expected)) =
+            window_authority(report, caller, env).map_err(AppError::Validation)?
+        else {
+            return Ok(());
+        };
+        #[cfg(test)]
+        retry_tests::before_removal(retry_tests::Removal::Window)?;
         let mut command = std::process::Command::new("tmux");
         crate::env::spawn_env::apply_dispatch_allowlist(&mut command);
         target.apply(&mut command, Some(socket));

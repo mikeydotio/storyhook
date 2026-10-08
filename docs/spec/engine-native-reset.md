@@ -45,7 +45,10 @@ Stop Now retains its original regular, exact cleanup-marker requirement.
 Filesystem replacements, changed branch tips, protected branches, foreign
 markers, installed artifacts and the requester's own cwd/window withhold
 removal. It retains the strict workspace lock and checks the exact run/lane/
-reservation owner before each destructive attempt. A story reset can supersede
+reservation owner before each destructive attempt. Each Git/directory attempt
+also revalidates the original pinned filesystem identities; each window kill
+repeats the original pane, PID and endpoint proof. A failed attempt never grants
+authority over a replacement that appears before retry. A story reset can supersede
 that owner; no stale progress, completion or failure writer recreates it.
 
 Unlike a final-lever story reset, Stop Now must prove the leased window absent
@@ -83,7 +86,8 @@ shared cleanup module; its preview overlap adapter remains a sibling concern.
 ## Validation
 
 New story-specific cases are in `tests/engine_native_reset.rs`,
-`src/service/story_reset/cleanup_revivify_tests.rs` and
+`src/service/story_reset/cleanup_revivify_tests.rs`,
+`src/service/story_reset/cleanup_retry_tests.rs` and
 `plugins/story/tests/test-engine-reset-retired.sh`. They are authored, not executed:
 the integrated checkpoint and protected installation own the validation lane.
 Runtime results must be recorded separately before integration.
