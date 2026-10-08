@@ -297,7 +297,7 @@ fn remote_head<S: Store>(
     )?;
     parse_remote_head(&bytes, &branch)
 }
-fn parse_remote_head(bytes: &[u8], branch: &str) -> Result<Option<String>, AppError> {
+pub(super) fn parse_remote_head(bytes: &[u8], branch: &str) -> Result<Option<String>, AppError> {
     let text =
         std::str::from_utf8(bytes).map_err(|_| refuse("remote branch answer is not UTF-8"))?;
     if text.is_empty() {
@@ -318,7 +318,7 @@ fn parse_remote_head(bytes: &[u8], branch: &str) -> Result<Option<String>, AppEr
     Ok(Some(oid.into()))
 }
 
-fn verify_objects(
+pub(super) fn verify_objects(
     assembly: &AssemblyEvidence,
     deadline: Instant,
     cancelled: &dyn Fn() -> bool,
@@ -370,7 +370,7 @@ fn validate_commit(bytes: &[u8], assembly: &AssemblyEvidence) -> Result<(), AppE
     }
     Ok(())
 }
-fn private_git(
+pub(super) fn private_git(
     assembly: &AssemblyEvidence,
     args: &[&str],
     deadline: Instant,
@@ -412,12 +412,12 @@ fn capture(
     Ok(output.stdout)
 }
 
-const PR_FIELDS: &str = "{number,html_url,state,merged,body,base:{sha:.base.sha,ref:.base.ref,repository:.base.repo.full_name},head:{sha:.head.sha,ref:.head.ref,repository:.head.repo.full_name}}";
+pub(super) const PR_FIELDS: &str = "{number,html_url,state,merged,body,base:{sha:.base.sha,ref:.base.ref,repository:.base.repo.full_name},head:{sha:.head.sha,ref:.head.ref,repository:.head.repo.full_name}}";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PullRequest {
-    number: u64,
-    html_url: String,
+pub(super) struct PullRequest {
+    pub(super) number: u64,
+    pub(super) html_url: String,
     state: String,
     merged: bool,
     body: Option<String>,
@@ -432,10 +432,13 @@ struct Side {
     branch: String,
     repository: String,
 }
-fn decode_pr(bytes: &[u8]) -> Result<PullRequest, AppError> {
+pub(super) fn decode_pr(bytes: &[u8]) -> Result<PullRequest, AppError> {
     serde_json::from_slice(bytes).map_err(|_| refuse("PR answer is malformed or incomplete"))
 }
-fn validate_original(pr: &PullRequest, original: &SubmissionObservation) -> Result<(), AppError> {
+pub(super) fn validate_original(
+    pr: &PullRequest,
+    original: &SubmissionObservation,
+) -> Result<(), AppError> {
     let actual = crate::domain::pr_url::parse_pr_url(&pr.html_url)?;
     let expected = crate::domain::pr_url::parse_pr_url(&original.pull_request)?;
     if actual != expected
@@ -454,7 +457,7 @@ fn validate_original(pr: &PullRequest, original: &SubmissionObservation) -> Resu
     }
     Ok(())
 }
-fn validate_managed(
+pub(super) fn validate_managed(
     pr: &PullRequest,
     original: &SubmissionObservation,
     assembly: &AssemblyEvidence,
@@ -487,7 +490,7 @@ fn validate_managed(
     }
     Ok(())
 }
-fn endpoint(repo: &Repository, suffix: &str) -> String {
+pub(super) fn endpoint(repo: &Repository, suffix: &str) -> String {
     format!(
         "repos/{}/{}/{suffix}",
         repo.identity().owner,
