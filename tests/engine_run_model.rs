@@ -2149,9 +2149,55 @@ fn assert_reset_migration_preserves_v41_records(reset_sql: &'static str) {
         prior.state.as_str(),
     )
     .unwrap();
+    // The modern lane writer also reads its run before inserting, so it too
+    // requires v58's stop_origin_json. Seed every lane field through the exact
+    // columns shipped by v40, without advancing this v41 migration fixture.
+    // The typed equality below checks this seed before either migration pass.
+    let cleanup_json = adopted
+        .cleanup_lease
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .unwrap();
+    let adoption_json = adopted
+        .adopted_identity
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .unwrap();
+    assert_eq!(
+        raw(&store)
+            .execute(
+                "INSERT INTO engine_lanes \
+                     (run_id, lane_index, state, story_id, window_name, worktree_path, \
+                      dispatched_at, last_observed_at, outcome, outcome_detail, \
+                      last_progress_seq, last_progress_at, pane_id, cleanup_lease_json, \
+                      probe_detail, adopted_identity_json) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                params![
+                    adopted.run_id,
+                    adopted.lane_index,
+                    adopted.state.as_str(),
+                    adopted.story_id,
+                    adopted.window_name,
+                    adopted.worktree_path,
+                    adopted.dispatched_at,
+                    adopted.last_observed_at,
+                    adopted.outcome,
+                    adopted.outcome_detail,
+                    adopted.last_progress_seq.map(|sequence| sequence.get()),
+                    adopted.last_progress_at,
+                    adopted.pane_id,
+                    cleanup_json,
+                    adopted.probe_detail,
+                    adoption_json,
+                ],
+            )
+            .unwrap(),
+        1
+    );
     store
         .write(|tx| {
-            tx.put_engine_lane(&adopted)?;
             for record in &continuations {
                 tx.insert_continuation(record)?;
             }
