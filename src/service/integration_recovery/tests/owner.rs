@@ -73,10 +73,6 @@ impl OwnedFixture {
                 .read(|tx| tx.verification_control_revision(project))
                 .unwrap(),
         );
-        if settled {
-            attempt.finished_at = Some(AT.into());
-            attempt.verdict = Some("conflict".into());
-        }
         let record = AttributionRecord {
             version: 1,
             id: "original-attribution".into(),
@@ -112,6 +108,18 @@ impl OwnedFixture {
                 tx.insert_attribution(&record)
             })
             .unwrap();
+        if settled {
+            // Admission is live at revision zero; completion advances the
+            // retained evidence through the same CAS as a real gate.
+            attempt.revision = 1;
+            attempt.finished_at = Some(AT.into());
+            attempt.verdict = Some("conflict".into());
+            assert!(
+                store
+                    .write(|tx| tx.update_gate_attempt(&attempt, 0))
+                    .unwrap()
+            );
+        }
         Self {
             native,
             fixture,
