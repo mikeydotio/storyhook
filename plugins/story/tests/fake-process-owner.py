@@ -378,6 +378,44 @@ def worker(args):
         raise Refusal("unknown fixture worker role")
 
 
+def daemon_settled(home, deadline):
+    """Observe only this owned home's pidfile locks and exact native owners.
+
+    Force-stop returning successfully is a request receipt, not quiescence.
+    Writers have already drained and admission is closed before this is called.
+    No pidfile is valid for a fixture that never started its daemon.
+    """
+    while True:
+        busy = False
+        with contextlib.ExitStack() as held:
+            for path in sorted(home.rglob("daemon.pid")):
+                expected = file_pin(path)
+                stream = held.enter_context(path.open("r"))
+                pinned_descriptor(path, expected, stream.fileno())
+                try:
+                    fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    busy = True
+                    break
+                pinned_descriptor(path, expected, stream.fileno())
+                record = json.load(stream)
+                pid, start = record["pid"], record["start_time"]
+                if type(pid) is not int or pid <= 1 or not isinstance(start, str) or not start:
+                    raise Refusal("owned daemon lacks an exact native identity")
+                try:
+                    current = native.process(pid, native.boot_identity())
+                except ProcessLookupError:
+                    continue
+                if current["start"] == start and current["live"]:
+                    busy = True
+                    break
+            if not busy:
+                return
+        if time.monotonic() >= deadline:
+            raise Refusal("owned daemon is not settled; retain fixture home")
+        time.sleep(0.01)
+
+
 def main(argv):
     action, root = argv[1], Path(argv[2])
     allowance = float(os.environ.get("FAKE_TMUX_CLEANUP_SECONDS", "30"))
@@ -405,6 +443,8 @@ def main(argv):
         cleanup_scope(root, argv[3], int(argv[4]), deadline)
     elif action == "cleanup":
         cleanup(root, int(argv[3]), deadline)
+    elif action == "daemon-settled":
+        daemon_settled(root, deadline)
     elif action == "worker":
         worker(argv[2:])
     else:

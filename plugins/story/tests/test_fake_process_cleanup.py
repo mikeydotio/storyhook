@@ -7,6 +7,8 @@ process ledgers and scopes, fake panes, pipes and files are wholly test-owned.
 No waitid API is required; Apple Python 3.9 and Homebrew Python are supported.
 """
 import errno
+import fcntl
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -25,6 +27,10 @@ sys.path.insert(0, str(TESTS.parents[2] / "scripts"))
 sys.path.insert(0, str(TESTS.parents[2] / "scripts/tests"))
 from host_admission import native
 import load_grace
+
+SPEC = importlib.util.spec_from_file_location("fixture_owner", TESTS / "fake-process-owner.py")
+OWNER = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(OWNER)
 
 
 def allowance():
@@ -303,6 +309,55 @@ IFS= read -r release < "$FIXTURE_ROOT/nested-release"
         f.command('wait "$nested_fixture_pid"')
         self.assertFalse(nested.exists())
         f.finish()
+
+    def test_browser_kill_session_does_not_signal_its_display_pid(self):
+        f = self.fixture
+        state = f.root / "owned/browser-state"
+        state.mkdir()
+        unrelated = subprocess.Popen(["sleep", "900"], stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            pin = native.identity(unrelated.pid, native.boot_identity())
+            (state / 'pane_pid').write_text(str(unrelated.pid))
+            f.command('python3 -B "$TESTS_DIR/../../../scripts/e2e-dispatch-owners.py" '
+                      'init "$FIXTURE_ROOT/owned/browser-custody"')
+            f.command('env -u FAKE_TMUX_PROCESS_LEDGER -u FAKE_TMUX_PROCESS_SCOPE '
+                      'FAKE_TMUX_STATE=' + shlex.quote(str(state)) +
+                      ' FAKE_TMUX_CUSTODY="$FIXTURE_ROOT/owned/browser-custody" '
+                      'FAKE_TMUX_CUSTODY_HELPER="$TESTS_DIR/../../../scripts/e2e-dispatch-owners.py" '
+                      'FAKE_TMUX_SESSIONS=browser "$TESTS_DIR/fakes/tmux" kill-session -t browser')
+            self.assertEqual((state / 'sessions').read_text(), '')
+            self.assertTrue(alive(pin))
+            f.finish()
+            self.assertTrue(alive(pin))
+        finally:
+            if unrelated.poll() is None:
+                unrelated.terminate()
+            unrelated.wait(timeout=allowance())
+
+    def test_daemon_never_started_needs_no_invented_pid(self):
+        OWNER.daemon_settled(self.fixture.state, time.monotonic() + allowance())
+        self.assertFalse((self.fixture.state / 'daemon.pid').exists())
+
+    def test_live_exact_daemon_identity_refuses_without_sending_a_signal(self):
+        pin = native.identity(os.getpid(), native.boot_identity())
+        (self.fixture.state / 'daemon.pid').write_text(json.dumps(
+            dict(pid=pin['pid'], start_time=pin['start'])))
+        with self.assertRaisesRegex(OWNER.Refusal, 'daemon is not settled'):
+            OWNER.daemon_settled(self.fixture.state, time.monotonic())
+        self.assertTrue(alive(pin))
+        self.assertTrue(self.fixture.state.exists())
+
+    def test_daemon_lifetime_lock_is_required_even_for_a_replaced_pid(self):
+        pin = native.identity(os.getpid(), native.boot_identity())
+        path = self.fixture.state / 'daemon.pid'
+        path.write_text(json.dumps(dict(pid=pin['pid'], start_time=pin['start'] + ':previous')))
+        with path.open('r') as lifetime:
+            fcntl.flock(lifetime, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(OWNER.Refusal, 'daemon is not settled'):
+                OWNER.daemon_settled(self.fixture.state, time.monotonic())
+        OWNER.daemon_settled(self.fixture.state, time.monotonic() + allowance())
+        self.assertTrue(alive(pin))
 
     def test_copied_valid_foreign_launch_refuses_before_any_signal(self):
         f = self.fixture

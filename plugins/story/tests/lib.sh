@@ -180,8 +180,9 @@ _cleanup() {
   # publisher drains. With every owned writer now settled, the owning fixture
   # closes that final daemon-start race before deleting its home.
   if [ "${_STORYHOOK_OWNS_TEST_HOME:-0}" = 1 ]; then
-    if ! story daemon stop --force >/dev/null 2>&1; then
-      printf 'failed to stop the test daemon after fixture writers settled\n' >&2
+    if ! story daemon stop --force >/dev/null 2>&1 \
+        || ! python3 -B "$TESTS_DIR/fake-process-owner.py" daemon-settled "$STORYHOOK_TEST_HOME"; then
+      printf 'failed to settle the test daemon after fixture writers settled\n' >&2
       cleanup_failed=1
     fi
   fi
