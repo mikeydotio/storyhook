@@ -3,8 +3,10 @@
 Only the binary transport boundary is doubled. Production landing scripts,
 machine lock, isolated merge computation and receipt writer use scratch Git.
 Fixture receipts describe synthetic test inputs, never this repository's gate.
-Every child is bounded; timeout preserves the scratch root for outer ChildGuard
-process-group settlement instead of deleting files beneath uncertain children.
+Every command owns a private session until its leader and descendants settle.
+Timeout preserves the scratch root and aborts the suite. The Rust owner closes
+a lifetime pipe before waiting for this Python owner to perform bounded cleanup.
+These fixed helpers do not escape sessions; this is not escaped-process custody.
 """
 
 import json
@@ -12,6 +14,8 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import select
+import signal
 import subprocess
 import sys
 import tempfile
@@ -21,27 +25,100 @@ import unittest
 from load_grace import contention, patience
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+from host_admission import native
+
+WATCH_OWNER = False
+CANCELLED = False
+CUSTODY_UNCERTAIN = False
 OWNER = "11111111-2222-4333-8444-555555555555"
 ATTEMPT = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 OTHER = "99999999-2222-4333-8444-555555555555"
 IDENTITY = "github.com/fixture/managed"
 
 
-def bounded(args, cwd, env, root, deadline):
-    """Capture through files, so an escaped pipe holder cannot block collection."""
-    remaining = min(patience(30, contention()), deadline - time.monotonic())
-    if remaining <= 0:
-        (root / "preserve").touch()
-        raise TimeoutError("fixture deadline elapsed")
-    with tempfile.TemporaryFile(dir=root) as out, tempfile.TemporaryFile(dir=root) as err:
-        child = subprocess.Popen(args, cwd=cwd, env=env, stdout=out, stderr=err)
+class FixtureAborted(KeyboardInterrupt):
+    """Unittest must not start another case after lost or uncertain ownership."""
+
+
+def owner_cancelled():
+    if CANCELLED or CUSTODY_UNCERTAIN:
+        return True
+    return (WATCH_OWNER and select.select([sys.stdin], [], [], 0)[0]
+            and os.read(sys.stdin.fileno(), 1) == b"")
+
+
+def session_members(session, boot):
+    """Fresh native identities; missing members grant no signal authority."""
+    found = []
+    for pid in native.session_members(session):
         try:
-            child.wait(timeout=remaining)
-        except subprocess.TimeoutExpired:
+            value = native.process(pid, boot)
+        except ProcessLookupError:
+            continue
+        if value["session"] == session and value["live"]:
+            found.append(value)
+    return found
+
+
+def bounded(args, cwd, env, root, deadline, *, own_session=True, cancel=owner_cancelled):
+    """File capture plus a waitable session leader, including set-m descendants."""
+    global CUSTODY_UNCERTAIN
+    remaining = min(patience(30, contention()), deadline - time.monotonic())
+    if remaining <= 0 or owner_cancelled() or cancel():
+        (root / "preserve").touch()
+        raise FixtureAborted("fixture deadline elapsed or owner cancelled before spawn")
+    deadline = time.monotonic() + remaining
+    boot = native.boot_identity() if own_session else None
+    with tempfile.TemporaryFile(dir=root) as out, tempfile.TemporaryFile(dir=root) as err:
+        child = subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                 stdout=out, stderr=err, start_new_session=own_session)
+        failure = None
+        try:
+            if not own_session:
+                # Transport Git belongs to the top-level fixture command's
+                # session. Do not create an untracked nested session here.
+                child.wait(timeout=remaining)
+            else:
+                cleanup_deadline = None
+                while True:
+                    if failure is None and (owner_cancelled() or cancel() or time.monotonic() >= deadline):
+                        failure = "fixture command deadline or owner cancellation"
+                        (root / "preserve").touch()
+                        cleanup_deadline = time.monotonic() + patience(5, contention())
+                    # WNOWAIT pins the session ID even when macOS can no longer
+                    # inspect the exact zombie through proc_pidinfo/getsid.
+                    exited = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                    exited = exited is not None and exited.si_pid == child.pid
+                    members = session_members(child.pid, boot)
+                    if exited and not members:
+                        # A second census AFTER positive direct-root exit proof
+                        # closes an enumerate/fork/exit window before reaping.
+                        if not session_members(child.pid, boot):
+                            child.wait(timeout=max(0.01, (cleanup_deadline or deadline) - time.monotonic()))
+                            break
+                    if failure is not None:
+                        for value in members:
+                            try:
+                                now = native.process(value["pid"], boot)
+                                if (now["start"] == value["start"] and now["boot"] == value["boot"]
+                                        and now["session"] == child.pid and now["live"]):
+                                    os.kill(now["pid"], signal.SIGKILL)
+                            except ProcessLookupError:
+                                continue
+                        if time.monotonic() >= cleanup_deadline:
+                            raise FixtureAborted("owned session did not settle; scratch root retained")
+                    # Observation cadence, not a workload completion allowance.
+                    time.sleep(0.01)
+        except BaseException as error:
+            CUSTODY_UNCERTAIN = True
             (root / "preserve").touch()
-            child.kill()  # This unreaped direct child only; no pattern/group signals.
-            child.wait(timeout=patience(2, contention()))
-            raise
+            if not own_session:
+                child.kill()  # Unreaped direct Git only; outer owner still holds the session.
+                child.wait(timeout=patience(2, contention()))
+            raise FixtureAborted(f"fixture custody is uncertain: {error}") from error
+        if failure is not None:
+            raise FixtureAborted(failure + "; owned session settled, root retained")
         out.seek(0)
         err.seek(0)
         return subprocess.CompletedProcess(args, child.returncode,
@@ -106,11 +183,11 @@ def transport(root, argv):
               "-c", "user.email=fixture@example.invalid"]
     result = bounded([*prefix, "commit-tree", config["tree"], "-p", config["base"],
                       "-p", head, "-m", "Synthetic local transport merge"],
-                     repo, os.environ.copy(), root, deadline)
+                     repo, os.environ.copy(), root, deadline, own_session=False)
     assert result.returncode == 0, result.stderr
     merged = result.stdout.strip()
     result = bounded([*prefix, "update-ref", "refs/heads/main", merged, config["base"]],
-                     repo, os.environ.copy(), root, deadline)
+                     repo, os.environ.copy(), root, deadline, own_session=False)
     assert result.returncode == 0, result.stderr
     config["merged"] = merged
     (root / "transport.json").write_text(json.dumps(config))
@@ -294,9 +371,44 @@ class ManagedLandingRetention(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(self.mutations(), [])
 
+    def test_cancellation_settles_descendant_in_another_group_before_return(self):
+        marker = self.root / "owned-descendant.json"
+        descendant = (
+            "import json,os,pathlib,time;"
+            f"pathlib.Path({str(marker)!r}).write_text(json.dumps({{'pid':os.getpid()}}));"
+            "time.sleep(600)"
+        )
+        leader = "import subprocess,sys;subprocess.Popen([sys.executable,'-c'," + repr(descendant) + "],process_group=0)"
+        with self.assertRaisesRegex(FixtureAborted, "owned session settled"):
+            bounded([sys.executable, "-c", leader], self.repo, {"PATH": os.environ["PATH"]},
+                    self.root, self.deadline, cancel=marker.exists)
+        self.assertTrue(marker.exists(), "the detector must observe actual descendant readiness")
+        pid = json.loads(marker.read_text())["pid"]
+        try:
+            value = native.process(pid, native.boot_identity())
+        except ProcessLookupError:
+            value = None
+        self.assertTrue(value is None or not value["live"], "owned descendant survived cancellation")
+        self.assertTrue((self.root / "preserve").exists())
+        # This deliberately induced cancellation has positive settlement proof.
+        # Only this detector may retire its own expected preservation marker.
+        (self.root / "preserve").unlink()
+
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--transport"]:
         transport(Path(sys.argv[2]), sys.argv[3:])
     else:
-        unittest.main()
+        if "--watch-owner" in sys.argv:
+            sys.argv.remove("--watch-owner")
+            WATCH_OWNER = True
+        def cancellation(_signal, _frame):
+            global CANCELLED
+            CANCELLED = True
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(sig, cancellation)
+        try:
+            unittest.main()
+        except FixtureAborted as error:
+            print(error, file=sys.stderr)
+            sys.exit(1)
