@@ -5,6 +5,9 @@ use std::path::Path;
 use std::process::Command;
 use storyhook_test_support::scratch_dir;
 
+#[path = "support/test_only_modules.rs"]
+mod test_only_modules;
+
 fn git(root: &Path, args: &[&str]) {
     let out = Command::new("git")
         .arg("-C")
@@ -480,6 +483,71 @@ fn legacy_fixture_evidence_does_not_exempt_other_github_bypasses() {
     );
 }
 
+fn external_test_sources(sources: &[(String, String)]) -> Vec<std::path::PathBuf> {
+    // Share the declaration-based boundary with the process inventory. A
+    // filename ending in _tests is not proof that the file is test-only.
+    let rust = sources
+        .iter()
+        .filter(|(name, _)| name.starts_with("src/") && name.ends_with(".rs"))
+        .cloned()
+        .collect::<Vec<_>>();
+    test_only_modules::external_test_module_roots(&rust)
+}
+
+fn is_external_test_source(name: &str, roots: &[std::path::PathBuf]) -> bool {
+    roots.iter().any(|root| Path::new(name).starts_with(root))
+}
+
+#[test]
+fn github_bypass_census_exempts_only_declared_external_test_modules() {
+    let sources = [
+        (
+            "src/owner.rs",
+            "#[cfg(test)] mod authority_refresh_tests;\nmod runtime_tests;",
+        ),
+        (
+            "src/conditional.rs",
+            "#[cfg(any(test, feature = \"runtime\"))] mod authority_refresh_tests;",
+        ),
+        (
+            "src/redirected.rs",
+            "#[cfg(test)] #[path = \"runtime.rs\"] mod authority_refresh_tests;",
+        ),
+        (
+            "src/unparsed.rs",
+            "#[cfg(test)] mod authority_refresh_tests; invalid rust!",
+        ),
+        (
+            "src/comment.rs",
+            "// #[cfg(test)]\nmod authority_refresh_tests;",
+        ),
+    ]
+    .into_iter()
+    .map(|(name, source)| (name.to_owned(), source.to_owned()))
+    .collect::<Vec<_>>();
+    let roots = external_test_sources(&sources);
+    let bypass = r#"const ENDPOINT: &str = "https://github.com/production/repo";"#;
+    let check = |name| {
+        !is_external_test_source(name, &roots) && !runtime_github_bypasses(name, bypass).is_empty()
+    };
+    assert!(!check("src/owner/authority_refresh_tests.rs"));
+    assert!(!check("src/owner/authority_refresh_tests/child.rs"));
+    for production in [
+        "src/owner/runtime_tests.rs",
+        "src/owner/authority_refresh_tests_runtime.rs",
+        "src/conditional/authority_refresh_tests.rs",
+        "src/redirected/runtime.rs",
+        "src/redirected/authority_refresh_tests.rs",
+        "src/unparsed/authority_refresh_tests.rs",
+        "src/comment/authority_refresh_tests.rs",
+    ] {
+        assert!(
+            check(production),
+            "{production} lost runtime bypass detection"
+        );
+    }
+}
+
 #[test]
 fn production_github_access_has_one_cli_executor_and_no_http_or_pat_bypass() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -489,18 +557,29 @@ fn production_github_access_has_one_cli_executor_and_no_http_or_pat_bypass() {
         .output()
         .unwrap();
     assert!(tracked.status.success());
-    for name in String::from_utf8(tracked.stdout).unwrap().lines() {
+    let sources = String::from_utf8(tracked.stdout)
+        .unwrap()
+        .lines()
+        .filter(|name| name.ends_with(".rs") || name.ends_with(".sh") || name.ends_with(".py"))
+        .map(|name| {
+            (
+                name.to_owned(),
+                fs::read_to_string(root.join(name)).unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let external_tests = external_test_sources(&sources);
+    for (name, text) in &sources {
         if name.contains("/tests/")
             || name.ends_with("/tests.rs")
             || name.contains("/fakes/")
             || name.contains("/_vendor/")
             || name == "src/store/conformance.rs"
             || name == "scripts/run-e2e.sh"
-            || !(name.ends_with(".rs") || name.ends_with(".sh") || name.ends_with(".py"))
+            || is_external_test_source(name, &external_tests)
         {
             continue;
         }
-        let text = fs::read_to_string(root.join(name)).unwrap();
         let production = text.split("#[cfg(test)]").next().unwrap();
         let code = production
             .lines()
