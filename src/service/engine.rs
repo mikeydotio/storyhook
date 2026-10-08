@@ -8,6 +8,8 @@
 /// Read-only inspection and transactional adoption of manual dispatches.
 pub mod adoption;
 mod dispatch_quiescence;
+mod probe_runtime;
+use probe_runtime::{LiveProbeRuntime, ProbeRuntime};
 pub mod reset;
 mod restoration;
 pub(crate) use restoration::reconcile_manual as reconcile_restored_dispatches;
@@ -872,8 +874,17 @@ impl ShellDispatcher {
 
 impl ShellDispatcher {
     fn probe_window_at(&self, window: &str, socket: Option<&Path>) -> WindowProbe {
+        self.probe_window_at_with(window, socket, &LiveProbeRuntime)
+    }
+
+    fn probe_window_at_with(
+        &self,
+        window: &str,
+        socket: Option<&Path>,
+        runtime: &impl ProbeRuntime,
+    ) -> WindowProbe {
         let budget = self.probe_budget();
-        let started = Instant::now();
+        let started = runtime.now();
         let timeout = match budget.timeout_at(started) {
             Ok(timeout) => timeout,
             Err(detail) => {
@@ -884,8 +895,7 @@ impl ShellDispatcher {
         };
         let deadline = started + timeout;
         let prepared = (|| {
-            let target =
-                super::tmux_target::inspect(&self.env, socket, deadline, &Default::default())?;
+            let target = runtime.inspect(&self.env, socket, deadline)?;
             target.require_binding()?;
             let mut command = self.tmux();
             target.apply(&mut command, socket);
@@ -898,7 +908,7 @@ impl ShellDispatcher {
                 window,
                 WINDOW_PROBE_FORMAT,
             ]);
-            Ok::<_, AppError>((command, target, super::tmux_target::remaining(deadline)?))
+            Ok::<_, AppError>((command, target, runtime.remaining(deadline)?))
         })();
         let (command, target, timeout) = match prepared {
             Ok(prepared) => prepared,
@@ -908,7 +918,7 @@ impl ShellDispatcher {
                 };
             }
         };
-        let captured = match run_captured(command, timeout) {
+        let captured = match runtime.capture(command, timeout) {
             Ok(captured) => captured,
             Err(CaptureError::Timeout(_)) => {
                 return WindowProbe::Unanswered {
@@ -3633,17 +3643,18 @@ pub(crate) fn run_shell_dispatch_cancellable(
         );
     }
 
+    let bound = env.subprocess_bound(DISPATCH_TIMEOUT);
     let captured = match cancellation {
         Some(cancellation) => crate::process::run_captured_cancellable(
             command,
-            DISPATCH_TIMEOUT,
+            bound,
             crate::process::TerminationPolicy::TerminateThenKill {
                 grace: Duration::from_secs(30),
             },
             cancellation,
             |_| Ok(()),
         ),
-        None => run_captured(command, DISPATCH_TIMEOUT),
+        None => run_captured(command, bound),
     }
     .map_err(|error| match error {
         CaptureError::Cancelled => {
@@ -3666,7 +3677,7 @@ pub(crate) fn run_shell_dispatch_cancellable(
         }
         CaptureError::Timeout(_) => AppError::Storage(format!(
             "dispatch did not finish within {}s and was terminated",
-            DISPATCH_TIMEOUT.as_secs()
+            bound.as_secs()
         )),
     })?;
     classify_dispatch_capture(&captured)
@@ -3702,7 +3713,8 @@ fn run_shell_unclaim(
         .env("STORY_TARGET_SESSION", project)
         .env("GIT_TERMINAL_PROMPT", "0");
 
-    let captured = run_captured(command, DISPATCH_TIMEOUT).map_err(|error| match error {
+    let bound = env.subprocess_bound(DISPATCH_TIMEOUT);
+    let captured = run_captured(command, bound).map_err(|error| match error {
         CaptureError::Cancelled => {
             AppError::Validation("the operator cancelled verification".into())
         }
@@ -3723,7 +3735,7 @@ fn run_shell_unclaim(
         }
         CaptureError::Timeout(_) => AppError::Storage(format!(
             "unclaim did not finish within {}s and was terminated",
-            DISPATCH_TIMEOUT.as_secs()
+            bound.as_secs()
         )),
     })?;
     let outcome = classify_dispatch_capture(&captured)?;

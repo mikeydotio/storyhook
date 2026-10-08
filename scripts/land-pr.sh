@@ -273,8 +273,26 @@ if [ "${1:-}" = "--merge" ] || [ "${1:-}" = "--merge-prepared" ]; then
     fi
 
     note "merging PR #$number at head $head_sha"
-    github_exec pr merge "$number" --merge --match-head-commit "$head_sha" \
-        || die "gh did not merge PR #$number"
+    if [ -n "${STORYHOOK_LANDING_ATTEMPT_MARKER:-}" ]; then
+        # Preserve gh pr merge's policy checks and exact-head precondition.
+        # Capture only that command's canonical HTTP refusal; a lost response
+        # is never retried. Retain the receipt for crash recovery.
+        reply="$(github_merge "$number" "$head_sha")" || die "merge outcome is uncertain for PR #$number"
+        if [ "$(printf '%s\n' "$reply" | jq -r '.result')" = refused ]; then
+            status="$(printf '%s\n' "$reply" | jq -er '.status')" || die "invalid merge refusal"
+            (set -C; jq -n --arg head "$head_sha" --arg tree "$expected_tree" \
+                --arg number "$number" --argjson status "$status" \
+                '{version:1,head:$head,tree:$tree,number:$number,status:$status}' \
+                > "$STORYHOOK_LANDING_ATTEMPT_MARKER.refused") \
+                || die "could not retain merge refusal evidence"
+            die "GitHub refused PR #$number with HTTP $status"
+        fi
+        [ "$(printf '%s\n' "$reply" | jq -r '.result')" = accepted ] \
+            || die "merge outcome is uncertain for PR #$number"
+    else
+        github_exec pr merge "$number" --merge --match-head-commit "$head_sha" \
+            || die "gh did not merge PR #$number"
+    fi
 
     merged="$(github_exec pr view "$number" --json state,mergedAt,mergeCommit 2>&1)" \
         || die "could not verify PR #$number after gh returned success: $merged"

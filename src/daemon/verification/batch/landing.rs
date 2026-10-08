@@ -188,6 +188,12 @@ pub(in crate::daemon::verification) fn land<S: Store, A: VerificationActuator>(
             }
             Ok(landed)
         }
+        LandingOutcome::Refused { detail } => {
+            queue.release_rejected_landing(ctx, &landing.intent.rows[0], &detail)?;
+            landing.summary.phase = Some(BatchPhase::Released);
+            landing.summary.detail = format!("GitHub refused the merge: {detail}");
+            Ok(Landed::Tick(TickResult::RetryLater))
+        }
         LandingOutcome::NotAttempted { detail } => {
             let released = queue.release_unattempted_batch_landing(
                 ctx,
@@ -281,7 +287,14 @@ pub(in crate::daemon::verification) fn recover<S: Store, A: VerificationActuator
         .map(|row| (row.story, row.story_id.clone()))
         .collect();
     let locks = match actuator.batch() {
-        Some(_) => Some(MemberLocks::acquire(&candidate.checkout, &others)?.0),
+        Some(_) => Some(
+            MemberLocks::acquire_with_bound(
+                env.subprocess_bound(std::time::Duration::from_secs(30)),
+                &candidate.checkout,
+                &others,
+            )?
+            .0,
+        ),
         None => None,
     };
     match complete(

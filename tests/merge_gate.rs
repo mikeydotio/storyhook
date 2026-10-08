@@ -1560,15 +1560,16 @@ impl MergeRepo {
     ) -> ChildGuard {
         let args = Self::verification_gate_args(expected_tree, base, head, poller, command);
         let mut spawned = Command::new("bash");
+        gate_cleanup_patience(
+            &mut spawned,
+            storyhook_test_support::load_grace::contention(),
+        );
         spawned
             .args(&args)
             .current_dir(self.path())
             .env("STORYHOOK_LOCK_DIR", self.path().join("locks"))
             .env("STORYHOOK_ACTIVITY_LOG_DIR", self.path().join("activity"))
             .envs(storyhook_test_support::daemon_containment())
-            // Bounds the owner's cancellation grace so a test never waits on
-            // the production 30s budget; the gates here die on first TERM.
-            .env("STORYHOOK_VERIFIER_CLEANUP_GRACE_MS", "8000")
             .env(
                 "STORYHOOK_GATE_PROGRESS",
                 self.path().join("gate-progress.ndjson"),
@@ -4876,4 +4877,147 @@ fn private_repair_admission_precedes_gate_and_fails_closed() {
         assert_eq!(args.len(), 12);
         assert_eq!(args[11], "--json");
     }
+}
+
+/// SH-846: this harness waits for a TERM handler's final receipt, not for a
+/// particular TERM-to-KILL cutoff. The separate speculative cleanup-budget
+/// proofs keep their explicit values. Eight seconds remains the idle allowance.
+const GATE_CLEANUP_PATIENCE: Duration = Duration::from_secs(8);
+
+fn gate_cleanup_patience(command: &mut Command, reading: Option<f64>) {
+    let granted = storyhook_test_support::load_grace::graced_by(GATE_CLEANUP_PATIENCE, reading);
+    command.env(
+        "STORYHOOK_VERIFIER_CLEANUP_GRACE_MS",
+        granted.as_millis().to_string(),
+    );
+}
+
+#[test]
+fn sh846_gate_cleanup_receipt_patience_reaches_the_child_and_keeps_idle_policy() {
+    for (reading, expected) in [
+        (None, "8000"),
+        (Some(1.0), "8000"),
+        (Some(3.0), "24000"),
+        (Some(1000.0), "900000"),
+    ] {
+        let mut command = Command::new("unused-fixture-command");
+        gate_cleanup_patience(&mut command, reading);
+        let actual = command
+            .get_envs()
+            .find(|(name, _)| *name == "STORYHOOK_VERIFIER_CLEANUP_GRACE_MS")
+            .and_then(|(_, value)| value)
+            .unwrap();
+        assert_eq!(
+            actual, expected,
+            "the cancellation helper receives the caller's actual patience"
+        );
+    }
+}
+
+#[test]
+fn sh842_durable_refusal_is_recoverable_without_repeating_the_merge() {
+    let (repo, head, tree) = certified_landing_fixture();
+    let script = repo.path().join("bin/gh");
+    let original = fs::read_to_string(&script).unwrap();
+    let insertion = r#"
+if [ "${1:-}" = pr ] && [ "${2:-}" = merge ]; then
+    printf '%s\n' 'HTTP 405: Required check missing (https://api.github.com/graphql)' >&2
+    exit 1
+fi
+"#;
+    fs::write(
+        &script,
+        original.replacen(
+            "if [ \"${1:-}\" != pr ]",
+            &format!("{insertion}\nif [ \"${{1:-}}\" != pr ]"),
+            1,
+        ),
+    )
+    .unwrap();
+    let first = public_payload(&repo.landing_phase("attempt", &head, &tree));
+    assert_eq!(first["result"], "refused", "{first}");
+    let recovered = public_payload(&repo.landing_phase("recover", &head, &tree));
+    assert_eq!(recovered["result"], "refused", "{recovered}");
+    let calls = fs::read_to_string(repo.path().join("fake-gh-state/argv")).unwrap();
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|line| line.starts_with("pr merge"))
+            .count(),
+        1
+    );
+    assert!(
+        calls
+            .lines()
+            .filter(|line| line.starts_with("pr merge"))
+            .all(|line| line.contains("--merge --match-head-commit") && !line.contains("--admin"))
+    );
+    let receipt = repo.path().join("landing.attempted.refused");
+    let valid = fs::read(&receipt).unwrap();
+    for data in [
+        b"{".to_vec(),
+        String::from_utf8(valid.clone())
+            .unwrap()
+            .replace(&head, &"a".repeat(40))
+            .into_bytes(),
+    ] {
+        fs::write(&receipt, data).unwrap();
+        let uncertain = public_payload(&repo.landing_phase("recover", &head, &tree));
+        assert_eq!(uncertain["result"], "uncertain", "{uncertain}");
+    }
+}
+
+#[test]
+fn sh842_transport_loss_does_not_become_a_definitive_refusal() {
+    let (repo, head, tree) = certified_landing_fixture();
+    let script = repo.path().join("bin/gh");
+    let original = fs::read_to_string(&script).unwrap();
+    let insertion = r#"
+if [ "${1:-}" = pr ] && [ "${2:-}" = merge ]; then
+    printf '%s\n' 'Post https://api.github.com/graphql: connection reset; HTTP 405 is only a quoted diagnostic' >&2
+    exit 1
+fi
+"#;
+    fs::write(
+        &script,
+        original.replacen(
+            "if [ \"${1:-}\" != pr ]",
+            &format!("{insertion}\nif [ \"${{1:-}}\" != pr ]"),
+            1,
+        ),
+    )
+    .unwrap();
+    for mode in ["attempt", "recover"] {
+        let result = public_payload(&repo.landing_phase(mode, &head, &tree));
+        assert_eq!(result["result"], "uncertain", "{result}");
+    }
+    assert!(!repo.path().join("landing.attempted.refused").exists());
+    let calls = fs::read_to_string(repo.path().join("fake-gh-state/argv")).unwrap();
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|line| line.starts_with("pr merge"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn sh842_merged_head_and_tree_proof_outranks_an_earlier_refusal_receipt() {
+    let (repo, head, tree) = certified_landing_fixture();
+    repo.enable_fake_merge_endpoint();
+    let merged = public_payload(&repo.landing_phase("attempt", &head, &tree));
+    assert_eq!(merged["result"], "merged", "{merged}");
+    fs::write(
+        repo.path().join("landing.attempted.refused"),
+        serde_json::json!({
+            "version": 1, "head": head, "tree": tree, "number": "42", "status": 405
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let recovered = public_payload(&repo.landing_phase("recover", &head, &tree));
+    assert_eq!(recovered["result"], "merged", "{recovered}");
+    let changed = public_payload(&repo.landing_phase("recover", &head, &"a".repeat(40)));
+    assert_eq!(changed["result"], "uncertain", "{changed}");
 }

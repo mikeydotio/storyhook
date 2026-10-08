@@ -96,7 +96,7 @@ pub(crate) fn flush<S: Store>(ctx: &Ctx<'_, S>, id: &str) -> Result<(), AppError
     if let Some(lease) = lease
         && lease.worktree_path.exists()
     {
-        spool::validate_marker(&lease)?;
+        spool::validate_marker(ctx.env(), &lease)?;
         let lane = Ctx::new(
             ctx.store(),
             ctx.project(),
@@ -258,7 +258,9 @@ fn publish<S: Store>(
         })?;
         if linked && let Some(merged) = spool::guard_merged_pr(ctx, &request.lease)? {
             for (_, r) in requests {
-                crate::service::resources::git::text(
+                crate::service::resources::git::text_with_bound(
+                    ctx.env()
+                        .subprocess_bound(std::time::Duration::from_secs(60)),
                     &r.lease.repository_path,
                     &["merge-base", "--is-ancestor", &r.head, &merged],
                 )?;
@@ -269,8 +271,12 @@ fn publish<S: Store>(
             "publication worktree is missing without merged PR proof; preserve the request".into(),
         ));
     }
-    spool::validate_marker(&request.lease)?;
-    crate::service::resources::validate_lease(&request.lease)?;
+    spool::validate_marker(ctx.env(), &request.lease)?;
+    crate::service::resources::validate_lease_with_bound(
+        ctx.env()
+            .subprocess_bound(std::time::Duration::from_secs(60)),
+        &request.lease,
+    )?;
     let (project, row, link) = ctx.store().read(|tx| {
         let project = tx.project(ctx.project())?.ok_or_else(|| {
             crate::store::StoreError::NotFound("publication project disappeared".into())
@@ -290,11 +296,18 @@ fn publish<S: Store>(
             })?;
         Ok((project, row, link))
     })?;
-    let head = crate::service::resources::git::text(ctx.cwd(), &["rev-parse", "HEAD^{commit}"])?
-        .trim()
-        .to_owned();
+    let head = crate::service::resources::git::text_with_bound(
+        ctx.env()
+            .subprocess_bound(std::time::Duration::from_secs(60)),
+        ctx.cwd(),
+        &["rev-parse", "HEAD^{commit}"],
+    )?
+    .trim()
+    .to_owned();
     for (_, r) in requests {
-        crate::service::resources::git::text(
+        crate::service::resources::git::text_with_bound(
+            ctx.env()
+                .subprocess_bound(std::time::Duration::from_secs(60)),
             ctx.cwd(),
             &["merge-base", "--is-ancestor", &r.head, &head],
         )?;

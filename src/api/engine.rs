@@ -835,14 +835,18 @@ mod tests {
                     || {
                         entered_tx.send(()).unwrap();
                         release_rx
-                            .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                                lifecycle::CONTROL_DEADLINE,
+                            ))
                             .expect("the test must release engine cleanup");
                     },
                 )
             });
 
             entered_rx
-                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    lifecycle::CONTROL_DEADLINE,
+                ))
                 .expect("engine cleanup must start");
             let active = lifecycle::read_inflight(&env);
             assert_eq!(active.len(), 1);

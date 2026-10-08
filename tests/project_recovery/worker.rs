@@ -40,7 +40,11 @@ PY
         ),
     )
     .unwrap();
-    ShellVerificationActuator::with_paths(f.env().clone(), path, "unused-story".into())
+    ShellVerificationActuator::with_paths(
+        storyhook_test_support::subprocess_patience(f.env().clone()),
+        path,
+        "unused-story".into(),
+    )
 }
 
 #[test]

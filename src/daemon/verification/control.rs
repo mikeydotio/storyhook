@@ -219,6 +219,16 @@ impl VerificationActivity {
         started_at: String,
         reservation: Option<ReservationReason>,
     ) -> Result<Option<VerificationGuard>, AppError> {
+        // Admission and operator release use the same order: release registry,
+        // active registry, store. No subprocess runs while a mutex is held.
+        if self
+            .landing_releases
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&candidate.project)
+        {
+            return Ok(None);
+        }
         // Avoid even taking the filesystem lock for an already-reserved story.
         // Admission checks again after locking to close the read/acquire race.
         if !store.read(|tx| crate::service::verification::human::permits(tx, candidate))? {
@@ -227,13 +237,23 @@ impl VerificationActivity {
         let workspace = if !candidate.checkout.as_os_str().is_empty()
             && candidate.checkout.join(".git").exists()
         {
-            Some(crate::service::workspace_lock::WorkspaceLock::acquire(
-                &candidate.checkout,
-                &candidate.story_id,
-            )?)
+            Some(
+                crate::service::workspace_lock::WorkspaceLock::acquire_with_bound(
+                    env.subprocess_bound(std::time::Duration::from_secs(30)),
+                    &candidate.checkout,
+                    &candidate.story_id,
+                )?,
+            )
         } else {
             None
         };
+        let releases = self
+            .landing_releases
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if releases.contains(&candidate.project) {
+            return Ok(None);
+        }
         let mut slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
         let origin = Instant::now();
         let attempt_id = uuid::Uuid::new_v4().to_string();
@@ -316,6 +336,7 @@ impl VerificationActivity {
             (guard, retired)
         });
         drop(slots);
+        drop(releases);
         Ok(admitted.map(|(guard, retired)| {
             if let Err(detail) = retired {
                 super::evidence::report_unretired(candidate, &detail);
@@ -458,6 +479,35 @@ mod tests {
     use storyhook_test_support::ServiceFixture;
 
     #[test]
+    fn sh842_operator_landing_reservation_excludes_admission_without_cancelling() {
+        let fixture = ServiceFixture::new();
+        let store = crate::store::SqliteStore::open(fixture.store().path()).unwrap();
+        let project = ProjectId::new(fixture.project().get());
+        let env = Environment::at(fixture.cwd());
+        let candidate = candidate(&store, &env, project);
+        let activity = VerificationActivity::new();
+        let active = activity.acquire(&candidate, env.now());
+        assert!(activity.reserve_landing_release(project).is_err());
+        assert!(!active.is_cancelled());
+        drop(active);
+        let reservation = activity.reserve_landing_release(project).unwrap();
+        assert!(activity.reserve_landing_release(project).is_err());
+        assert!(
+            activity
+                .try_acquire(&store, &env, &candidate, env.now())
+                .unwrap()
+                .is_none()
+        );
+        drop(reservation);
+        assert!(
+            activity
+                .try_acquire(&store, &env, &candidate, env.now())
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
     fn card_reset_cancels_only_its_story_and_prevents_readmission() {
         let fixture = ServiceFixture::new();
         let store = crate::store::SqliteStore::open(fixture.store().path()).unwrap();
@@ -476,7 +526,8 @@ mod tests {
             .unwrap();
         std::thread::scope(|scope| {
             scope.spawn(move || {
-                let deadline = Instant::now() + Duration::from_secs(5);
+                let deadline = Instant::now()
+                    + storyhook_test_support::load_grace::graced_now(Duration::from_secs(5));
                 while !guard.is_cancelled() {
                     assert!(Instant::now() < deadline);
                     std::thread::sleep(Duration::from_millis(10));
@@ -487,7 +538,8 @@ mod tests {
                 .cancel_story_and_wait(
                     project,
                     &candidate.story_id,
-                    Instant::now() + Duration::from_secs(5),
+                    Instant::now()
+                        + storyhook_test_support::load_grace::graced_now(Duration::from_secs(5)),
                 )
                 .unwrap();
         });
@@ -712,11 +764,17 @@ mod tests {
                 );
                 finished.send(result).unwrap();
             });
-            observed.recv_timeout(Duration::from_secs(5)).unwrap();
+            observed
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    Duration::from_secs(5),
+                ))
+                .unwrap();
             token.cancel();
             assert!(
                 completion
-                    .recv_timeout(Duration::from_secs(5))
+                    .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                        Duration::from_secs(5)
+                    ))
                     .unwrap()
                     .unwrap()
                     == ReconcileWait::Ended
@@ -1012,5 +1070,40 @@ mod recovery_identity_tests {
             matches!(store.read(|tx| tx.verification_recovery(project)).unwrap().request.unwrap().outcome,
             crate::store::VerificationRecoveryOutcome::Settled { reason, .. } if reason == "completed")
         );
+    }
+}
+
+/// Holds off verifier admission without changing project automation policy.
+pub(crate) struct LandingReleaseGuard {
+    registry: Arc<Mutex<BTreeSet<ProjectId>>>,
+    project: ProjectId,
+}
+impl Drop for LandingReleaseGuard {
+    fn drop(&mut self) {
+        self.registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.project);
+    }
+}
+impl VerificationActivity {
+    /// Refuses an active owner; never cancels it or steals its intent.
+    pub(crate) fn reserve_landing_release(
+        &self,
+        project: ProjectId,
+    ) -> Result<LandingReleaseGuard, AppError> {
+        let mut releases = self
+            .landing_releases
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        if slots.contains_key(&project) || releases.contains(&project) {
+            return Err(AppError::Validation("landing release refused while this project has active verification or another release; wait for it to finish".into()));
+        }
+        releases.insert(project);
+        Ok(LandingReleaseGuard {
+            registry: Arc::clone(&self.landing_releases),
+            project,
+        })
     }
 }

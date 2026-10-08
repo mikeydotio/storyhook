@@ -58,17 +58,28 @@ fn save<S: Store>(
 }
 
 /// Stop Now retains its original marker requirement, narrower than a card reset.
-fn lease_guard(reset: &EngineReset, pinned: bool) -> Result<(), AppError> {
+fn lease_guard(
+    env: &crate::env::Environment,
+    reset: &EngineReset,
+    pinned: bool,
+) -> Result<(), AppError> {
     use crate::service::resources::git;
     let lease = &reset.lease;
-    let records = git::inventory(&lease.repository_path)?;
+    let records = git::inventory_with_bound(
+        env.subprocess_bound(std::time::Duration::from_secs(60)),
+        &lease.repository_path,
+    )?;
     if let Some(record) = records.iter().find(|row| row.path == lease.worktree_path) {
         if record.branch.as_ref() != Some(&lease.branch) {
             return Err(AppError::Validation(
                 "Stop Now worktree branch changed".into(),
             ));
         }
-        let private = git::text(&lease.worktree_path, &["rev-parse", "--absolute-git-dir"])?;
+        let private = git::text_with_bound(
+            env.subprocess_bound(std::time::Duration::from_secs(60)),
+            &lease.worktree_path,
+            &["rev-parse", "--absolute-git-dir"],
+        )?;
         let marker = std::path::Path::new(private.trim()).join(crate::domain::CLEANUP_LEASE_MARKER);
         let metadata = std::fs::symlink_metadata(&marker).map_err(|e| {
             AppError::Validation(format!("Stop Now cleanup marker unavailable: {e}"))
@@ -135,7 +146,7 @@ pub(crate) fn execute<S: Store>(
                 observations: Vec::new(),
                 diagnostics: vec![format!("observing exact Stop Now lease: {error}")],
             });
-        if let Err(error) = lease_guard(&owner, false) {
+        if let Err(error) = lease_guard(ctx.env(), &owner, false) {
             resources.status = "invalid".into();
             resources.diagnostics.push(error.to_string());
         }
@@ -155,7 +166,7 @@ pub(crate) fn execute<S: Store>(
         let mut residue = cleanup::Residue::default();
         let authority =
             cleanup::authorize(&resources, &paths, from, caller, ctx.env(), &mut residue);
-        let mut recovery = cleanup::recovery(&resources, &authority);
+        let mut recovery = cleanup::recovery(ctx.env(), &resources, &authority);
         recovery.cleared_awaiting = ctx.store().read(|tx| {
             Ok(tx
                 .story(owner.project, owner.story)?
@@ -186,7 +197,7 @@ pub(crate) fn execute<S: Store>(
             .unwrap_or(&owner.lease.repository_path);
         let mut residue = cleanup::Residue::default();
         let mut observed = progress.resources.clone();
-        if let Err(error) = lease_guard(&owner, true) {
+        if let Err(error) = lease_guard(ctx.env(), &owner, true) {
             observed.status = "invalid".into();
             observed.diagnostics.push(error.to_string());
         }
@@ -195,10 +206,17 @@ pub(crate) fn execute<S: Store>(
             progress.recovery.branch.as_ref(),
             progress.recovery.tip.as_ref(),
         ) {
-            match crate::service::resources::git::branch_exists(repository, branch) {
+            match crate::service::resources::git::branch_exists_with_bound(
+                ctx.env()
+                    .subprocess_bound(std::time::Duration::from_secs(60)),
+                repository,
+                branch,
+            ) {
                 Ok(false) => {}
                 Ok(true) => {
-                    let actual = crate::service::resources::git::text(
+                    let actual = crate::service::resources::git::text_with_bound(
+                        ctx.env()
+                            .subprocess_bound(std::time::Duration::from_secs(60)),
                         repository,
                         &[
                             "rev-parse",
@@ -232,14 +250,20 @@ pub(crate) fn execute<S: Store>(
         let remove_check = || -> Result<(), AppError> {
             check()?;
             if matches!(observed.status.as_str(), "resolved" | "absent") {
-                lease_guard(&owner, true)?;
+                lease_guard(ctx.env(), &owner, true)?;
                 if let (Some(repository), Some(branch), Some(expected)) = (
                     observed.repository.as_ref(),
                     progress.recovery.branch.as_ref(),
                     progress.recovery.tip.as_ref(),
-                ) && crate::service::resources::git::branch_exists(repository, branch)?
-                {
-                    let actual = crate::service::resources::git::text(
+                ) && crate::service::resources::git::branch_exists_with_bound(
+                    ctx.env()
+                        .subprocess_bound(std::time::Duration::from_secs(60)),
+                    repository,
+                    branch,
+                )? {
+                    let actual = crate::service::resources::git::text_with_bound(
+                        ctx.env()
+                            .subprocess_bound(std::time::Duration::from_secs(60)),
                         repository,
                         &[
                             "rev-parse",

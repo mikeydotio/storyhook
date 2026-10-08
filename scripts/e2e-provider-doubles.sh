@@ -49,6 +49,7 @@
 # daemon's allowlist leaves it. Returns 1 with a message on any write failure.
 write_e2e_provider_doubles() {
     local provider_bin="$1" knob_dir="$2" fake_tmux="$3"
+    local custody="${4:-}" custody_helper="${5:-}"
     if [ -z "$provider_bin" ] || [ -z "$knob_dir" ] || [ -z "$fake_tmux" ]; then
         echo "write_e2e_provider_doubles: PROVIDER_BIN, KNOB_DIR and FAKE_TMUX are all required" >&2
         return 1
@@ -71,11 +72,19 @@ PROVIDER
     # SH-584: the exact Codex launch string is executed at the terminal
     # boundary against this argv recorder. It writes into the fake tmux state
     # directory, which the tmux double has bridged by the time it runs this.
-    cat >"$provider_bin/codex" <<'PROVIDER' || return 1
-#!/usr/bin/env bash
-set -euo pipefail
+    {
+        printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+        printf 'export FAKE_TMUX_CUSTODY=%q\n' "$custody"
+        printf 'export FAKE_TMUX_CUSTODY_HELPER=%q\n' "$custody_helper"
+        cat <<'PROVIDER'
+# The argv recorder writes before fake tmux runs, so it needs its own custody.
+if [ -n "$FAKE_TMUX_CUSTODY" ]; then
+  exec 9<"$FAKE_TMUX_CUSTODY/writers" || exit 64
+  python3 -B "$FAKE_TMUX_CUSTODY_HELPER" writer-admit "$FAKE_TMUX_CUSTODY" 9 || exit 64
+fi
 python3 -c 'import json, os, sys; json.dump({"argv": sys.argv[1:], "cwd": os.getcwd()}, sys.stdout)' "$@" >"$FAKE_TMUX_STATE/provider-argv.json"
 PROVIDER
+    } >"$provider_bin/codex" || return 1
 
     {
         printf '#!/usr/bin/env bash\n'
@@ -83,6 +92,8 @@ PROVIDER
         printf 'set -euo pipefail\n'
         printf '_e2e_knob_dir=%q\n' "$knob_dir"
         printf '_e2e_fake_tmux=%q\n' "$fake_tmux"
+        printf '_e2e_custody=%q\n' "$custody"
+        printf '_e2e_custody_helper=%q\n' "$custody_helper"
         cat <<'TERMINAL'
 # Bridge the runner's FAKE_TMUX_* snapshot into an environment that arrived
 # without it (the daemon's own allowlisted tmux calls, SH-626). A knob the
@@ -96,6 +107,14 @@ for _f in "$_e2e_knob_dir"/FAKE_TMUX_*; do
   fi
 done
 unset _f _name
+# Bake custody outside the removable knob snapshot. Even a late invocation
+# after that snapshot is gone must refuse, never silently become unguarded.
+export FAKE_TMUX_CUSTODY="$_e2e_custody"
+export FAKE_TMUX_CUSTODY_HELPER="$_e2e_custody_helper"
+if [ -n "$FAKE_TMUX_CUSTODY" ]; then
+  exec 9<"$FAKE_TMUX_CUSTODY/writers" || exit 64
+  python3 -B "$FAKE_TMUX_CUSTODY_HELPER" writer-admit "$FAKE_TMUX_CUSTODY" 9 || exit 64
+fi
 if [ "${1:-}" = new-window ]; then
   previous=""
   launch=""

@@ -411,7 +411,10 @@ fn engine_status_preserves_run_and_exposes_the_halted_verifier() {
     incident(&f);
     let ctx = f.ctx().with_verification_activity(Some(&activity));
     // Starting a run records idle lanes; only reconciliation dispatches a process.
-    let dispatcher = ShellDispatcher::new(f.cwd().join("unused-dispatcher"), f.env().clone());
+    let dispatcher = ShellDispatcher::new(
+        f.cwd().join("unused-dispatcher"),
+        storyhook_test_support::subprocess_patience(f.env().clone()),
+    );
     let run = EngineService::new(&ctx, &dispatcher)
         .start(StartRequest {
             scope: EngineScope::Project,

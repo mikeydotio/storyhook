@@ -45,6 +45,19 @@ metadata="$(github_exec pr view "$pr" --json state,headRefOid,baseRefName,mergeC
 state="$(printf '%s\n' "$metadata" | jq -er '.state')" || verdict uncertain "missing PR state"
 if [ "$state" != MERGED ]; then
     if [ -n "$not_attempted" ]; then verdict not-attempted "$not_attempted"; fi
+    # A receipt belongs to this exact marker, admitted head/tree and PR. A
+    # missing/torn/mismatched receipt never relaxes the uncertain-outcome fence.
+    number="${pr##*/}"
+    if { [ "$state" = OPEN ] || [ "$state" = CLOSED ]; } && \
+        [ "$(cat "$marker" 2>/dev/null)" = "$expected_head $expected_tree" ] && \
+        jq -e --arg head "$expected_head" --arg tree "$expected_tree" --arg number "$number" \
+        '.version == 1 and .head == $head and .tree == $tree and .number == $number and
+         (.status | type == "number") and .status == (.status | floor) and
+         .status >= 400 and .status < 500 and .status != 408' \
+        "$marker.refused" >/dev/null 2>&1; then
+        status="$(jq -r '.status' "$marker.refused")"
+        verdict refused "GitHub synchronously refused the admitted merge with HTTP $status; observed pull request is $state"
+    fi
     verdict uncertain "admitted pull request is $state; an earlier request may still complete. $output"
 fi
 head="$(printf '%s\n' "$metadata" | jq -er '.headRefOid')" || verdict uncertain "missing merged head"

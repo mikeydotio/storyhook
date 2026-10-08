@@ -283,6 +283,14 @@ fi
 # A server has one socket identity across /tmp and /private/tmp callers.
 STATE="$(cd "$FAKE_TMUX_STATE" && pwd -P)" || exit 1
 
+# SH-807: browser slices require inherited write custody before the first
+# mutation. Delayed sentinel publishers inherit fd 9 too, even after setsid
+# or reparenting. Ordinary standalone plugin fixtures have no custody knob.
+if [ -n "${FAKE_TMUX_CUSTODY:-}" ]; then
+  exec 9<"$FAKE_TMUX_CUSTODY/writers" || exit 64
+  python3 -B "$FAKE_TMUX_CUSTODY_HELPER" writer-admit "$FAKE_TMUX_CUSTODY" 9 || exit 64
+fi
+
 # Mock the provider event and timing, never Storyhook publication.
 publish_claude_hook() {
   local hook_root payload hook_cwd="$1"

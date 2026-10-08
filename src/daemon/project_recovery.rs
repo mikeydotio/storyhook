@@ -218,7 +218,12 @@ fn process_record(
         return Ok(false);
     }
 
-    let Some(workspace) = WorkspaceLock::try_acquire(&candidate.checkout, &candidate.story_id)?
+    let Some(workspace) = WorkspaceLock::try_acquire_with_bound(
+        ctx.env()
+            .subprocess_bound(std::time::Duration::from_secs(30)),
+        &candidate.checkout,
+        &candidate.story_id,
+    )?
     else {
         return Ok(false);
     };
@@ -226,7 +231,13 @@ fn process_record(
     // Both must be free; inherited descriptors survive a dead daemon's children.
     let origin = &view.state.subjects[0].candidate;
     let _origin_workspace = if origin.story_id != candidate.story_id {
-        let Some(lock) = WorkspaceLock::try_acquire(&origin.checkout, &origin.story_id)? else {
+        let Some(lock) = WorkspaceLock::try_acquire_with_bound(
+            ctx.env()
+                .subprocess_bound(std::time::Duration::from_secs(30)),
+            &origin.checkout,
+            &origin.story_id,
+        )?
+        else {
             return Ok(false);
         };
         Some(lock)

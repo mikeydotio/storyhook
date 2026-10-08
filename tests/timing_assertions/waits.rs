@@ -112,7 +112,7 @@ pub(super) fn expression_end(code: &str, start: usize) -> usize {
 }
 
 /// Normalized raw bound expressions and their occurrence counts.
-fn raw_waits(source: &str) -> BTreeMap<String, usize> {
+pub(super) fn raw_waits(source: &str) -> BTreeMap<String, usize> {
     let code: String = code_only(source).split_whitespace().collect();
     let pattern = regex::Regex::new(concat!(
         r"(?:std::time::)?Instant::now\(\)(?:\+|<=|>=|<|>)|",
@@ -263,6 +263,7 @@ fn every_raw_wait_has_an_exact_classification() {
         root,
         "crates/storyhook-test-support/src/*.rs",
     ));
+    corpus.extend(super::src_bounds::SrcCorpus::read(root).test_sources());
     assert!(
         corpus.contains_key("tests/engine_reset/quiescent.rs"),
         "the census must include nested modules"
@@ -279,7 +280,17 @@ fn every_raw_wait_has_an_exact_classification() {
         &std::fs::read_to_string(root.join("tests/timing_assertions/waits.json")).unwrap(),
     )
     .unwrap();
-    let expected: BTreeMap<_, _> = reviewed
+    let expected = classified_counts(reviewed);
+    assert_eq!(
+        actual, expected,
+        "new, changed, or stale raw waits: grace patience; document proofs and delegated bounds in waits.json"
+    );
+}
+
+fn classified_counts(
+    reviewed: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
+) -> BTreeMap<String, BTreeMap<String, usize>> {
+    reviewed
         .into_iter()
         .map(|(path, entries)| {
             let waits = entries
@@ -304,9 +315,147 @@ fn every_raw_wait_has_an_exact_classification() {
                 .collect();
             (path, waits)
         })
-        .collect();
+        .collect()
+}
+
+/// The source half is an independently runnable detector for this story.
+#[test]
+fn sh846_source_wait_inventory_matches_exactly() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let actual = source_waits(super::src_bounds::SrcCorpus::read(root));
+    assert!(actual.contains_key("src/daemon/engine/wait_tests.rs"));
+    assert!(actual.contains_key("src/daemon/lifecycle.rs"));
+    let reviewed: BTreeMap<String, BTreeMap<String, serde_json::Value>> =
+        serde_json::from_str(include_str!("waits.json")).unwrap();
+    let expected = classified_counts(
+        reviewed
+            .into_iter()
+            .filter(|(path, _)| path.starts_with("src/"))
+            .collect(),
+    );
     assert_eq!(
         actual, expected,
-        "new, changed, or stale raw waits: grace patience; document proofs and delegated bounds in waits.json"
+        "new, changed, or stale src test waits: grace patience and classify exact retained sites"
+    );
+}
+
+fn source_waits(corpus: super::src_bounds::SrcCorpus) -> BTreeMap<String, BTreeMap<String, usize>> {
+    corpus
+        .test_sources()
+        .into_iter()
+        .filter_map(|(path, source)| {
+            let waits = raw_waits(&source);
+            (!waits.is_empty()).then_some((path, waits))
+        })
+        .collect()
+}
+
+#[test]
+fn sh846_source_regions_cover_inline_and_path_modules_without_production() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("src")).unwrap();
+    std::fs::write(root.path().join("src/cases.rs"), "").unwrap();
+    std::fs::write(root.path().join("src/alternate.rs"), "").unwrap();
+    let sources = BTreeMap::from([
+        (
+            "src/lib.rs".into(),
+            r#"
+            fn production() { rx.recv_timeout(PRODUCTION); }
+            #[cfg(any(test, unix))]
+            fn also_production() { rx.recv_timeout(ALSO_PRODUCTION); }
+            #[cfg(not(test))]
+            fn shipping() { rx.recv_timeout(SHIPPING); }
+            #[cfg(test)]
+            mod inline { fn fixture() { rx.recv_timeout(INLINE); } }
+            #[cfg(test)]
+            fn fallible_fixture<T, E>() -> Result<T, E> { rx.recv_timeout(GENERIC_RETURN); }
+            fn after_fixture() { rx.recv_timeout(AFTER_FIXTURE); }
+            #[cfg(all(test, unix))]
+            #[path = "cases.rs"]
+            mod cases;
+            #[path = "alternate.rs"]
+            #[cfg(test)]
+            mod other;
+        "#
+            .into(),
+        ),
+        (
+            "src/cases.rs".into(),
+            r#"
+            fn fixture() { rx.recv_timeout(OUT_OF_LINE); }
+            // rx.recv_timeout(COMMENT);
+            const FIXTURE: &str = "rx.recv_timeout(STRING)";
+        "#
+            .into(),
+        ),
+    ]);
+    let mut sources = sources;
+    sources.insert(
+        "src/alternate.rs".into(),
+        "fn fixture() { rx.recv_timeout(PATH_BEFORE_CFG); }".into(),
+    );
+    let actual = source_waits(super::src_bounds::SrcCorpus::from_sources(
+        root.path(),
+        sources,
+    ));
+    assert_eq!(
+        actual,
+        BTreeMap::from([
+            (
+                "src/alternate.rs".into(),
+                BTreeMap::from([(".recv_timeout(PATH_BEFORE_CFG".into(), 1)])
+            ),
+            (
+                "src/lib.rs".into(),
+                BTreeMap::from([
+                    (".recv_timeout(INLINE".into(), 1),
+                    (".recv_timeout(GENERIC_RETURN".into(), 1)
+                ])
+            ),
+            (
+                "src/cases.rs".into(),
+                BTreeMap::from([(".recv_timeout(OUT_OF_LINE".into(), 1)])
+            ),
+        ])
+    );
+}
+
+#[test]
+fn sh846_source_inventory_rejects_added_changed_and_stale_waits() {
+    let root = Path::new("/unused-inline-corpus");
+    let scan = |body: &str| {
+        source_waits(super::src_bounds::SrcCorpus::from_sources(
+            root,
+            BTreeMap::from([(
+                "src/lib.rs".into(),
+                format!("#[cfg(test)] mod cases {{ {body} }}"),
+            )]),
+        ))
+    };
+    let reviewed = classified_counts(
+        serde_json::from_value(serde_json::json!({
+            "src/lib.rs": {".recv_timeout(PROOF": {
+                "count": 1, "kind": "proof", "reason": "negative observation of the driven deadline"
+            }}
+        }))
+        .unwrap(),
+    );
+    assert_eq!(scan("fn test() { rx.recv_timeout(PROOF); }"), reviewed);
+    for body in [
+        "fn test() { rx.recv_timeout(PROOF); rx.recv_timeout(PROOF); }",
+        "fn test() { rx.recv_timeout(NEW); }",
+        "fn test() {}",
+    ] {
+        assert_ne!(scan(body), reviewed, "the exact fence must reject {body}");
+    }
+    assert!(scan("fn test() { rx.recv_timeout(load_grace::graced_now(PATIENCE)); }").is_empty());
+    assert!(
+        std::panic::catch_unwind(|| {
+            classified_counts(serde_json::from_value(
+        serde_json::json!({"src/lib.rs": {".recv_timeout(PROOF": {
+            "count": 1, "kind": "patience", "reason": "a fixed wait cannot be waived as patience"
+        }}})).unwrap())
+        })
+        .is_err()
     );
 }

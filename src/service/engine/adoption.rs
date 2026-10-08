@@ -32,13 +32,13 @@ pub trait DispatchInspector {
     ) -> Result<InspectedDispatch, AppError>;
 }
 
+use super::probe_runtime::{LiveProbeRuntime, ProbeRuntime};
 use crate::env::{Environment, git_env};
-use crate::process::run_captured;
 use crate::store::{EngineLaneRecord, Store};
 use std::process::Command;
 
 use super::{Dispatcher, EngineService, RunId, RunView, TMUX_TIMEOUT, TmuxBudget, WindowProbe};
-use crate::service::tmux_target::{self, Target};
+use crate::service::tmux_target::Target;
 
 /// The production inspector, with no mutating subprocess operations.
 pub struct LiveDispatchInspector {
@@ -63,15 +63,16 @@ fn capture(
     context: &str,
     budget: TmuxBudget,
     deadline: Option<Instant>,
+    runtime: &impl ProbeRuntime,
 ) -> Result<String, AppError> {
     command.args(args);
     let mut timeout = budget
-        .timeout_at(Instant::now())
+        .timeout_at(runtime.now())
         .map_err(|detail| refusal(format!("{context}: {detail}")))?;
     if let Some(deadline) = deadline {
-        timeout = timeout.min(tmux_target::remaining(deadline)?);
+        timeout = timeout.min(runtime.remaining(deadline)?);
     }
-    let captured = run_captured(command, timeout).map_err(|error| {
+    let captured = runtime.capture(command, timeout).map_err(|error| {
         let budget = if budget.is_shared() {
             format!(" (remaining startup probe budget: {timeout:?})")
         } else {
@@ -103,6 +104,7 @@ impl DispatchInspector for LiveDispatchInspector {
             "list registered worktrees",
             budget,
             None,
+            &LiveProbeRuntime,
         )?;
         let mut matching = Vec::new();
         for path in inventory
@@ -110,7 +112,7 @@ impl DispatchInspector for LiveDispatchInspector {
             .filter_map(|field| field.strip_prefix("worktree "))
         {
             let path = Path::new(path);
-            if let Some(lease) = crate::service::cleanup_lease::marker_at(path)?
+            if let Some(lease) = crate::service::cleanup_lease::marker_at(&self.env, path)?
                 && lease.project_slug == project
                 && lease.story_id == story
             {
@@ -138,8 +140,15 @@ impl DispatchInspector for LiveDispatchInspector {
         {
             return Err(refusal(format!("{story}: repository mismatch")));
         }
-        let (target, deadline) = inspect_target(&self.env, &lease, budget)?;
-        let listing = list_panes(&lease, budget, OsStr::new("tmux"), &target, deadline)?;
+        let (target, deadline) = inspect_target(&self.env, &lease, budget, &LiveProbeRuntime)?;
+        let listing = list_panes(
+            &lease,
+            budget,
+            OsStr::new("tmux"),
+            &target,
+            deadline,
+            &LiveProbeRuntime,
+        )?;
         inspect_lease(lease, &listing)
     }
 }
@@ -157,15 +166,11 @@ fn inspect_target(
     env: &Environment,
     lease: &StoryCleanupLease,
     budget: TmuxBudget,
+    runtime: &impl ProbeRuntime,
 ) -> Result<(Target, Instant), AppError> {
-    let now = Instant::now();
+    let now = runtime.now();
     let deadline = now + budget.timeout_at(now).map_err(refusal)?;
-    let target = tmux_target::inspect(
-        env,
-        Some(&lease.tmux.socket_path),
-        deadline,
-        &Default::default(),
-    )?;
+    let target = runtime.inspect(env, Some(&lease.tmux.socket_path), deadline)?;
     target.require_binding()?;
     Ok((target, deadline))
 }
@@ -176,6 +181,7 @@ fn list_panes(
     program: &OsStr,
     target: &Target,
     deadline: Instant,
+    runtime: &impl ProbeRuntime,
 ) -> Result<String, AppError> {
     capture(
         tmux(lease, program, target),
@@ -188,6 +194,7 @@ fn list_panes(
         "inspect leased tmux server",
         budget,
         Some(deadline),
+        runtime,
     )
 }
 
@@ -279,12 +286,22 @@ pub(super) fn probe(
     program: &OsStr,
     env: &Environment,
 ) -> WindowProbe {
+    probe_with(lane, budget, program, env, &LiveProbeRuntime)
+}
+
+pub(super) fn probe_with(
+    lane: &EngineLaneRecord,
+    budget: TmuxBudget,
+    program: &OsStr,
+    env: &Environment,
+    runtime: &impl ProbeRuntime,
+) -> WindowProbe {
     let Some(lease) = lane.cleanup_lease.clone() else {
         return WindowProbe::Unanswered {
             detail: "adopted lane lost cleanup lease".into(),
         };
     };
-    let (target, deadline) = match inspect_target(env, &lease, budget) {
+    let (target, deadline) = match inspect_target(env, &lease, budget, runtime) {
         Ok(prepared) => prepared,
         Err(error) => {
             return WindowProbe::Unanswered {
@@ -292,7 +309,7 @@ pub(super) fn probe(
             };
         }
     };
-    let listing = match list_panes(&lease, budget, program, &target, deadline) {
+    let listing = match list_panes(&lease, budget, program, &target, deadline, runtime) {
         Ok(listing) => listing,
         Err(error) => {
             let detail = error.to_string();
@@ -320,6 +337,7 @@ pub(super) fn probe(
                 "read pane activity",
                 budget,
                 Some(deadline),
+                runtime,
             );
             match activity {
                 Ok(at) => WindowProbe::Alive {
@@ -464,7 +482,15 @@ impl<S: Store, D: Dispatcher> EngineService<'_, S, D> {
         lock_ids.sort_unstable();
         let workspaces: Vec<_> = lock_ids
             .into_iter()
-            .map(|id| crate::service::workspace_lock::WorkspaceLock::acquire(&checkout, id))
+            .map(|id| {
+                crate::service::workspace_lock::WorkspaceLock::acquire_with_bound(
+                    self.ctx
+                        .env()
+                        .subprocess_bound(std::time::Duration::from_secs(30)),
+                    &checkout,
+                    id,
+                )
+            })
             .collect::<Result<_, _>>()?;
         let mut found = Vec::new();
         for row in &before {
@@ -558,9 +584,17 @@ mod locale_tests {
         let mut lease = lane.cleanup_lease.take().unwrap();
         lease.tmux.socket_path = fixture.endpoint.clone();
         let budget = dispatcher.probe_budget();
-        let (target, deadline) = inspect_target(&fixture.env, &lease, budget).unwrap();
-        let listing =
-            list_panes(&lease, budget, &dispatcher.tmux_program, &target, deadline).unwrap();
+        let (target, deadline) =
+            inspect_target(&fixture.env, &lease, budget, &LiveProbeRuntime).unwrap();
+        let listing = list_panes(
+            &lease,
+            budget,
+            &dispatcher.tmux_program,
+            &target,
+            deadline,
+            &LiveProbeRuntime,
+        )
+        .unwrap();
         let error = inspect_lease(lease, &listing).unwrap_err().to_string();
         assert!(
             error.contains("pane no longer runs dispatched codex process: sleep"),

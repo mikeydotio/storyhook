@@ -144,7 +144,8 @@ impl<'a, S: Store> StoryResetService<'a, S> {
         story_id: &str,
         residue: &mut cleanup::Residue,
     ) -> Option<WorkspaceLock> {
-        let common = match super::resources::git::text(
+        let common = match super::resources::git::text_with_bound(
+            self.ctx.env().subprocess_bound(Duration::from_secs(60)),
             repository,
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
         ) {
@@ -432,7 +433,7 @@ impl<'a, S: Store> StoryResetService<'a, S> {
                 // Pinned once, even when identification failed: teardown then
                 // withholds removal and reports why, and the reset still ends.
                 let mut report = report;
-                match identity::capture(&report) {
+                match identity::capture(self.ctx.env(), &report) {
                     Ok(paths) => reset.paths = paths,
                     Err(error) => {
                         report.status = "unavailable".into();
@@ -465,7 +466,7 @@ impl<'a, S: Store> StoryResetService<'a, S> {
             // Recorded before anything is removed, and never overwritten by a
             // retry that can no longer see what an earlier attempt discarded.
             if reset.recovery.is_none() {
-                reset.recovery = Some(cleanup::recovery(&report, &authority));
+                reset.recovery = Some(cleanup::recovery(self.ctx.env(), &report, &authority));
                 self.write(|tx| tx.put_story_reset(&reset))?;
             }
             cleanup::remove(

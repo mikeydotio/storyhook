@@ -51,7 +51,10 @@ PY
 "#,
     )
     .unwrap();
-    let dispatcher = ShellDispatcher::new(script, fixture.env().clone());
+    let dispatcher = ShellDispatcher::new(
+        script,
+        storyhook_test_support::subprocess_patience(fixture.env().clone()),
+    );
     let ctx = fixture.ctx();
     let engine = EngineService::new(&ctx, &dispatcher);
     let (sent, received) = mpsc::channel();

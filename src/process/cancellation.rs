@@ -131,7 +131,8 @@ mod tests {
                 &token,
                 |pid| {
                     leader = pid;
-                    let deadline = Instant::now() + Duration::from_secs(5);
+                    let deadline = Instant::now()
+                        + storyhook_test_support::load_grace::graced_now(Duration::from_secs(5));
                     while !ready.exists() {
                         assert!(
                             Instant::now() < deadline,
@@ -177,7 +178,11 @@ mod tests {
                     },
                 )
             });
-            observed.recv_timeout(Duration::from_secs(5)).unwrap();
+            observed
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    Duration::from_secs(5),
+                ))
+                .unwrap();
             token.cancel();
             assert!(matches!(
                 worker.join().unwrap(),

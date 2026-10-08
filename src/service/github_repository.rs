@@ -76,13 +76,13 @@ pub(crate) fn repository<S: Store>(ctx: &Ctx<'_, S>) -> Result<Repository, AppEr
             record.uuid
         )));
     }
-    let repository = Repository::resolve(&checkout)?;
+    let repository = Repository::resolve_with_env(&checkout, ctx.env())?;
     // A matching local pointer identifies an explicit project lane. An unrelated
     // cwd (including the daemon's) cannot replace the registered authority.
     for root in project::ancestors(ctx.cwd()) {
         if let Some(pointer) = project::read_pointer(&root)? {
             if pointer.uuid == record.uuid {
-                let local = Repository::resolve(&root)?;
+                let local = Repository::resolve_with_env(&root, ctx.env())?;
                 if local.identity() != repository.identity() {
                     return Err(AppError::Validation(format!(
                         "project lane {} has a different origin from registered checkout {}",

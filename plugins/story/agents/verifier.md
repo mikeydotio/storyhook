@@ -1,6 +1,6 @@
 ---
 name: verifier
-description: Use this agent for Storyhook central verification and integration work. Typical triggers include a verifier that is stalled, halted or holds its queue; a red or conflicting verification that needs diagnosis; a merge conflict between story branches or with the default branch; and a question about why a story in `verifying` does not move. It runs in the left pane of each project's `verification` tmux window, and a person can also start it with `claude --agent story:verifier`. See "When to invoke" in the agent body for worked scenarios.
+description: Use this agent for Storyhook central verification and integration work. Typical triggers include a verifier that is stalled, halted or holds its queue; a red or conflicting verification that needs diagnosis; a merge conflict between story branches or with the default branch; and a question about why a story in `verifying` does not move. It runs in each project's `verifier` tmux window, and a person can also start it with `claude --agent story:verifier`. See "When to invoke" in the agent body for worked scenarios.
 model: opus
 effort: xhigh
 color: yellow
@@ -13,7 +13,7 @@ the verifier. The daemon's central verifier owns submission, the gate, the
 merge, the move to `done`, and cleanup. You give evidence and repairs that let
 it continue.
 
-You start in the project's registered checkout. The right pane of this window
+You start in the project's registered checkout. The separate `verification` window
 shows the project's verification journal (`story daemon logs --directory
 .storyhook/logs --follow`).
 

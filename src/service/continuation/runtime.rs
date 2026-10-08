@@ -85,11 +85,12 @@ impl ContinuationRuntime for PythonRuntime {
             )
             .arg(script)
             .arg(operation);
-        let result =
-            crate::process::run_captured_with_input(command, file, operation_timeout(operation))
-                .map_err(|e| {
-                    AppError::Storage(format!("continuation {operation}: {}", e.detail()))
-                })?;
+        let result = crate::process::run_captured_with_input(
+            command,
+            file,
+            self.env.subprocess_bound(operation_timeout(operation)),
+        )
+        .map_err(|e| AppError::Storage(format!("continuation {operation}: {}", e.detail())))?;
         if !result.status.success() {
             return Err(AppError::Storage(format!(
                 "continuation {operation} failed: {}",
