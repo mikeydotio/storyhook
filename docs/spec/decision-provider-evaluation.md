@@ -110,6 +110,35 @@ scope changes, epics versus executable children, and urgency/line-count distract
 At least 20% should be ambiguous, stale, contradictory or adversarial. Include
 choice permutations, irrelevant padding and nearly identical IDs.
 
+Freeze a common class order for each use case, including an insufficient-evidence
+class. Use Choice distributions from Decisions/Jev. For the Responses arm,
+explicitly request the same complete class-probability vector in the strict
+schema; label it **self-reported generated probabilities**, not a native calibrated
+distribution. A lone enum, score or generated confidence cannot supply multiclass
+calibration evidence. Require finite values in [0,1], every class exactly once
+and a sum within 0.001 of one; normalize only that rounding difference and record
+it. Other invalid vectors abstain. Freeze tie-breaking and probability-to-label
+mapping before evaluation; use the vector's largest value for top-label ECE.
+
+Fit any probability calibrator and abstention cutoff on the calibration split
+only, then freeze them. Freeze the empirical class-frequency baseline from the
+development split. Report raw and calibrated scores separately. Compute multiclass
+Brier and top-label ECE over all valid held-out vectors, including low-confidence
+abstentions, not just accepted answers. Report missing-vector/refusal/error counts
+against all attempted cases; unavailable or insufficient probability evidence is
+**insufficient**, never a calibration pass. Current deterministic/manual behavior
+has no invented probability vector; its calibration is not applicable, while the
+development-frequency vector supplies the numerical Brier comparator.
+
+For answerable cases, macro F1 and per-class recall count abstentions/errors as
+missed labels. Coverage is accepted answers divided by all answerable cases;
+accepted-answer precision/error uses accepted answers only. Measure abstention
+recall separately on insufficient/OOD cases; an accepted answer on such a case
+still counts as an error in accepted-answer precision. Complexity weighted kappa uses only
+answered low/medium/high cases; insufficient context is not a fourth ordinal level.
+Report that kappa denominator and answerable coverage, requiring coverage ≥0.70
+for either use case so selective omission cannot hide difficult cases.
+
 | Measure | Proposed acceptance threshold |
 |---|---|
 | Runtime classification | Held-out macro F1 ≥0.90; accepted-answer precision ≥0.98; coverage ≥0.70; insufficient/OOD abstention recall ≥0.95. Also require ≥300 accepted independent held-out cases and a 95% Wilson upper bound on accepted-answer error ≤0.02. |
@@ -151,6 +180,25 @@ unconfigured, shadow, unavailable, abstained and stale outcomes distinctly, plus
 last model/time, minimized provenance, cost and latency. Neither toggle changes
 project automations, verifier state, host policy or provider sessions.
 [Manual mode](project-manual-mode.md) remains authoritative.
+
+**Proposed data boundary:** external payloads are initially synthetic only. A
+later authorized real-data payload may contain an allowlisted summary capped at
+8 KiB: pseudonymous story/incident ID, task kind, relevant sanitized title and
+acceptance summary, typed error/status codes, bounded numeric observations and
+opaque local evidence handles. Handles are references, not permission to fetch
+their contents. Exclude credentials, secrets, personal absolute paths, raw private
+source, full journals, attachments and customer content by default. Do not send
+raw input when summarization/redaction fails; abstain locally.
+
+Propose local minimized provenance retention for at most 30 days and 10,000 records
+per installation, pruning at whichever limit is reached first. Keep only payload
+hash/version, pseudonymous ID, model/schema version, classification/abstention,
+timing/usage and bounded error code; raw production prompts/responses are not
+persisted by this feature. Synthetic study artifacts have a separately approved
+retention period, proposed 30 days after the study. These local limits neither
+change existing authoritative recovery receipts nor control vendor retention.
+Real-data payload expansion, raw-content retention or a longer local retention
+period requires its own explicit decision, alongside provider data-term review.
 
 Runtime output is an allowlisted recommendation with local evidence references.
 It cannot construct native capabilities, invent observations, certify a tree or
@@ -195,6 +243,20 @@ alternative; it does not establish a correctness winner. Jev offers explicit
 version pinning and lower listed input price; Decisions documents refusal and
 data-control behavior but is beta. Retain-current remains a valid outcome for
 either use case if measured benefit or access/privacy requirements are unmet.
+
+**Recommended next step:** seek authorization for the bounded synthetic comparison
+while retaining current operation. Evaluate the two use cases independently. A
+candidate must meet every absolute threshold and authority invariant and show a
+useful, supported improvement over current behavior; passing thresholds alone
+does not justify new spend or data export. Before the held-out run, nominate the
+primary benefit and minimum useful effect for each use case (proposed: ≥5 percentage
+points more correct accepted-case coverage without higher error, or ≥20% lower
+end-to-end p95 latency at equivalent quality/coverage). Use paired family-level
+uncertainty intervals; require the 95% interval to support the chosen minimum
+effect. No supported improvement means recommend retain-current or explicitly
+authorize more evidence, not select a winner from noisy point estimates.
+If the current assessment path cannot be reproduced, report the comparative
+benefit as unmeasured rather than treating a default value as a measured assessor.
 
 Before recording each selection, resolve account availability and relevant data
 terms, identify the current initial assessor, and either authorize the bounded
