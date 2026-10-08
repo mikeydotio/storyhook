@@ -1235,6 +1235,10 @@ pub fn run<S: crate::store::Store>(
     crate::daemon::crash::install_panic_hook(env);
     enter_stable_working_directory(env)?;
     let _pidfile = claim_pidfile(env)?;
+    // Process-local macOS headroom, after exclusive daemon ownership and
+    // before activity workers. Preserve hard limits and explicit policy.
+    #[cfg(target_os = "macos")]
+    super::nofile::initialize(env, owner_flag);
     let _activity = crate::daemon::activity::start(env);
     // From here on, before the slow startup work: a daemon whose store is
     // deleted serves nobody, and nothing else would ever stop it.

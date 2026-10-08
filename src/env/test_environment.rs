@@ -346,6 +346,12 @@ pub const TEST_ENVIRONMENT: &[Parameter] = &[
         reason: "a subprocess patience declaration belongs to one fixture; an inherited override can mask timeout proofs or make a default binary refuse startup",
     },
     Parameter {
+        name: "STORYHOOK_DAEMON_NOFILE",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "an operator's descriptor-limit policy must not alter an isolated daemon fixture",
+    },
+    Parameter {
         name: "STORYHOOK_VERIFIER_MIRROR",
         disposition: Disposition::Literal("0"),
         scope: Scope::Anywhere,

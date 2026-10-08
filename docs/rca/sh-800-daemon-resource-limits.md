@@ -69,7 +69,8 @@ descriptor demand under peak workload was not measured here, so these results
 do not establish a universal minimum or justify copying the fork's million-file
 ceiling.
 
-The warranted follow-up is a separate daemon-local normalization change with
-regression coverage, preserving higher inherited limits, hard ceilings, and
-explicit operator controls. It must not raise a global limit or change launchd
-manager policy. A second host was not available; no cross-host result is claimed.
+The separate follow-up change adds [daemon-local normalization](../spec/daemon-resource-limits.md)
+with regression coverage, preserving higher inherited limits, hard ceilings,
+and explicit operator controls. It does not raise a global limit or change
+launchd manager policy. A second host was not available; no cross-host result
+is claimed.
