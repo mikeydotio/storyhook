@@ -351,5 +351,12 @@
       "kind": "delegated",
       "reason": "Environment-owned service paths pass their 30s allowance through git_with_bound/acquire_with_bound. Remaining crate-private default wrappers compile only for lib fixtures and grace their setup/observation allowance. Ownership remains nonblocking; this helper does not retry effects."
     }
+  },
+  "src/service/integration_recovery/publication/tests.rs": {
+    "test run_captured_query_quiescent(deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The local publication fixture derives one absolute command deadline from load_grace::graced_now(30 seconds), retaining that deadline through owned process-group settlement. Only remote replies are modeled; local Git uses the normal bounded capture."
+    }
   }
 }
