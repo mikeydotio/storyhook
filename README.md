@@ -526,10 +526,10 @@ Global flags — `--json`, `--quiet`, `--no-hooks`, `--store-path <file>`, `--pr
 project. `story verifier landing release` is operator-only recovery for an exact
 intent: it requires a reason and a fresh remote observation of the admitted head
 in OPEN or CLOSED state. It records that observation and reason on every affected
-story, releasing all remaining batch members together. Stories stay Verifying;
-the command does not merge, certify or complete them. An earlier remote request
-may still complete after an OPEN observation; see `story help verifier` for the
-admission and reconciliation safeguards.
+story, releasing all remaining batch members together. The command preserves each
+story's current state and grants no merge, certification or completion. An earlier
+remote request may still complete after an OPEN observation; see
+`story help verifier` for the admission and reconciliation safeguards.
 
 ### Story reset
 
