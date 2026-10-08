@@ -260,3 +260,25 @@ fn sh871_gate_inputs_cannot_renew_original_observation_lifetime() {
             .is_err()
     );
 }
+
+#[test]
+fn sh871_gate_inputs_recheck_observation_cancel_after_native_custody() {
+    let f = Fixture::new();
+    let observation_token = Cancellation::default();
+    let claim_token = Cancellation::default();
+    let native = fixture_gate_inputs(
+        f.observe().unwrap(),
+        Instant::now() + Duration::from_secs(60),
+        observation_token.clone(),
+    );
+    native
+        .validate_observation(OWNER, ATTEMPT, &f.publication, &f.assembly)
+        .unwrap();
+    let result = native.finish_custody(|| {
+        assert!(!claim_token.is_cancelled());
+        observation_token.cancel();
+        Ok(())
+    });
+    assert!(result.is_err());
+    assert!(!claim_token.is_cancelled());
+}

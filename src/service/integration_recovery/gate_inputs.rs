@@ -48,7 +48,17 @@ impl NativeIntegrationGateInputs {
             claim.publication(),
             claim.assembly(),
         )?;
-        claim.validate_custody()
+        self.finish_custody(|| claim.validate_custody())
+    }
+
+    fn finish_custody(
+        &self,
+        custody: impl FnOnce() -> Result<(), AppError>,
+    ) -> Result<(), AppError> {
+        custody()?;
+        // Native filesystem validation can outlast or observe cancellation of
+        // this independent observation even while the claim remains live.
+        live(self.deadline, &self.cancellation)
     }
 
     fn validate_observation(
