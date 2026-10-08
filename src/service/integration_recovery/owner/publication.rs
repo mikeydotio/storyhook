@@ -332,6 +332,7 @@ pub(super) fn validate_state(
             | IntegrationPhase::Gating
             | IntegrationPhase::Running
             | IntegrationPhase::Certified
+            | IntegrationPhase::Landing
     );
     if assembled && state.assembly.is_none()
         || matches!(
@@ -345,6 +346,7 @@ pub(super) fn validate_state(
                 | IntegrationPhase::Gating
                 | IntegrationPhase::Running
                 | IntegrationPhase::Certified
+                | IntegrationPhase::Landing
         ) && !state.publication_effects.is_empty()
         || matches!(
             state.phase,
@@ -352,10 +354,14 @@ pub(super) fn validate_state(
                 | IntegrationPhase::Gating
                 | IntegrationPhase::Running
                 | IntegrationPhase::Certified
+                | IntegrationPhase::Landing
         ) != state.publication.is_some()
         || matches!(
             state.phase,
-            IntegrationPhase::Gating | IntegrationPhase::Running | IntegrationPhase::Certified
+            IntegrationPhase::Gating
+                | IntegrationPhase::Running
+                | IntegrationPhase::Certified
+                | IntegrationPhase::Landing
         ) != state.gate_attempt.is_some()
         || state
             .gate_attempt
@@ -383,6 +389,7 @@ pub(super) fn validate_state(
                 | IntegrationPhase::Gating
                 | IntegrationPhase::Running
                 | IntegrationPhase::Certified
+                | IntegrationPhase::Landing
         ) {
             evidence.epoch.checked_add(
                 if matches!(
@@ -390,8 +397,13 @@ pub(super) fn validate_state(
                     IntegrationPhase::Gating
                         | IntegrationPhase::Running
                         | IntegrationPhase::Certified
+                        | IntegrationPhase::Landing
                 ) {
-                    2
+                    if state.phase == IntegrationPhase::Landing {
+                        3
+                    } else {
+                        2
+                    }
                 } else {
                     1
                 },
@@ -406,6 +418,7 @@ pub(super) fn validate_state(
         }
     }
     gate::validate_inputs(state, record)?;
+    landing::validate_state(state, record)?;
     if let Some(publication) = &state.publication {
         if state.publication_effects
             != [
@@ -435,11 +448,7 @@ fn validate_publication(
         .map_err(|e| invalid(&e.to_string()))?;
     if evidence.version != 1
         || evidence.owner != record.id
-        || Some(evidence.epoch)
-            != state.effect_epoch.checked_sub(u32::from(matches!(
-                state.phase,
-                IntegrationPhase::Gating | IntegrationPhase::Running | IntegrationPhase::Certified
-            )))
+        || Some(evidence.epoch) != assembly.epoch.checked_add(1)
         || evidence.original != state.submission
         || evidence.branch != state.branch
         || evidence.commit != assembly.commit

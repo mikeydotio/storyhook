@@ -214,7 +214,14 @@ fn validate_batch(tx: &impl ReadOps, batch: &BatchLandingIntent) -> Result<(), S
 
 /// Validates one immutable intent before acquisition, commit, or resolution.
 pub(crate) fn validate_intent(tx: &impl ReadOps, intent: &LandingIntent) -> Result<(), StoreError> {
-    intent.require_ordinary_controller()?;
+    if intent.certification.integration().is_some() {
+        if intent.batch.is_some() {
+            intent.require_ordinary_controller()?;
+        }
+        crate::service::integration_recovery::validate_landing_intent(tx, intent)?;
+    } else {
+        intent.require_ordinary_controller()?;
+    }
     use crate::domain::{
         StoryEvent, SuperState, VERIFYING_STATE_SLUG, apply_computed_epic_states, is_epic,
     };

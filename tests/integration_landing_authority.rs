@@ -154,7 +154,7 @@ fn admitted(f: &ServiceFixture) -> LandingIntent {
 }
 
 #[test]
-fn sh871_managed_target_preserves_original_link_but_store_refuses_ordinary_admission() {
+fn sh871_managed_target_preserves_original_link_but_store_requires_exact_owner() {
     let f = ServiceFixture::new();
     let original = admitted(&f);
     let mut managed = original.clone();
@@ -173,7 +173,7 @@ fn sh871_managed_target_preserves_original_link_but_store_refuses_ordinary_admis
         })
         .unwrap_err()
         .to_string();
-    assert!(error.contains("dedicated owner controller"), "{error}");
+    assert!(error.contains("integration owner missing"), "{error}");
     assert_eq!(
         f.store().read(|tx| tx.landing_intents()).unwrap(),
         [original]

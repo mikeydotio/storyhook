@@ -785,3 +785,149 @@ fn managed_certificate_requires_exact_settled_original_physical_gate() {
         proof.settle().unwrap();
     }
 }
+
+fn certified(f: &OwnedFixture, proof: &BoundIntegrationProposal) -> CertifiedIntegration {
+    let ready = published(f, proof);
+    let attempt = gate_admission(f, "none");
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let cancellation = Cancellation::default();
+    let claim = service
+        .claim_gate(ready, proof, &attempt, proof.deadline, &cancellation)
+        .unwrap()
+        .unwrap();
+    let inputs = gate_inputs(&claim);
+    let native = crate::service::integration_recovery::gate_inputs::fixture_gate_inputs(
+        inputs.clone(),
+        proof.deadline,
+        cancellation.clone(),
+    );
+    let running = service.start_gate(claim, native).unwrap().unwrap();
+    let mut admission = f
+        .store
+        .read(|tx| tx.gate_attempts(f.candidate.project))
+        .unwrap()
+        .into_iter()
+        .find(|a| a.id == attempt)
+        .unwrap();
+    let execution_id = uuid::Uuid::new_v4().to_string();
+    let mut execution = crate::store::GateExecution::new(
+        execution_id.clone(),
+        AT,
+        "scratch-managed-gate.ndjson".into(),
+    );
+    execution.inputs = GateInputs {
+        head: Some(inputs.publication.commit.clone()),
+        base: Some(inputs.current_base.clone()),
+        tree: Some(inputs.tree.clone()),
+        ..Default::default()
+    };
+    execution.submissions = vec![admission.submission.clone()];
+    execution.journal_bound = true;
+    admission.executions.push(execution);
+    admission.revision = 1;
+    assert!(
+        f.store
+            .write(|tx| tx.update_gate_attempt(&admission, 0))
+            .unwrap()
+    );
+    let execution = admission.executions.last_mut().unwrap();
+    execution.finished_at = Some(AT.into());
+    execution.verdict = Some("certified".into());
+    admission.verdict = Some("certified".into());
+    admission.revision = 2;
+    assert!(
+        f.store
+            .write(|tx| tx.update_gate_attempt(&admission, 1))
+            .unwrap()
+    );
+    let certification = crate::domain::landing::VerifiedSubmission {
+        head: inputs.publication.commit.clone(),
+        tree: inputs.tree.clone(),
+        gate: "make test".into(),
+    };
+    let fresh = crate::service::integration_recovery::gate_inputs::fixture_gate_inputs(
+        inputs,
+        proof.deadline,
+        cancellation,
+    );
+    let native = crate::daemon::verification::integration_gate::fixture_certification(
+        execution_id,
+        certification,
+        fresh,
+    );
+    service.accept_gate(running, native).unwrap().unwrap()
+}
+
+#[test]
+fn managed_landing_owns_one_distinct_request_and_retains_uncertainty_after_restart() {
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let ready = certified(&f, &proof);
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let original = service.show(ready.id()).unwrap();
+    let mut claim = service.claim_landing(ready, &proof).unwrap().unwrap();
+    assert!(service.landing_permitted(&claim).unwrap());
+    let intent = claim.intent().clone();
+    assert_eq!(
+        intent.pull_request,
+        "https://github.com/acme/widgets/pull/7"
+    );
+    assert_eq!(
+        intent.landing_pull_request(),
+        "https://github.com/acme/widgets/pull/99"
+    );
+    assert_eq!(intent.certification.head(), claim.assembly().commit);
+    assert_eq!(
+        intent.certification.integration().unwrap().original_head,
+        f.native.head
+    );
+    assert_eq!(claim.epoch(), original.1.effect_epoch + 1);
+    assert!(service.claim_landing_effect(&mut claim).unwrap());
+    let uncertain = service.show(claim.id()).unwrap();
+    assert!(!service.claim_landing_effect(&mut claim).unwrap());
+    assert_eq!(service.show(claim.id()).unwrap(), uncertain);
+    let reopened = SqliteStore::open(f.store.path()).unwrap();
+    assert_eq!(
+        reopened.read(|tx| tx.landing_intents()).unwrap(),
+        [intent.clone()]
+    );
+    assert_eq!(uncertain.1.started_at, original.1.started_at);
+    assert_eq!(uncertain.1.attribution, original.1.attribution);
+    assert!(
+        VerificationQueue::new(&f.store)
+            .complete_landing(&ctx, &intent, "managed merge reported")
+            .is_err()
+    );
+    assert!(
+        f.store
+            .read(|tx| tx.open_pr_links_for_story(intent.project, intent.story))
+            .unwrap()
+            .iter()
+            .any(|link| link.url == intent.pull_request)
+    );
+    proof.settle().unwrap();
+}
+
+#[test]
+fn managed_landing_stop_revokes_new_effect_but_preserves_pending_merge_fence() {
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let ready = certified(&f, &proof);
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let mut claim = service.claim_landing(ready, &proof).unwrap().unwrap();
+    let before = service.show(claim.id()).unwrap();
+    f.store
+        .write(|tx| tx.put_verification_enabled(f.candidate.project, false))
+        .unwrap();
+    assert!(service.landing_permitted(&claim).is_err());
+    assert!(service.claim_landing_effect(&mut claim).is_err());
+    assert_eq!(service.show(claim.id()).unwrap(), before);
+    assert_eq!(
+        f.store.read(|tx| tx.landing_intents()).unwrap(),
+        [claim.intent().clone()]
+    );
+    proof.settle().unwrap();
+}
