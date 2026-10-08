@@ -691,3 +691,52 @@ fn native_host_status_isolates_invalid_owner_and_preserves_original_elapsed_orig
         "status isolation granted admission through invalid custody"
     );
 }
+
+#[test]
+fn restored_host_status_keeps_history_without_claiming_completed_story_needs_gate() {
+    let f = Fixture::new();
+    let ctx = f.ctx();
+    let service = HostRecoveryService::new(&ctx);
+    let owner = service
+        .enroll(&HostFaultEvidence {
+            live: f.proof(false),
+        })
+        .unwrap();
+    service
+        .restore(
+            &owner.id,
+            owner.revision,
+            &HostRestorationEvidence {
+                live: f.proof(true),
+            },
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        f.store
+            .read(|tx| crate::service::host_recovery::status_snapshot(
+                tx,
+                f.subject.candidate.project
+            ))
+            .unwrap()
+            .len(),
+        1
+    );
+    StoryService::new(&ctx)
+        .set_state(&f.subject.candidate.story_id, "done", None, None, None)
+        .unwrap();
+    assert!(
+        f.store
+            .read(|tx| crate::service::host_recovery::status_snapshot(
+                tx,
+                f.subject.candidate.project
+            ))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        f.store.read(|tx| tx.host_recoveries()).unwrap().len(),
+        1,
+        "status projection erased recovery history"
+    );
+}

@@ -345,12 +345,29 @@ pub(crate) fn status_snapshot(
                 continue;
             }
         };
-        let submissions: Vec<_> = state
+        let mut submissions = Vec::new();
+        for member in state
             .members
             .iter()
             .filter(|m| m.subject.candidate.project == project)
-            .map(|m| m.subject.candidate.story_id.clone())
-            .collect();
+        {
+            let candidate = &member.subject.candidate;
+            let story = member
+                .subject
+                .attribution
+                .submission
+                .story_number()
+                .ok_or_else(|| invalid("status subject story missing"))?;
+            if tx
+                .story(project, story)?
+                .is_some_and(|row| row.state == "verifying")
+                && crate::service::verification::verifying_entry(tx, project, story)?
+                    .map(|(_, generation)| generation)
+                    == candidate.verifying_generation
+            {
+                submissions.push(candidate.story_id.clone());
+            }
+        }
         if !record.active && submissions.is_empty() {
             continue;
         }
