@@ -380,7 +380,9 @@ class ManagedLandingRetention(unittest.TestCase):
         marker = self.root / "owned-descendant.json"
         descendant = (
             "import json,os,pathlib,time;"
-            f"pathlib.Path({str(marker)!r}).write_text(json.dumps({{'pid':os.getpid(),'session':os.getsid(0)}}));"
+            f"p=pathlib.Path({str(marker)!r});"
+            "p.with_suffix('.tmp').write_text(json.dumps({'pid':os.getpid(),'session':os.getsid(0)}));"
+            "p.with_suffix('.tmp').replace(p);"
             "time.sleep(600)"
         )
         leader = "import subprocess,sys;subprocess.Popen([sys.executable,'-c'," + repr(descendant) + "],process_group=0)"
