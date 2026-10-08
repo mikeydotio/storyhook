@@ -3755,6 +3755,7 @@ fn fire_verification_halted(
     incident: &crate::store::VerificationIncident,
 ) -> Result<(), AppError> {
     let held_stories: Vec<_> = VerificationQueue::new(ctx.store())
+        .with_environment(ctx.env().clone())
         .ordered_for(candidate.project)?
         .into_iter()
         .map(|candidate| candidate.story_id)

@@ -678,3 +678,73 @@ fn landing_completion_resumes_the_dependents_it_unblocks() {
         .collect();
     assert_eq!(actions, [BlockAction::Interrupt, BlockAction::Resume]);
 }
+
+#[test]
+fn permanent_linked_pr_halt_preserves_caller_subprocess_policy() {
+    let f = Fixture::new();
+    let c = candidate(&f);
+    assert_eq!(
+        c.pull_request.as_ref().unwrap().url,
+        "https://github.com/acme/widgets/pull/1"
+    );
+    let control = f
+        .store()
+        .read(|tx| tx.verification_control_revision(f.project))
+        .unwrap();
+    let detail = "fixture permanent infrastructure refusal";
+    // Run the real incident -> halted-hook path on a worker thread. The linked
+    // PR forces its held-story queue through actual native origin validation;
+    // neither metadata reads nor the Git adapter are substituted. A freshly
+    // reconstructed Environment is undeclared in this lib build and panics at
+    // that origin subprocess boundary instead of returning the halted result.
+    let result = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let ctx = f.ctx();
+                let queue = VerificationQueue::new(f.store()).with_environment(ctx.env().clone());
+                super::super::record_infrastructure_failure(
+                    &queue,
+                    &ctx,
+                    &c,
+                    VerificationFailureDisposition::Permanent,
+                    detail,
+                )
+            })
+            .join()
+            .expect("halt path lost the caller's declared subprocess policy")
+    })
+    .unwrap();
+    assert!(matches!(
+        result,
+        GenerationWrite::Applied(TickResult::Halted)
+    ));
+    let incident = f
+        .store()
+        .read(|tx| tx.verification_incident(f.project))
+        .unwrap()
+        .unwrap();
+    assert!(incident.halted);
+    assert_eq!(
+        incident.disposition,
+        VerificationFailureDisposition::Permanent
+    );
+    assert_eq!(incident.attempts, 1);
+    assert_eq!(Some(incident.generation), c.verifying_generation);
+    assert_eq!(incident.detail, detail);
+    assert_eq!(
+        f.store()
+            .read(|tx| tx.verification_control_revision(f.project))
+            .unwrap(),
+        control
+    );
+    let retained = VerificationQueue::new(f.store())
+        .with_environment(f.env.clone())
+        .current_for(&c)
+        .unwrap()
+        .expect("halt must retain the submitted story");
+    assert_eq!(retained.verifying_generation, c.verifying_generation);
+    assert_eq!(
+        retained.pull_request.as_ref().unwrap().url,
+        c.pull_request.as_ref().unwrap().url
+    );
+}
