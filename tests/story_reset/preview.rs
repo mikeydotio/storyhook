@@ -396,16 +396,37 @@ fn preview_partial_cleanup_reports_only_remaining_resources_and_keeps_the_receip
 fn preview_rejects_closed_and_epic_targets_without_creating_reset_receipts() {
     let fixture = storyhook_test_support::ServiceFixture::new();
     let ctx = fixture.ctx().no_hooks(true);
+    storyhook::service::ConfigService::new(&ctx)
+        .add_type("epic", None, None)
+        .unwrap();
     let service = StoryService::new(&ctx);
     for (kind, state, expected) in [(None, "done", "closed"), (Some("epic"), "todo", "epic")] {
         let story = service
             .create(&storyhook::service::NewStoryInput {
                 title: "Cannot reset".into(),
-                state: Some(state.into()),
+                state: Some("todo".into()),
                 story_type: kind.map(str::to_owned),
                 ..Default::default()
             })
             .unwrap();
+        if state != "todo" {
+            service
+                .set_state(&story.id, state, None, Some("todo"), None)
+                .unwrap();
+        }
+        let number = StoryNo::parse_id("SH", &story.id).unwrap();
+        let observe = || {
+            fixture
+                .store()
+                .read(|tx| {
+                    Ok((
+                        tx.story(fixture.project(), number)?,
+                        tx.events_for(fixture.project(), number)?,
+                    ))
+                })
+                .unwrap()
+        };
+        let before = observe();
         let error = StoryResetService::new(&ctx)
             .preview(&story.id, &Default::default())
             .unwrap_err();
@@ -413,7 +434,11 @@ fn preview_rejects_closed_and_epic_targets_without_creating_reset_receipts() {
             error.to_string().to_lowercase().contains(expected),
             "{error}"
         );
-        let number = StoryNo::parse_id("SH", &story.id).unwrap();
+        assert_eq!(
+            observe(),
+            before,
+            "a refused preview must not change the story or events"
+        );
         assert!(
             fixture
                 .store()
