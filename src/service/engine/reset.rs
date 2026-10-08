@@ -188,7 +188,10 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 // (SH-886): the lane then defers to it, exactly like a lane
                 // another owner already held, and nothing is recreated.
                 let result = (|| {
-                    let workspace = match WorkspaceLock::acquire(
+                    let workspace = match WorkspaceLock::acquire_with_bound(
+                        self.ctx
+                            .env()
+                            .subprocess_bound(std::time::Duration::from_secs(30)),
                         &reset.lease.repository_path,
                         &reset.lease.story_id,
                     ) {
@@ -687,7 +690,7 @@ pub(super) fn run_shell_reset(
     command.env("STORY_WORKSPACE_LOCK_FD", workspace.as_raw_fd().to_string());
     let captured = crate::process::run_captured_quiescent(
         command,
-        DISPATCH_TIMEOUT,
+        env.subprocess_bound(DISPATCH_TIMEOUT),
         crate::process::TerminationPolicy::Kill,
     )
     .map_err(|e| AppError::Storage(format!("reset helper failed: {}", e.detail())))?;

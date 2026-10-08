@@ -14,7 +14,7 @@ enum Owner {
 }
 
 fn reserve(fixture: &ServiceFixture, owner: Owner) {
-    let ctx = fixture.ctx();
+    let ctx = fixture.ctx_with_subprocess_patience();
     match owner {
         Owner::Card | Owner::FailedCard => {
             let service = StoryResetService::new(&ctx);
@@ -108,7 +108,7 @@ fn release(fixture: &ServiceFixture, owner: Owner) {
 }
 
 fn setup(fixture: &ServiceFixture, owner: Owner, lanes: u32) -> (String, EngineLaneRecord) {
-    let ctx = fixture.ctx();
+    let ctx = fixture.ctx_with_subprocess_patience();
     StoryService::new(&ctx)
         .create(&NewStoryInput {
             title: "Owned quarantine".into(),
@@ -144,7 +144,7 @@ fn cleanup_owned_quarantine_does_not_stall_other_lanes() {
     ] {
         let fixture = ServiceFixture::new();
         let (run, held) = setup(&fixture, owner, 2);
-        let ctx = fixture.ctx();
+        let ctx = fixture.ctx_with_subprocess_patience();
         let before = fixture
             .store()
             .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
@@ -197,7 +197,7 @@ fn draining_waits_for_cleanup_owned_quarantine_then_finishes() {
     ] {
         let fixture = ServiceFixture::new();
         let (run, held) = setup(&fixture, owner, 1);
-        let ctx = fixture.ctx();
+        let ctx = fixture.ctx_with_subprocess_patience();
         let fake = FakeDispatcher::default();
         let engine = EngineService::new(&ctx, &fake);
         engine.stop(&run, false).unwrap();

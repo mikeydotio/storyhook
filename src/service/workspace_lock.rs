@@ -18,13 +18,37 @@ pub(crate) struct WorkspaceLock(File);
 
 impl WorkspaceLock {
     /// Acquires the same nonblocking lock that dispatch holds through handoff.
+    #[cfg(test)]
     pub(crate) fn acquire(checkout: &Path, id: &str) -> Result<Self, AppError> {
         Self::try_acquire(checkout, id)?.ok_or_else(|| busy(id))
     }
 
+    /// Acquires ownership using the calling operation's Git allowance.
+    pub(crate) fn acquire_with_bound(
+        bound: Duration,
+        checkout: &Path,
+        id: &str,
+    ) -> Result<Self, AppError> {
+        Self::try_acquire_with_bound(bound, checkout, id)?.ok_or_else(|| busy(id))
+    }
+
     /// Returns no owner when another process retains this story's workspace.
+    #[cfg(test)]
     pub(crate) fn try_acquire(checkout: &Path, id: &str) -> Result<Option<Self>, AppError> {
-        let common = git(
+        Self::try_acquire_with_bound(
+            crate::testing::load_grace::graced_now(Duration::from_secs(30)),
+            checkout,
+            id,
+        )
+    }
+
+    pub(crate) fn try_acquire_with_bound(
+        bound: Duration,
+        checkout: &Path,
+        id: &str,
+    ) -> Result<Option<Self>, AppError> {
+        let common = git_with_bound(
+            bound,
             checkout,
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
             None,
@@ -123,16 +147,17 @@ fn busy(id: &str) -> AppError {
     ))
 }
 
-/// Runs one bounded command while its children retain workspace ownership.
-pub(crate) fn capture(
+/// Runs one command while its children retain workspace ownership.
+fn capture_with_bound(
+    bound: Duration,
     mut command: Command,
     lock: Option<&WorkspaceLock>,
 ) -> Result<Captured, AppError> {
     let result = if let Some(lock) = lock {
         lock.command(&mut command);
-        run_captured_quiescent(command, Duration::from_secs(30), TerminationPolicy::Kill)
+        run_captured_quiescent(command, bound, TerminationPolicy::Kill)
     } else {
-        run_captured(command, Duration::from_secs(30))
+        run_captured(command, bound)
     };
     result.map_err(|error| {
         AppError::Validation(format!("workspace command failed: {}", error.detail()))
@@ -140,7 +165,23 @@ pub(crate) fn capture(
 }
 
 /// Runs Git with the repository environment allowlist and a bounded deadline.
+#[cfg(test)]
 pub(crate) fn git(
+    checkout: &Path,
+    args: &[&str],
+    lock: Option<&WorkspaceLock>,
+) -> Result<String, AppError> {
+    git_with_bound(
+        crate::testing::load_grace::graced_now(Duration::from_secs(30)),
+        checkout,
+        args,
+        lock,
+    )
+}
+
+/// Runs Git once with the owning operation's declared allowance.
+pub(crate) fn git_with_bound(
+    bound: Duration,
     checkout: &Path,
     args: &[&str],
     lock: Option<&WorkspaceLock>,
@@ -150,7 +191,7 @@ pub(crate) fn git(
         .current_dir(checkout)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0");
-    let output = capture(command, lock).map_err(|error| {
+    let output = capture_with_bound(bound, command, lock).map_err(|error| {
         error.with_context(&format!("git {} in {}", args.join(" "), checkout.display()))
     })?;
     if !output.status.success() {

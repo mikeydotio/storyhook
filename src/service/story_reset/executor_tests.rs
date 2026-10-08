@@ -20,7 +20,15 @@ struct ForkBarrier {
 impl ForkBarrier {
     fn enter() -> Self {
         let (gate, child_gate) = UnixStream::pair().unwrap();
-        gate.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        gate.set_read_timeout(Some(storyhook_test_support::load_grace::graced_now(
+            Duration::from_secs(5),
+        )))
+        .unwrap();
+        // Compute patience before fork: the child performs only async-signal-safe calls.
+        let release_patience_ms = i32::try_from(
+            storyhook_test_support::load_grace::graced_now(Duration::from_secs(10)).as_millis(),
+        )
+        .unwrap();
         let spawn = std::thread::spawn(move || {
             let mut command = Command::new("sh");
             command.args(["-c", "exit 0"]);
@@ -38,7 +46,7 @@ impl ForkBarrier {
                         events: libc::POLLIN,
                         revents: 0,
                     };
-                    if libc::poll(&mut poll, 1, 10_000) != 1 {
+                    if libc::poll(&mut poll, 1, release_patience_ms) != 1 {
                         return Err(std::io::Error::from_raw_os_error(libc::ETIMEDOUT));
                     }
                     let mut release = [0_u8];
@@ -67,9 +75,10 @@ impl ForkBarrier {
         let mut child = self.spawn.take().unwrap().join().unwrap().unwrap();
         assert!(
             child
-                .wait_within(Duration::from_secs(5), || {
-                    "unrelated child did not exit after exec".into()
-                })
+                .wait_within(
+                    storyhook_test_support::load_grace::graced_now(Duration::from_secs(5)),
+                    || { "unrelated child did not exit after exec".into() }
+                )
                 .success()
         );
     }
@@ -230,7 +239,10 @@ fn reset_waits_for_a_live_workspace_owner_then_takes_exclusion() {
     assert!(
         owner
             .unwrap()
-            .wait_within(Duration::from_secs(5), || "owner did not exit".into())
+            .wait_within(
+                storyhook_test_support::load_grace::graced_now(Duration::from_secs(5)),
+                || "owner did not exit".into()
+            )
             .success()
     );
 }
@@ -278,7 +290,10 @@ fn reset_proceeds_without_exclusion_once_its_patience_is_spent() {
     writeln!(owner.stdin().unwrap(), "finish").unwrap();
     assert!(
         owner
-            .wait_within(Duration::from_secs(5), || "owner did not exit".into())
+            .wait_within(
+                storyhook_test_support::load_grace::graced_now(Duration::from_secs(5)),
+                || "owner did not exit".into()
+            )
             .success()
     );
 }

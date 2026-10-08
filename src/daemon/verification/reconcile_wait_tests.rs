@@ -187,7 +187,9 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
             "an arrival or a wake must not end the reservation wait: {early:?}"
         );
         let (idle_result, idle_git) = idle_rx
-            .recv_timeout(CONTROL_DEADLINE)
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                CONTROL_DEADLINE,
+            ))
             .expect("cancellation ends the idle wait");
         assert!(
             idle_result.unwrap() == ReconcileWait::Ended,
@@ -214,7 +216,9 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
             .unwrap();
         bus.publish(Change::Project("fixture".into()));
         let (resumed, total_git) = resumed_rx
-            .recv_timeout(CONTROL_DEADLINE)
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                CONTROL_DEADLINE,
+            ))
             .expect("the resubmission ends the wait promptly");
         let ReconcileWait::Resubmitted(resumed) = resumed.unwrap() else {
             panic!("the reserved story's resubmission wakes its waiter");

@@ -15,6 +15,8 @@ pub use observation::OriginObservation;
 mod release;
 mod transport;
 pub use local::run_local;
+#[cfg(feature = "test-seam")]
+pub use local::run_local_for_fixture;
 pub use release::ReleaseSource;
 
 /// A checkout and its current, validated GitHub origin.
@@ -22,18 +24,65 @@ pub use release::ReleaseSource;
 pub struct Repository {
     checkout: PathBuf,
     identity: GithubRepo,
+    #[serde(skip)]
+    bounds: Bounds,
+}
+
+/// Explicit allowances carried with an operation; defaults remain production policy.
+#[derive(Clone, Copy, Debug)]
+struct Bounds {
+    read: Duration,
+    operation: Duration,
+}
+impl Default for Bounds {
+    fn default() -> Self {
+        Self {
+            read: Duration::from_secs(30),
+            operation: Duration::from_secs(120),
+        }
+    }
+}
+impl Bounds {
+    fn for_environment(env: &crate::env::Environment) -> Self {
+        let defaults = Self::default();
+        Self {
+            read: env.subprocess_bound(defaults.read),
+            operation: env.subprocess_bound(defaults.operation),
+        }
+    }
 }
 
 impl Repository {
     /// Reads the actual origin of an existing checkout, without cached routing.
     pub fn resolve(checkout: &Path) -> Result<Self, AppError> {
+        Self::resolve_with_bounds(checkout, Bounds::default())
+    }
+
+    /// Resolves with the owning service's explicit subprocess allowances.
+    pub(crate) fn resolve_with_env(
+        checkout: &Path,
+        env: &crate::env::Environment,
+    ) -> Result<Self, AppError> {
+        Self::resolve_with_bounds(checkout, Bounds::for_environment(env))
+    }
+
+    /// Declares fixture patience before reading the first origin fact.
+    #[cfg(feature = "test-seam")]
+    pub fn resolve_for_fixture(
+        checkout: &Path,
+        env: &crate::env::Environment,
+    ) -> Result<Self, AppError> {
+        Self::resolve_with_env(checkout, env)
+    }
+
+    fn resolve_with_bounds(checkout: &Path, bounds: Bounds) -> Result<Self, AppError> {
         let checkout = checkout.canonicalize().map_err(|error| {
             AppError::Validation(format!(
                 "GitHub checkout {} is unavailable: {error}",
                 checkout.display()
             ))
         })?;
-        let root = git_read(&checkout, &["rev-parse", "--show-toplevel"])?;
+        let root = git_read_with_bound(bounds.read, &checkout, &["rev-parse", "--show-toplevel"])?;
         let root = Path::new(root.trim()).canonicalize().map_err(|error| {
             AppError::Validation(format!("cannot resolve GitHub checkout root: {error}"))
         })?;
@@ -44,7 +93,11 @@ impl Repository {
                 root.display()
             )));
         }
-        let origins = git_read(&checkout, &["config", "--get-all", "remote.origin.url"])?;
+        let origins = git_read_with_bound(
+            bounds.read,
+            &checkout,
+            &["config", "--get-all", "remote.origin.url"],
+        )?;
         let origins: Vec<_> = origins.lines().collect();
         if origins.len() != 1 {
             return Err(AppError::Validation(format!(
@@ -55,7 +108,11 @@ impl Repository {
         let identity = parse_origin(origins[0]).map_err(|error| {
             error.with_context(&format!("GitHub origin in {}", checkout.display()))
         })?;
-        Ok(Self { checkout, identity })
+        Ok(Self {
+            checkout,
+            identity,
+            bounds,
+        })
     }
 
     /// The explicit host, owner and repository for every operation.
@@ -77,10 +134,14 @@ impl Repository {
     }
 }
 
-fn git_read(checkout: &Path, arguments: &[&str]) -> Result<String, AppError> {
+fn git_read_with_bound(
+    bound: Duration,
+    checkout: &Path,
+    arguments: &[&str],
+) -> Result<String, AppError> {
     let mut command = git_env::command(checkout);
     command.args(arguments);
-    let output = run_captured_private(command, Duration::from_secs(30)).map_err(|error| {
+    let output = run_captured_private(command, bound).map_err(|error| {
         AppError::Validation(format!(
             "reading GitHub origin in {}: {}",
             checkout.display(),

@@ -147,8 +147,11 @@ fn malformed_receipt_is_retained_reported_and_not_retried_on_each_tick() {
     )
     .unwrap();
     std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let actuator =
-        ShellVerificationActuator::with_paths(f.env().clone(), helper, "/bin/true".into());
+    let actuator = ShellVerificationActuator::with_paths(
+        storyhook_test_support::subprocess_patience(f.env().clone()),
+        helper,
+        "/bin/true".into(),
+    );
     let cancellation = storyhook::daemon::verification::VerificationCancellation::default();
     let error = tick_with(f.store(), f.env(), &actuator, &cancellation).unwrap_err();
     assert!(error.to_string().contains("invalid receipt"), "{error}");
@@ -190,7 +193,7 @@ fn reassigned_worktree_cannot_publish_an_old_stories_request() {
     lease["story_id"] = "SH-999".into();
     std::fs::write(marker, serde_json::to_vec(&lease).unwrap()).unwrap();
     let actuator = ShellVerificationActuator::with_paths(
-        f.env().clone(),
+        storyhook_test_support::subprocess_patience(f.env().clone()),
         "/must-not-run".into(),
         "/bin/true".into(),
     );
@@ -219,7 +222,7 @@ fn missing_worktree_does_not_acknowledge_an_unpublished_commit() {
     GitService::new(&ctx).commit_sync(None).unwrap();
     git(f.cwd(), &["worktree", "remove", worktree.to_str().unwrap()]);
     let actuator = ShellVerificationActuator::with_paths(
-        f.env().clone(),
+        storyhook_test_support::subprocess_patience(f.env().clone()),
         "/must-not-run".into(),
         "/bin/true".into(),
     );

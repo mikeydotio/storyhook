@@ -19,12 +19,13 @@ so a failing assertion releases workers before their join.
 
 ## Census
 
-The sweep covers 398 tracked Rust files recursively under `tests/` and
-`crates/storyhook-test-support/`, including nested modules. The exact retained
-inventory is `tests/timing_assertions/waits.json`: 65 expressions at 82 sites
-(45 proof, 20 delegated, 17 fixture). These counts describe the lexical fence,
-not every blocking operation in a test. Each inventory entry states its owner
-and reason; occurrence counts prevent a new use from inheriting an old waiver.
+The sweep covers 475 Rust files recursively under `tests/` and
+`crates/storyhook-test-support/`, plus test-only regions in 407 tracked `src/`
+files. The exact retained inventory is `tests/timing_assertions/waits.json`:
+136 expressions at 193 sites (90 proof, 53 delegated, 50 fixture). The source
+portion contributes 58 expressions at 98 sites. These counts describe the
+lexical fence, not every blocking operation. Each entry states its owner and
+reason; occurrence counts prevent a new use from inheriting an old waiver.
 
 The tables cover existing explicit bounds, readiness loops, channel barriers,
 and fixed sleeps that stand in for readiness. Ordinary synchronous test work,
@@ -226,7 +227,7 @@ transport behavior or deadline changed.
 
 ### Why
 
-The census above reads `tests/` and the shared test support. Five lib unit
+The original census read `tests/` and the shared test support. Five lib unit
 tests in `src/` went RED together in the SH-822 central gate (load about 38 on
 10 cores, utility QoS) because a fake `tmux` that answered at once missed the
 production `TMUX_TIMEOUT` (3 s): the capture clock includes the spawn, and a
@@ -236,8 +237,8 @@ and the test could not grace it.
 
 ### As built
 
-- **One read point.** Every production site that holds a subprocess to a bound
-  a lib test can reach reads it through `Environment::subprocess_bound(production)`.
+- **One read point for routed calls.** Environment-owned subprocess bounds
+  enumerated here read through `Environment::subprocess_bound(production)`.
   A shipped build returns `production`. Routed today: every per-call tmux bound
   (`TMUX_TIMEOUT`: engine probe, kill and census, adoption, `resources::tmux`,
   story-reset kill-window, the restart sweep's shared deadline), the python3
@@ -276,8 +277,8 @@ and the test could not grace it.
 
 - Code a lib test reaches through `storyhook_test_support` links a non-test
   build of storyhook, and integration tests in `tests/` run the non-test lib:
-  both read the production value, with no grace and no panic. SH-846 owns the
-  census of those and of the raw harness waits in `src/` test code.
+  undeclared fixtures still read production values without the lib-test panic.
+  SH-846 adds the explicit per-duration fixture policy and boundary census below.
 - A panic on a thread production spawns can be swallowed by a `catch_unwind`
   (`api/rpc.rs`, `daemon/serve.rs`, `verification/batch_preview.rs`) or a
   discarded join. Carrying the declaration on the `Environment` means a
@@ -446,3 +447,64 @@ Limit: entry points that run the helper without `bash` from a `lib.sh` shell
 only after an earlier publication, a seeded `windows` file, or their own
 publication (as `test-dispatch-lane-budget.sh` does). If they do not, the fake
 refuses loudly.
+
+## Source waits and integration owners (SH-846)
+
+`waits.rs` reuses `src_bounds::SrcCorpus` to extract inline cfg(test) items,
+`cfg(all(test, ...))` items and referenced test module files. Adjacent path
+attributes work before or after cfg, and a generic function return type does
+not truncate its body at a comma. Production, cfg(any(test, ...)) and cfg(not(test))
+items remain outside the test-region corpus. Detector fixtures exercise these
+boundaries and added, changed and stale occurrences.
+
+Expected-progress receives, readiness observations, child completion and reaping
+in source tests now receive shared load grace. Existing polling quanta, negative
+observations and injected timeout proofs keep their original values. The first
+hygiene sweep must still beat its regular interval. The reset fork barrier's
+release allowance is computed before fork, preserving async-signal-safe child
+work. The receipt helper already uses the shared ceiling; it is not graced again.
+
+Integration fixtures opt in with `subprocess_patience(Environment)` or
+`ServiceFixture::with_subprocess_patience()`. A feature-gated Environment map
+assigns separate allowances to 3, 5, 10, 30, 45, 60, 120, 180 and 225-second
+production durations. The fixture samples contention once before its first
+operation. Idle bounds remain unchanged; configuring a long operation does not
+widen a short probe. Entries cannot shorten a duration or exceed fifteen minutes.
+Clones carry the map, child variables do not, and lib-test Proof retains priority.
+No process-global override is introduced. Default builds and undeclared fixtures
+retain their production values.
+
+Owned dispatch, tmux, resource inventory, cleanup, reset, workspace admission,
+GitHub, continuation, notify and verification-view captures receive explicit
+allowances through their helper chains. GitHub authority checks, exact lease and
+head comparisons, inherited workspace locks and one-shot mutation behavior stay
+unchanged. Default actuator controls resolve their allowance at execution; explicit
+`with_paths_and_timing` and nondefault injected deadlines remain literal.
+
+The integration boundary census records 117 sites in 102 function/call entries
+across 30 files: 97 patience entries, three actual deadline/progress proofs and
+two constructors used only as fixtures without a spawn. It covers recognized
+constructors and daemon ticks, including nested integration modules and direct
+GitHub and continuation entrances. Daemon engine tests retain their single tick
+and same-tick cross-project assertions. Adoption retries only an Unanswered
+read-only observation, returns Alive/Gone immediately, observes before expiry
+and retains the final diagnostic. The SH-806 forced-timeout path stays literal.
+The normal gate receipt helper graces its eight-second cleanup allowance; the
+speculative termination-budget proof keeps its explicit policy.
+
+The capture census retains 61 sites in 51 entries across 31 files. It distinguishes
+explicit forwarded bounds from retained production contracts. Private-object Git
+has no Environment owner and retains its 30-second query and answer-size limits;
+controlled queries still take the minimum with the caller's remaining absolute
+deadline. Systemd controls retain their production deadline (unit paths inject the
+Runner or bypass the manager). The store-less lane-budget CLI retains its policy.
+These are not claims of fixture grace. Unbounded legacy `git_env::output` reads,
+public standalone Git helpers, aliases and generated programs still require
+manual review. Removing a patience wrapper can leave boundary counts unchanged:
+this lexical inventory is not a transitive control-flow proof.
+
+Fifteen new focused regressions cover source extraction and exact inventories,
+local per-bound policy, default versus explicit actuator controls, answered
+adoption observations and gate child-policy forwarding. Their execution belongs
+to the parent validation lane; this source-stage update does not claim a test pass
+or reproduction of the historical cleanup-grace incident.

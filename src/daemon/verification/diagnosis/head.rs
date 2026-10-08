@@ -10,7 +10,7 @@ impl ShellVerificationActuator {
             .pull_request
             .as_ref()
             .map_err(|problem| AppError::Validation(problem.message()))?;
-        if let Some(problem) = checkout_repository_problem(&candidate.checkout, link) {
+        if let Some(problem) = checkout_repository_problem(&self.env, &candidate.checkout, link) {
             return Err(AppError::Validation(problem));
         }
         let mut command = Command::new("bash");

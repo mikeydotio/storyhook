@@ -232,7 +232,8 @@ mod tests {
                 set(&ctx, Some(false)).unwrap();
                 finished.send(()).unwrap();
             });
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let deadline = std::time::Instant::now()
+                + storyhook_test_support::load_grace::graced_now(Duration::from_secs(5));
             while ctx
                 .store()
                 .read(|tx| tx.automations_enabled(ctx.project()))
@@ -248,7 +249,10 @@ mod tests {
             );
             assert!(done.try_recv().is_err());
             drop(permit);
-            done.recv_timeout(Duration::from_secs(5)).unwrap();
+            done.recv_timeout(storyhook_test_support::load_grace::graced_now(
+                Duration::from_secs(5),
+            ))
+            .unwrap();
         });
         set(&ctx, Some(true)).unwrap();
         assert!(

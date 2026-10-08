@@ -98,13 +98,21 @@ fn past_closing(code: &[u8], open: usize) -> usize {
 fn item_end(code: &[u8], start: usize) -> usize {
     let mut depth = 0_usize;
     let mut index = start;
+    // Generic return types can contain a top-level comma before the function
+    // body (Result<T, E>). A function item ends at its body or semicolon.
+    let prefix = String::from_utf8_lossy(&code[start..]);
+    let function =
+        regex::Regex::new(r"^(?:pub(?:\([^)]*\))?\s+)?(?:(?:async|unsafe|const)\s+)*fn\b")
+            .unwrap()
+            .is_match(&prefix);
     while index < code.len() {
         match code[index] {
             b'{' if depth == 0 => return past_closing(code, index),
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' if depth == 0 => return index,
             b')' | b']' | b'}' => depth -= 1,
-            b';' | b',' if depth == 0 => return index + 1,
+            b';' if depth == 0 => return index + 1,
+            b',' if depth == 0 && !function => return index + 1,
             _ => {}
         }
         index += 1;
@@ -167,8 +175,22 @@ fn test_code(original: &str) -> TestCode {
             search = attribute_end;
             continue;
         }
-        let mut start = skip_whitespace(&masked, attribute_end);
+        // Rust permits #[path] on either side of #[cfg(test)]. Walk only
+        // adjacent attributes backward; never borrow a path from another item.
+        let mut region_start = attribute;
         let mut path = None;
+        while masked[..region_start].trim_end().ends_with(']') {
+            let previous_end = masked[..region_start].trim_end().len();
+            let Some(previous) = masked[..previous_end].rfind("#[") else {
+                break;
+            };
+            if past_closing(code, previous + 1) != previous_end {
+                break;
+            }
+            path = path.or_else(|| path_attribute(&original[previous..previous_end]));
+            region_start = previous;
+        }
+        let mut start = skip_whitespace(&masked, attribute_end);
         while masked[start..].starts_with("#[") {
             let end = past_closing(code, start + 1);
             path = path.or_else(|| path_attribute(&original[start..end]));
@@ -178,7 +200,7 @@ fn test_code(original: &str) -> TestCode {
         if let Some(name) = declared_module(&masked[start..end]) {
             found.modules.push((name, path));
         }
-        found.regions.push(attribute..end);
+        found.regions.push(region_start..end);
         search = end.max(attribute_end);
     }
     found
@@ -215,14 +237,17 @@ fn module_file(root: &Path, declaring: &str, name: &str, path: Option<&str>) -> 
 /// Every tracked `src/` file, and the byte ranges of each that compile only
 /// under test: the whole file for a test-only module, otherwise its
 /// test-only items.
-struct SrcCorpus {
+pub(super) struct SrcCorpus {
     sources: BTreeMap<String, String>,
     test_ranges: BTreeMap<String, Vec<Range<usize>>>,
 }
 
 impl SrcCorpus {
-    fn read(root: &Path) -> Self {
-        let sources = super::tracked_test_files(root, "src/*.rs");
+    pub(super) fn read(root: &Path) -> Self {
+        Self::from_sources(root, super::tracked_test_files(root, "src/*.rs"))
+    }
+
+    pub(super) fn from_sources(root: &Path, sources: BTreeMap<String, String>) -> Self {
         let mut test_files = BTreeSet::new();
         let mut test_ranges = BTreeMap::new();
         for (path, source) in &sources {
@@ -255,6 +280,25 @@ impl SrcCorpus {
             sources,
             test_ranges,
         }
+    }
+
+    /// Original test-only text; separating regions prevents tokens on either
+    /// side of a production item from becoming a synthetic call.
+    pub(super) fn test_sources(&self) -> BTreeMap<String, String> {
+        self.sources
+            .iter()
+            .filter(|(path, _)| !self.test_ranges[*path].is_empty())
+            .map(|(path, source)| {
+                (
+                    path.clone(),
+                    self.test_ranges[path]
+                        .iter()
+                        .map(|range| &source[range.clone()])
+                        .collect::<Vec<_>>()
+                        .join("\n;\n"),
+                )
+            })
+            .collect()
     }
 
     fn is_test(&self, path: &str, offset: usize) -> bool {
@@ -413,8 +457,7 @@ fn src_census(root: &Path) -> Census {
     census
 }
 
-#[test]
-fn every_ungoverned_src_subprocess_bound_has_an_exact_classification() {
+fn assert_exact_src_bounds() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let actual = src_census(root);
     let reviewed: BTreeMap<String, BTreeMap<String, serde_json::Value>> = serde_json::from_str(
@@ -456,6 +499,16 @@ fn every_ungoverned_src_subprocess_bound_has_an_exact_classification() {
          through Environment::subprocess_bound, grace a test's patience with load_grace, or \
          classify the site in tests/timing_assertions/src_bounds.json"
     );
+}
+
+#[test]
+fn every_ungoverned_src_subprocess_bound_has_an_exact_classification() {
+    assert_exact_src_bounds();
+}
+
+#[test]
+fn sh846_routed_and_retained_capture_inventory_matches_exactly() {
+    assert_exact_src_bounds();
 }
 
 #[test]

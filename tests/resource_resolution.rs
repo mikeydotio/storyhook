@@ -92,7 +92,7 @@ fn a_checkout_below_a_git_root_keeps_its_repository_and_branch_identity() {
 
     let env = TestEnv::isolated();
     let project = env.project().git().build();
-    let f = storyhook_test_support::ServiceFixture::new();
+    let f = storyhook_test_support::ServiceFixture::new().with_subprocess_patience();
     let nested = project.path().join("nested");
     std::fs::create_dir(&nested).unwrap();
     // This reader's fixture owns the registered root's project identity.
@@ -1038,7 +1038,12 @@ fn recorded_engine_provider_survives_a_custom_worktree_without_a_pane() {
             tx.put_engine_lane(&lane)
         })
         .unwrap();
-    let ctx = storyhook::service::Ctx::new(&store, project_id, project.path(), env.environment());
+    let ctx = storyhook::service::Ctx::new(
+        &store,
+        project_id,
+        project.path(),
+        storyhook_test_support::subprocess_patience(env.environment()),
+    );
     let report = storyhook::service::resources::ResourceService::new(&ctx)
         .resolve(&id, &Default::default())
         .unwrap();

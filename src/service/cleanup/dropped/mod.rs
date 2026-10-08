@@ -79,8 +79,13 @@ pub(super) fn run<S: Store>(
         None
     } else {
         Some(
-            WorkspaceLock::acquire(repository, &lease.story_id)
-                .map_err(|e| issue(lease, "workspace-busy", e))?,
+            WorkspaceLock::acquire_with_bound(
+                ctx.env()
+                    .subprocess_bound(std::time::Duration::from_secs(30)),
+                repository,
+                &lease.story_id,
+            )
+            .map_err(|e| issue(lease, "workspace-busy", e))?,
         )
     };
     let story = request.story;
@@ -124,7 +129,7 @@ pub(super) fn run<S: Store>(
                 )
                 .map_err(refuse)?;
             safety::validate(ctx, repository, lease, &report, true)?;
-            let paths = identity::capture(&report).map_err(refuse)?;
+            let paths = identity::capture(ctx.env(), &report).map_err(refuse)?;
             let process_start = process::capture(ctx.env(), &report).map_err(refuse)?;
             DroppedCleanup {
                 project: ctx.project(),
@@ -172,12 +177,17 @@ pub(super) fn run<S: Store>(
         return Err(error);
     }
     // A receipt cannot transfer deletion authority to a recreated workspace.
-    let has_worktree = safety::worktree_present(lease).map_err(refuse)?;
+    let has_worktree = safety::worktree_present(ctx.env(), lease).map_err(refuse)?;
     let panes = safety::panes(ctx.env(), lease).map_err(refuse)?;
     let branch_reappeared = record.phase == Phase::Removed
         && delete_branch
-        && crate::service::resources::git::branch_exists(repository, &lease.branch)
-            .map_err(refuse)?;
+        && crate::service::resources::git::branch_exists_with_bound(
+            ctx.env()
+                .subprocess_bound(std::time::Duration::from_secs(60)),
+            repository,
+            &lease.branch,
+        )
+        .map_err(refuse)?;
     if record.phase == Phase::Removed && (has_worktree || !panes.is_empty() || branch_reappeared) {
         return Err(issue(
             lease,
@@ -195,7 +205,9 @@ pub(super) fn run<S: Store>(
         removed_worktree: has_worktree,
         removed_local_branch: false,
         removed_tmux_window: !panes.is_empty(),
-        retained_local_branch: crate::service::resources::git::branch_exists(
+        retained_local_branch: crate::service::resources::git::branch_exists_with_bound(
+            ctx.env()
+                .subprocess_bound(std::time::Duration::from_secs(60)),
             repository,
             &lease.branch,
         )
@@ -356,10 +368,12 @@ fn execute<S: Store>(
             Some(workspace),
         )
         .map_err(|e| AppError::Validation(format!("{}: {}", e.reason, e.detail)))?;
-    } else if safety::worktree_present(&lease)? {
+    } else if safety::worktree_present(ctx.env(), &lease)? {
         record.phase = Phase::Removing;
         ctx.store().write(|tx| tx.put_dropped_cleanup(record))?;
-        workspace_lock::git(
+        workspace_lock::git_with_bound(
+            ctx.env()
+                .subprocess_bound(std::time::Duration::from_secs(30)),
             &lease.repository_path,
             &[
                 "worktree",
@@ -374,7 +388,8 @@ fn execute<S: Store>(
         )?;
     }
     identity::validate(&record.paths)?;
-    if safety::worktree_present(&lease)? || !safety::panes(ctx.env(), &lease)?.is_empty() {
+    if safety::worktree_present(ctx.env(), &lease)? || !safety::panes(ctx.env(), &lease)?.is_empty()
+    {
         return Err(AppError::Validation(
             "dropped cleanup postconditions failed: exact window or worktree remains".into(),
         ));

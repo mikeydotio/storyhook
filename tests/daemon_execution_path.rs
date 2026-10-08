@@ -322,7 +322,7 @@ fn execution_path_gate_worker() {
         last_checked_at: None,
     };
     let actuator = ShellVerificationActuator::with_paths(
-        fixture.env().clone(),
+        storyhook_test_support::subprocess_patience(fixture.env().clone()),
         home.join("unused-helper"),
         story_binary().to_path_buf(),
     )

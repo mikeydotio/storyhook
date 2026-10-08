@@ -32,9 +32,18 @@ pub(super) struct WorktreeAdministration {
 /// Runs one checked Git command with contextual, bounded failure.
 /// Mutation callers must establish ownership before invoking this primitive.
 pub fn text(cwd: &Path, args: &[&str]) -> Result<String, AppError> {
+    text_with_bound(Duration::from_secs(60), cwd, args)
+}
+
+/// Uses the owning operation's declared subprocess allowance.
+pub(crate) fn text_with_bound(
+    bound: Duration,
+    cwd: &Path,
+    args: &[&str],
+) -> Result<String, AppError> {
     let mut command = git_env::command(cwd);
     command.args(args);
-    let output = run_captured(command, Duration::from_secs(60)).map_err(|error| {
+    let output = run_captured(command, bound).map_err(|error| {
         AppError::Validation(format!(
             "git {} in {}: {}",
             args.join(" "),
@@ -60,7 +69,16 @@ pub fn text(cwd: &Path, args: &[&str]) -> Result<String, AppError> {
 
 /// Reads every registration without treating an unreadable inventory as empty.
 pub fn inventory(repository: &Path) -> Result<Vec<WorktreeRecord>, AppError> {
-    parse(&text(
+    inventory_with_bound(Duration::from_secs(60), repository)
+}
+
+/// Reads registrations with the owning operation's allowance.
+pub(crate) fn inventory_with_bound(
+    bound: Duration,
+    repository: &Path,
+) -> Result<Vec<WorktreeRecord>, AppError> {
+    parse(&text_with_bound(
+        bound,
         repository,
         &["worktree", "list", "--porcelain", "-z"],
     )?)
@@ -125,8 +143,12 @@ fn inspection_error(path: &Path, error: std::io::Error) -> AppError {
 }
 
 /// Reads private administration without asking a possibly broken worktree to run Git.
-pub(super) fn administrations(repository: &Path) -> Result<Vec<WorktreeAdministration>, AppError> {
-    let common = text(
+pub(super) fn administrations(
+    bound: Duration,
+    repository: &Path,
+) -> Result<Vec<WorktreeAdministration>, AppError> {
+    let common = text_with_bound(
+        bound,
         repository,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     )?;
@@ -231,8 +253,18 @@ fn parse(listing: &str) -> Result<Vec<WorktreeRecord>, AppError> {
 
 /// Tests an exact local branch while preserving operational errors.
 pub fn branch_exists(repository: &Path, branch: &str) -> Result<bool, AppError> {
+    branch_exists_with_bound(Duration::from_secs(60), repository, branch)
+}
+
+/// Observes the branch with the owning operation's allowance.
+pub(crate) fn branch_exists_with_bound(
+    bound: Duration,
+    repository: &Path,
+    branch: &str,
+) -> Result<bool, AppError> {
     let reference = format!("refs/heads/{branch}");
-    let refs = text(
+    let refs = text_with_bound(
+        bound,
         repository,
         &["for-each-ref", "--format=%(refname)", &reference],
     )?;

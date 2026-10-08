@@ -122,6 +122,8 @@ use storyhook_test_support::without_rust_comments;
 
 #[path = "timing_assertions/deadlines.rs"]
 mod deadlines;
+#[path = "timing_assertions/integration_bounds.rs"]
+mod integration_bounds;
 #[path = "timing_assertions/src_bounds.rs"]
 mod src_bounds;
 #[path = "timing_assertions/waits.rs"]

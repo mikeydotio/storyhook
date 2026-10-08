@@ -70,6 +70,14 @@ impl ServiceFixture {
         Self::with_states(&default_states())
     }
 
+    /// Opt this fixture into measured patience for its real subprocess calls.
+    /// Deadline/cancellation proofs leave the default fixture unchanged.
+    #[must_use]
+    pub fn with_subprocess_patience(mut self) -> Self {
+        self.env = crate::subprocess_patience(self.env);
+        self
+    }
+
     /// A fixture whose project has exactly these states, in this order.
     #[must_use]
     pub fn with_states(states: &[StateDef]) -> Self {
@@ -272,6 +280,18 @@ impl ServiceFixture {
     #[must_use]
     pub fn ctx(&self) -> Ctx<'_, SqliteStore> {
         self.ctx_for(self.project)
+    }
+
+    /// Build one patient context without changing this fixture's default policy.
+    #[must_use]
+    pub fn ctx_with_subprocess_patience(&self) -> Ctx<'_, SqliteStore> {
+        Ctx::new(
+            &self.store,
+            self.project,
+            self.cwd.path(),
+            crate::subprocess_patience(self.env.clone()),
+        )
+        .clock(self.clock.clone())
     }
 
     /// [`Self::ctx`] over a project added by [`Self::add_project`].

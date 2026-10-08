@@ -119,7 +119,7 @@ impl Workspace {
         &self,
         edit: impl FnOnce(&mut storyhook::service::resources::ResourceReport),
     ) -> StoryReset {
-        let ctx = self.fixture.ctx().no_hooks(true);
+        let ctx = self.fixture.ctx_with_subprocess_patience().no_hooks(true);
         let reset = StoryResetService::new(&ctx)
             .reserve(&self.id, &self.id)
             .unwrap();

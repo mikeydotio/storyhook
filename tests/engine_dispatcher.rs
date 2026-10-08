@@ -52,9 +52,12 @@ fn shell_dispatcher_appends_the_run_configuration_to_every_lane() {
         ..request()
     };
 
-    let outcome = ShellDispatcher::new(&script, Environment::at(home))
-        .dispatch(configured)
-        .unwrap();
+    let outcome = ShellDispatcher::new(
+        &script,
+        storyhook_test_support::subprocess_patience(Environment::at(home)),
+    )
+    .dispatch(configured)
+    .unwrap();
 
     assert_eq!(
         outcome.payload["argv"],
@@ -65,9 +68,12 @@ fn shell_dispatcher_appends_the_run_configuration_to_every_lane() {
         speed: Some(EngineSpeed::Standard),
         ..request()
     };
-    let outcome = ShellDispatcher::new(&script, Environment::at(root.path().join("home")))
-        .dispatch(standard)
-        .unwrap();
+    let outcome = ShellDispatcher::new(
+        &script,
+        storyhook_test_support::subprocess_patience(Environment::at(root.path().join("home"))),
+    )
+    .dispatch(standard)
+    .unwrap();
     assert_eq!(
         outcome.payload["argv"],
         "--project alpha dispatch ALPHA-7 --agent=codex --auto --full-auto --force",
@@ -111,7 +117,7 @@ fn shell_dispatcher_invokes_the_autonomous_project_contract_and_relays_success()
     let env = Environment::at(&home);
     let expected_store = env.store_path().to_string_lossy().to_string();
     let expected_state_home = xdg_state_home_of(&env);
-    let outcome = ShellDispatcher::new(&script, env)
+    let outcome = ShellDispatcher::new(&script, storyhook_test_support::subprocess_patience(env))
         .dispatch(request())
         .unwrap();
 
@@ -139,9 +145,12 @@ fn shell_dispatcher_relays_a_nonzero_refusal_instead_of_reclassifying_it_as_fail
         &script,
         "printf '%s\\n' '{\"ok\":false,\"reason\":\"future-refusal\",\"detail\":{\"kept\":true}}'; exit 17",
     );
-    let outcome = ShellDispatcher::new(&script, Environment::at(home))
-        .dispatch(request())
-        .unwrap();
+    let outcome = ShellDispatcher::new(
+        &script,
+        storyhook_test_support::subprocess_patience(Environment::at(home)),
+    )
+    .dispatch(request())
+    .unwrap();
 
     assert_eq!(outcome.state, DispatchOutcomeState::Refused);
     assert_eq!(outcome.payload["reason"], "future-refusal");
@@ -159,10 +168,13 @@ fn shell_dispatcher_rejects_success_without_a_cleanup_lease() {
         "printf '%s\\n' '{\"ok\":true,\"window_name\":\"ALPHA-7\"}'",
     );
 
-    let error = ShellDispatcher::new(&script, Environment::at(home))
-        .dispatch(request())
-        .unwrap_err()
-        .to_string();
+    let error = ShellDispatcher::new(
+        &script,
+        storyhook_test_support::subprocess_patience(Environment::at(home)),
+    )
+    .dispatch(request())
+    .unwrap_err()
+    .to_string();
 
     assert!(error.contains("omitted cleanup_lease"), "{error}");
 }
@@ -178,10 +190,13 @@ fn shell_dispatcher_rejects_success_json_from_a_failed_process() {
         "printf '%s\\n' '{\"ok\":true,\"display\":\"not actually dispatched\"}'; exit 17",
     );
 
-    let error = ShellDispatcher::new(&script, Environment::at(home))
-        .dispatch(request())
-        .unwrap_err()
-        .to_string();
+    let error = ShellDispatcher::new(
+        &script,
+        storyhook_test_support::subprocess_patience(Environment::at(home)),
+    )
+    .dispatch(request())
+    .unwrap_err()
+    .to_string();
 
     assert!(error.contains("reported success"), "{error}");
     assert!(error.contains("17"), "{error}");
@@ -201,7 +216,7 @@ fn shell_dispatcher_invokes_the_non_destructive_unclaim_contract() {
     let expected_store = env.store_path().to_string_lossy().to_string();
     let expected_state_home = xdg_state_home_of(&env);
 
-    let outcome = ShellDispatcher::new(&script, env)
+    let outcome = ShellDispatcher::new(&script, storyhook_test_support::subprocess_patience(env))
         .unclaim(unclaim_request())
         .unwrap();
 
@@ -228,10 +243,13 @@ fn shell_dispatcher_rejects_success_json_from_a_failed_unclaim_process() {
         "printf '%s\\n' '{\"ok\":true,\"display\":\"not actually unclaimed\"}'; exit 23",
     );
 
-    let error = ShellDispatcher::new(&script, Environment::at(home))
-        .unclaim(unclaim_request())
-        .unwrap_err()
-        .to_string();
+    let error = ShellDispatcher::new(
+        &script,
+        storyhook_test_support::subprocess_patience(Environment::at(home)),
+    )
+    .unclaim(unclaim_request())
+    .unwrap_err()
+    .to_string();
 
     assert!(error.contains("reported success"), "{error}");
     assert!(error.contains("23"), "{error}");
@@ -244,9 +262,12 @@ fn shell_dispatcher_fails_only_when_the_helper_does_not_answer_with_json() {
     std::fs::create_dir(&home).unwrap();
     let script = root.path().join("story.sh");
     write_script(&script, "printf 'helper exploded\\n' >&2; exit 19");
-    let error = ShellDispatcher::new(&script, Environment::at(home))
-        .dispatch(request())
-        .unwrap_err();
+    let error = ShellDispatcher::new(
+        &script,
+        storyhook_test_support::subprocess_patience(Environment::at(home)),
+    )
+    .dispatch(request())
+    .unwrap_err();
 
     assert!(error.to_string().contains("helper exploded"));
 }
@@ -304,9 +325,12 @@ fn shell_dispatcher_hands_every_engine_lane_the_tool_call_ceiling() {
         ),
     );
 
-    let outcome = ShellDispatcher::new(&script, Environment::at(home))
-        .dispatch(request())
-        .unwrap();
+    let outcome = ShellDispatcher::new(
+        &script,
+        storyhook_test_support::subprocess_patience(Environment::at(home)),
+    )
+    .dispatch(request())
+    .unwrap();
 
     assert_eq!(
         outcome.payload["ceiling"],

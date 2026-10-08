@@ -1,16 +1,16 @@
 {
-  "src/daemon/activity/window.rs": {
-    "production run_captured_quiet_cancellable(VIEW_RECONCILE_TIMEOUT": {
-      "count": 1,
-      "kind": "unrouted",
-      "reason": "VIEW_RECONCILE_TIMEOUT (45 s) bounds one verification-view reconcile; window_tests reaches it with a 6 s fixture: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+  "src/api/engine.rs": {
+    "production ref:DISPATCH_TIMEOUT": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "One multiline import and one advertised served-request deadline derived from dispatch 180s and lane count. This is the API operation contract, not a subprocess capture; no test treats it as a fixture progress allowance."
     }
   },
-  "src/daemon/block_delivery.rs": {
-    "production run_captured_quiescent(NOTIFY_TIMEOUT": {
+  "src/daemon/activity/window.rs": {
+    "production run_captured_quiet_cancellable(bound": {
       "count": 1,
-      "kind": "unrouted",
-      "reason": "NOTIFY_TIMEOUT (45 s) bounds the story.sh notify helper: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+      "kind": "delegated",
+      "reason": "run_view_with_bound receives the owning Environment's per-call 45s policy. Its cfg(test) deadline/cancellation wrapper supplies literal VIEW_RECONCILE_TIMEOUT as the contract under test."
     }
   },
   "src/daemon/launchd.rs": {
@@ -18,6 +18,13 @@
       "count": 1,
       "kind": "delegated",
       "reason": "run_bounded forwards its caller's launchd deadline: REGISTRATION_DEADLINE (10 s) for a standalone control, or the time remaining in registration::Control's shared removal/bootstrap budget. Lib tests inject the launchctl boundary and clock; they never execute the real launchctl runner. Resetting this bound at the leaf would renew the transaction budget."
+    }
+  },
+  "src/daemon/reset.rs": {
+    "production ref:DISPATCH_TIMEOUT": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "One shared transaction deadline for settling engine dispatch and cancelling verifier ownership. It is not renewed at subprocess leaves; changing it would alter reset cancellation semantics."
     }
   },
   "src/daemon/systemd/command.rs": {
@@ -28,6 +35,11 @@
     }
   },
   "src/daemon/verification.rs": {
+    "production ref:DISPATCH_TIMEOUT": {
+      "count": 4,
+      "kind": "delegated",
+      "reason": "One multiline import, two default control field initializers, and control_bound's equality guard distinguishing a directly injected lib-test deadline. Default captures route lazily through Environment; explicit constructor timing remains literal."
+    },
     "production run_captured_with_progress_and_registration(self.verification_idle_timeout": {
       "count": 2,
       "kind": "delegated",
@@ -35,43 +47,50 @@
     }
   },
   "src/daemon/verification/recovery_transport.rs": {
-    "production run_captured_cancellable(self.control_timeout": {
+    "production run_captured_cancellable(self.control_bound()": {
       "count": 1,
       "kind": "delegated",
-      "reason": "The actuator's configured control bound (DISPATCH_TIMEOUT, 180 s, in production); workspace_tests sets its own for the timeout proof."
+      "reason": "control_bound reads the Environment policy lazily for default 180s controls only. Explicit with_paths_and_timing values and direct nondefault test deadline injections remain literal."
+    }
+  },
+  "src/daemon/verification/reservation.rs": {
+    "production ref:DISPATCH_TIMEOUT": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "CONTROL_VERB_CEILING derives the production reservation recovery contract from provider, dispatch, and termination bounds. It does not start or capture a subprocess and must not be renewed per observation."
     }
   },
   "src/github_access.rs": {
-    "production run_captured_private(Duration::from_secs(30)": {
+    "production run_captured_private(bound": {
       "count": 1,
-      "kind": "unrouted",
-      "reason": "30 s for one gh call: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+      "kind": "delegated",
+      "reason": "Origin reads receive an explicit 30s default or the owning Environment's read allowance. The bound survives revalidation; no command is retried by this leaf."
     }
   },
   "src/github_access/command.rs": {
-    "production run_captured_private(Duration::from_secs(120)": {
+    "production run_captured_private(bound": {
       "count": 1,
-      "kind": "unrouted",
-      "reason": "120 s for one gh command: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+      "kind": "delegated",
+      "reason": "execute_with_bound receives the Repository's configured 120s operation allowance; the existing release-source executor passes its unchanged 120s production default."
     }
   },
   "src/github_access/observation.rs": {
-    "production run_captured_private(Duration::from_secs(120)": {
+    "production run_captured_private(self.bounds.operation": {
       "count": 1,
-      "kind": "unrouted",
-      "reason": "120 s for one gh observation: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+      "kind": "delegated",
+      "reason": "Pinned origin observations carry the owning Environment's 120s allowance, or the unchanged default for callers without an Environment. Authority is revalidated with the same explicit read policy before one transport operation."
     }
   },
   "src/github_access/transport.rs": {
-    "production run_captured_private(Duration::from_secs(120)": {
+    "production run_captured_private(self.bounds.operation": {
       "count": 1,
-      "kind": "unrouted",
-      "reason": "120 s for one gh transport call: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+      "kind": "delegated",
+      "reason": "Repository carries separate 30s read and 120s operation allowances resolved from its owning Environment or production defaults. Each authority check and the single transport operation use that carried policy."
     },
-    "production run_captured_private(Duration::from_secs(30)": {
+    "production run_captured_private(self.bounds.read": {
       "count": 1,
-      "kind": "unrouted",
-      "reason": "30 s for one gh transport probe: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+      "kind": "delegated",
+      "reason": "Repository carries separate 30s read and 120s operation allowances resolved from its owning Environment or production defaults. Each authority check and the single transport operation use that carried policy."
     }
   },
   "src/lane_budget.rs": {
@@ -167,46 +186,39 @@
     }
   },
   "src/service/cleanup.rs": {
-    "production run_captured(Duration::from_secs(60)": {
+    "production run_captured(bound": {
       "count": 1,
-      "kind": "unrouted",
-      "reason": "60 s for one cleanup git call; cleanup lib tests reach it with local git: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+      "kind": "delegated",
+      "reason": "Cleanup passes its owning Environment's 60s Git allowance to this leaf. Lib fixture setup calls the same primitive with shared load grace. Effects execute once and exact-head/ownership checks are unchanged."
     }
   },
   "src/service/cleanup/dropped/process.rs": {
-    "production run_captured_quiescent(CLEANUP_HELPER_TIMEOUT": {
+    "production run_captured_quiescent(bound": {
       "count": 1,
-      "kind": "unrouted",
-      "reason": "CLEANUP_HELPER_TIMEOUT (45 s) bounds the process-stop helper: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
-    }
-  },
-  "src/service/continuation/runtime.rs": {
-    "production run_captured_with_input(operation_timeout(operation)": {
-      "count": 1,
-      "kind": "unrouted",
-      "reason": "SH-798: operation_timeout selects 45 s for a 30 s observation operation or 225 s for a 150 s resume operation. Unit tests pin both helper budgets to at most two thirds of the outer bound. Not routed through Environment::subprocess_bound; SH-846 owns the broader census of such bounds."
+      "kind": "delegated",
+      "reason": "The dropped-cleanup owner passes Environment::subprocess_bound(CLEANUP_HELPER_TIMEOUT) before its one helper invocation; exact target receipt and cleanup authority are unchanged."
     }
   },
   "src/service/engine.rs": {
-    "production run_captured(DISPATCH_TIMEOUT": {
-      "count": 2,
-      "kind": "unrouted",
-      "reason": "DISPATCH_TIMEOUT (180 s) bounds the story.sh dispatch and unclaim helpers: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    "production ref:DISPATCH_TIMEOUT": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Diagnostic text reports the dispatch settlement contract; this reference does not start or bound a captured subprocess."
     },
     "production run_captured(bound": {
-      "count": 2,
+      "count": 4,
       "kind": "delegated",
-      "reason": "run_shell_capabilities reads bound through Environment::subprocess_bound. kill_window uses the remaining shared deadline derived from subprocess_bound(TMUX_TIMEOUT), after ownership inspection."
+      "reason": "The owning Environment supplies probe, dispatch and unclaim bounds before capture. TmuxBudget still caps remaining probe budget; dispatch/unclaim use their independently configured 180s allowance."
     },
     "production run_captured(timeout": {
       "count": 1,
       "kind": "delegated",
       "reason": "probe_window_at's timeout comes from its TmuxBudget, whose per-call bound is subprocess_bound(TMUX_TIMEOUT)."
     },
-    "production run_captured_cancellable(DISPATCH_TIMEOUT": {
+    "production run_captured_cancellable(bound": {
       "count": 1,
-      "kind": "unrouted",
-      "reason": "DISPATCH_TIMEOUT (180 s) bounds a cancellable dispatch helper: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+      "kind": "delegated",
+      "reason": "run_shell_dispatch_cancellable resolves the owning Environment dispatch allowance once; cancellation and termination grace semantics remain unchanged."
     },
     "test run_captured(Duration::from_millis(20)": {
       "count": 1,
@@ -221,11 +233,18 @@
       "reason": "capture's timeout comes from its TmuxBudget, whose per-call bound is subprocess_bound(TMUX_TIMEOUT)."
     }
   },
-  "src/service/engine/reset.rs": {
-    "production run_captured_quiescent(DISPATCH_TIMEOUT": {
+  "src/service/engine/dispatch_quiescence.rs": {
+    "production ref:DISPATCH_TIMEOUT": {
       "count": 1,
-      "kind": "unrouted",
-      "reason": "DISPATCH_TIMEOUT (180 s) bounds the engine-reset helper: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+      "kind": "delegated",
+      "reason": "One total reset-dispatch settlement deadline. It governs the transaction's observation loop and is not per-process fixture patience."
+    }
+  },
+  "src/service/engine/reset.rs": {
+    "production ref:DISPATCH_TIMEOUT": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "One total engine stop-lanes deadline passed through stop_lanes_after_dispatch. It remains the transaction contract; the reset helper subprocess itself now reads its Environment allowance."
     }
   },
   "src/service/engine/restoration.rs": {
@@ -246,12 +265,12 @@
     "production run_captured_answer(GIT_DEADLINE": {
       "count": 1,
       "kind": "unrouted",
-      "reason": "GIT_DEADLINE (30 s) bounds one private-object git read: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+      "reason": "Private-object Git API retains its explicit 30s per-query production limit and 8MiB answer limit, without an Environment owner. Controlled setup/query paths take the minimum with the caller's remaining absolute transaction deadline; this census does not claim fixture grace for the standalone read/query APIs. These no-Environment callers remain outside the integration constructor census and need separate review when their harness timing changes."
     },
     "production run_captured_query(GIT_DEADLINE": {
       "count": 1,
       "kind": "unrouted",
-      "reason": "GIT_DEADLINE (30 s) bounds one private-object git query: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+      "reason": "Private-object Git API retains its explicit 30s per-query production limit and 8MiB answer limit, without an Environment owner. Controlled setup/query paths take the minimum with the caller's remaining absolute transaction deadline; this census does not claim fixture grace for the standalone read/query APIs. These no-Environment callers remain outside the integration constructor census and need separate review when their harness timing changes."
     },
     "production run_captured_query(timeout": {
       "count": 2,
@@ -260,10 +279,10 @@
     }
   },
   "src/service/resources/git.rs": {
-    "production run_captured(Duration::from_secs(60)": {
+    "production run_captured(bound": {
       "count": 1,
-      "kind": "unrouted",
-      "reason": "60 s for one resource git call: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+      "kind": "delegated",
+      "reason": "Resource and cleanup owners pass their Environment's 60s Git allowance explicitly. Existing public standalone helpers preserve their 60s default; their caller context remains a manual-review obligation."
     }
   },
   "src/service/resources/tmux.rs": {
@@ -286,15 +305,15 @@
     }
   },
   "src/service/workspace_lock.rs": {
-    "production run_captured(Duration::from_secs(30)": {
+    "production run_captured(bound": {
       "count": 1,
-      "kind": "unrouted",
-      "reason": "30 s for one workspace-locked git or tmux call: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+      "kind": "delegated",
+      "reason": "Environment-owned service paths pass their 30s allowance through git_with_bound/acquire_with_bound. Remaining crate-private default wrappers compile only for lib fixtures and grace their setup/observation allowance. Ownership remains nonblocking; this helper does not retry effects."
     },
-    "production run_captured_quiescent(Duration::from_secs(30)": {
+    "production run_captured_quiescent(bound": {
       "count": 1,
-      "kind": "unrouted",
-      "reason": "30 s for one workspace-locked quiescent call: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+      "kind": "delegated",
+      "reason": "Environment-owned service paths pass their 30s allowance through git_with_bound/acquire_with_bound. Remaining crate-private default wrappers compile only for lib fixtures and grace their setup/observation allowance. Ownership remains nonblocking; this helper does not retry effects."
     }
   }
 }

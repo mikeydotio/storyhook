@@ -45,7 +45,7 @@ fn halted_intent_without_a_reservation_survives_restart_then_steady_tick_finishe
     use storyhook::service::engine::OPERATOR_STOPPED_NOW;
     use storyhook::store::EngineRunState;
     with_fake_dispatch_script(|| {
-        let fixture = ServiceFixture::new();
+        let fixture = ServiceFixture::new().with_subprocess_patience();
         // Cleanup canonicalizes the caller directory; the default fixture
         // checkout is synthetic and only suitable for observation tests.
         fixture
@@ -270,7 +270,7 @@ fn second_project_run(fixture: &ServiceFixture, slug: &str, prefix: &str) -> Str
 #[test]
 fn reconcile_tick_quarantines_a_dead_window_through_the_real_dispatcher() {
     with_fake_dispatch_script(|| {
-        let fixture = ServiceFixture::new();
+        let fixture = ServiceFixture::new().with_subprocess_patience();
         let story = new_story(&fixture, "lane work");
         let run_id = started_run(&fixture, 1);
         occupy(&fixture, &run_id, 0, &story);
@@ -303,7 +303,7 @@ fn reconcile_tick_quarantines_a_dead_window_through_the_real_dispatcher() {
 #[test]
 fn reconcile_restart_tick_quarantines_the_same_lane_as_interrupted() {
     with_fake_dispatch_script(|| {
-        let fixture = ServiceFixture::new();
+        let fixture = ServiceFixture::new().with_subprocess_patience();
         let story = new_story(&fixture, "lane work");
         let run_id = started_run(&fixture, 1);
         occupy(&fixture, &run_id, 0, &story);
@@ -328,7 +328,7 @@ fn reconcile_restart_tick_quarantines_the_same_lane_as_interrupted() {
 #[test]
 fn a_run_with_no_linked_checkout_still_reconciles_via_the_home_fallback() {
     with_fake_dispatch_script(|| {
-        let fixture = ServiceFixture::new();
+        let fixture = ServiceFixture::new().with_subprocess_patience();
         let story = new_story(&fixture, "lane work");
         let run_id = started_run(&fixture, 1);
         occupy(&fixture, &run_id, 0, &story);
@@ -361,7 +361,7 @@ fn a_run_with_no_linked_checkout_still_reconciles_via_the_home_fallback() {
 #[test]
 fn a_tick_reconciles_every_live_run_across_every_project() {
     with_fake_dispatch_script(|| {
-        let fixture = ServiceFixture::new();
+        let fixture = ServiceFixture::new().with_subprocess_patience();
         let alpha_story = new_story(&fixture, "alpha lane work");
         let alpha_run = started_run(&fixture, 1);
         occupy(&fixture, &alpha_run, 0, &alpha_story);

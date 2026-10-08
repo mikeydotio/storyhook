@@ -132,7 +132,7 @@ printf '%s\n' '{"number":7,"state":"CLOSED","isDraft":false,"isCrossRepository":
     };
 
     let outcome = ShellVerificationActuator::with_paths(
-        daemon_env.clone(),
+        storyhook_test_support::subprocess_patience(daemon_env.clone()),
         env_root.path().join("unused-helper"),
         storyhook_test_support::story_binary().into(),
     )

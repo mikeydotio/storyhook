@@ -31,8 +31,17 @@ pub(crate) struct Request {
 }
 
 /// Refuse stale requests after a worktree has been reassigned.
-pub(crate) fn validate_marker(lease: &StoryCleanupLease) -> Result<(), AppError> {
-    if cleanup_lease::marker_at_registered(&lease.worktree_path)?.as_ref() != Some(lease) {
+pub(crate) fn validate_marker(
+    env: &Environment,
+    lease: &StoryCleanupLease,
+) -> Result<(), AppError> {
+    if cleanup_lease::marker_at_registered(
+        env.subprocess_bound(std::time::Duration::from_secs(60)),
+        &lease.worktree_path,
+    )?
+    .as_ref()
+        != Some(lease)
+    {
         return Err(AppError::Validation(
             "publication lease no longer matches its worktree marker".into(),
         ));
@@ -65,7 +74,8 @@ pub(crate) fn guard_merged_pr<S: Store>(
             "multiple merged PRs; preserve the branch".into(),
         ));
     }
-    let repository = crate::github_access::Repository::resolve(&lease.repository_path)?;
+    let repository =
+        crate::github_access::Repository::resolve_with_env(&lease.repository_path, ctx.env())?;
     let bytes = repository.gh(&[
         "pr".into(),
         "view".into(),
@@ -93,17 +103,42 @@ pub(crate) fn guard_merged_pr<S: Store>(
         "origin".into(),
         head.into(),
     ])?;
-    guard_tip(&lease.repository_path, &lease.branch, head)?;
+    guard_tip_with_bound(
+        ctx.env()
+            .subprocess_bound(std::time::Duration::from_secs(60)),
+        &lease.repository_path,
+        &lease.branch,
+        head,
+    )?;
     Ok(Some(head.into()))
 }
 
 /// Check the exact branch against the observed merged head, not a newer base.
+#[cfg(test)]
 fn guard_tip(repository: &Path, branch: &str, merged_head: &str) -> Result<(), AppError> {
-    if !super::resources::git::branch_exists(repository, branch)? {
+    guard_tip_with_bound(
+        crate::testing::load_grace::graced_now(std::time::Duration::from_secs(60)),
+        repository,
+        branch,
+        merged_head,
+    )
+}
+
+fn guard_tip_with_bound(
+    bound: std::time::Duration,
+    repository: &Path,
+    branch: &str,
+    merged_head: &str,
+) -> Result<(), AppError> {
+    if !super::resources::git::branch_exists_with_bound(bound, repository, branch)? {
         return Ok(());
     }
-    let tip = git::text(repository, &["rev-parse", &format!("refs/heads/{branch}")])?;
-    git::text(repository, &["merge-base", "--is-ancestor", tip.trim(), merged_head])
+    let tip = git::text_with_bound(
+        bound,
+        repository,
+        &["rev-parse", &format!("refs/heads/{branch}")],
+    )?;
+    git::text_with_bound(bound, repository, &["merge-base", "--is-ancestor", tip.trim(), merged_head])
         .map_err(|e| AppError::Validation(format!("unpublished repair: branch {branch} at {} is absent from merged PR head {merged_head}; preserve it: {e}", tip.trim())))?;
     Ok(())
 }
@@ -119,7 +154,12 @@ pub(crate) fn enqueue<S: Store>(ctx: &Ctx<'_, S>) -> Result<(), AppError> {
     else {
         return Ok(());
     };
-    let Some(lease) = cleanup_lease::marker_at_registered(ctx.cwd())? else {
+    let Some(lease) = cleanup_lease::marker_at_registered(
+        ctx.env()
+            .subprocess_bound(std::time::Duration::from_secs(60)),
+        ctx.cwd(),
+    )?
+    else {
         return Ok(());
     };
     let (project, links) = ctx.store().read(|tx| {
@@ -145,9 +185,14 @@ pub(crate) fn enqueue<S: Store>(ctx: &Ctx<'_, S>) -> Result<(), AppError> {
             lease.story_id
         )));
     }
-    let head = git::text(ctx.cwd(), &["rev-parse", "--verify", "HEAD^{commit}"])?
-        .trim()
-        .to_owned();
+    let head = git::text_with_bound(
+        ctx.env()
+            .subprocess_bound(std::time::Duration::from_secs(60)),
+        ctx.cwd(),
+        &["rev-parse", "--verify", "HEAD^{commit}"],
+    )?
+    .trim()
+    .to_owned();
     let request = Request {
         version: 1,
         automation_generation: ctx

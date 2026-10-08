@@ -61,7 +61,12 @@ impl<S: Store> Attempt<'_, S> {
             .iter()
             .map(|member| (member.story, member.candidate.story_id.clone()))
             .collect();
-        let (mut locks, busy) = MemberLocks::acquire(&self.head.checkout, &lockable)?;
+        let (mut locks, busy) = MemberLocks::acquire_with_bound(
+            self.env
+                .subprocess_bound(std::time::Duration::from_secs(30)),
+            &self.head.checkout,
+            &lockable,
+        )?;
         for story_id in busy {
             self.exclude(
                 &story_id,

@@ -858,6 +858,7 @@ pub struct ShellVerificationActuator {
     verifier_script: Option<PathBuf>,
     verification_idle_timeout: Duration,
     control_timeout: Duration,
+    default_control_timeout: bool,
     termination_grace: Duration,
     batch_preview: bool,
     batching: bool,
@@ -877,6 +878,7 @@ impl ShellVerificationActuator {
             verifier_script: None,
             verification_idle_timeout: VERIFICATION_IDLE_TIMEOUT,
             control_timeout: DISPATCH_TIMEOUT,
+            default_control_timeout: true,
             termination_grace: RECOVERY_WAKE,
             batch_preview: false,
             batching: false,
@@ -900,6 +902,7 @@ impl ShellVerificationActuator {
             verifier_script: None,
             verification_idle_timeout: VERIFICATION_IDLE_TIMEOUT,
             control_timeout: DISPATCH_TIMEOUT,
+            default_control_timeout: true,
             termination_grace: RECOVERY_WAKE,
             batch_preview: false,
             batching: false,
@@ -930,10 +933,21 @@ impl ShellVerificationActuator {
             verifier_script: None,
             verification_idle_timeout,
             control_timeout,
+            default_control_timeout: false,
             termination_grace,
             batch_preview: false,
             batching: false,
             batch_script: None,
+        }
+    }
+
+    /// Default controls inherit the owning fixture's policy only at execution.
+    /// Explicit timing constructors and injected timeout proofs remain literal.
+    fn control_bound(&self) -> Duration {
+        if self.default_control_timeout && self.control_timeout == DISPATCH_TIMEOUT {
+            self.env.subprocess_bound(DISPATCH_TIMEOUT)
+        } else {
+            self.control_timeout
         }
     }
 
@@ -1014,7 +1028,7 @@ impl ShellVerificationActuator {
                 .pull_request
                 .as_ref()
                 .map_err(|problem| AppError::Validation(problem.message()))?;
-            if let Some(problem) = checkout_repository_problem(&intent.checkout, link) {
+            if let Some(problem) = checkout_repository_problem(&self.env, &intent.checkout, link) {
                 return Err(AppError::Validation(problem));
             }
             let script = self.verifier_script()?;
@@ -1382,7 +1396,7 @@ impl ShellVerificationActuator {
         // publication and ordinary submission share this narrower exclusion.
         let started = Instant::now();
         let publication_lock = loop {
-            if owner.cancellation.is_cancelled() || started.elapsed() >= self.control_timeout {
+            if owner.cancellation.is_cancelled() || started.elapsed() >= self.control_bound() {
                 return Err(infrastructure(
                     "publication lock wait cancelled or timed out".into(),
                 ));
@@ -1490,8 +1504,9 @@ impl ShellVerificationActuator {
             evidence
                 .validate()
                 .map_err(|error| infrastructure(error.to_string()))?;
-            let repository = crate::github_access::Repository::resolve(&candidate.checkout)
-                .map_err(|error| infrastructure(error.to_string()))?;
+            let repository =
+                crate::github_access::Repository::resolve_with_env(&candidate.checkout, &self.env)
+                    .map_err(|error| infrastructure(error.to_string()))?;
             if !repository
                 .qualified()
                 .eq_ignore_ascii_case(&evidence.repository)
@@ -1560,7 +1575,9 @@ impl ShellVerificationActuator {
         mode: VerificationMode,
     ) -> VerificationOutcome {
         let _log = self.log_scope(candidate);
-        if let Some(detail) = checkout_repository_problem(&candidate.checkout, pull_request) {
+        if let Some(detail) =
+            checkout_repository_problem(&self.env, &candidate.checkout, pull_request)
+        {
             return VerificationOutcome::InvalidSubmission { detail };
         }
         // The verifier's own mechanics travel with this daemon (SH-654): a
@@ -2011,10 +2028,11 @@ pub fn journal_path(env: &Environment, candidate: &VerificationCandidate) -> Pat
 }
 
 fn checkout_repository_problem(
+    env: &Environment,
     checkout: &std::path::Path,
     pull_request: &PrLink,
 ) -> Option<String> {
-    let repository = match crate::github_access::Repository::resolve(checkout) {
+    let repository = match crate::github_access::Repository::resolve_with_env(checkout, env) {
         Ok(repository) => repository,
         Err(error) => {
             return Some(format!(

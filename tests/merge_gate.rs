@@ -1560,15 +1560,16 @@ impl MergeRepo {
     ) -> ChildGuard {
         let args = Self::verification_gate_args(expected_tree, base, head, poller, command);
         let mut spawned = Command::new("bash");
+        gate_cleanup_patience(
+            &mut spawned,
+            storyhook_test_support::load_grace::contention(),
+        );
         spawned
             .args(&args)
             .current_dir(self.path())
             .env("STORYHOOK_LOCK_DIR", self.path().join("locks"))
             .env("STORYHOOK_ACTIVITY_LOG_DIR", self.path().join("activity"))
             .envs(storyhook_test_support::daemon_containment())
-            // Bounds the owner's cancellation grace so a test never waits on
-            // the production 30s budget; the gates here die on first TERM.
-            .env("STORYHOOK_VERIFIER_CLEANUP_GRACE_MS", "8000")
             .env(
                 "STORYHOOK_GATE_PROGRESS",
                 self.path().join("gate-progress.ndjson"),
@@ -4875,5 +4876,40 @@ fn private_repair_admission_precedes_gate_and_fails_closed() {
         assert_eq!(args[9], repo.rev_parse(&format!("{head}^{{tree}}")));
         assert_eq!(args.len(), 12);
         assert_eq!(args[11], "--json");
+    }
+}
+
+/// SH-846: this harness waits for a TERM handler's final receipt, not for a
+/// particular TERM-to-KILL cutoff. The separate speculative cleanup-budget
+/// proofs keep their explicit values. Eight seconds remains the idle allowance.
+const GATE_CLEANUP_PATIENCE: Duration = Duration::from_secs(8);
+
+fn gate_cleanup_patience(command: &mut Command, reading: Option<f64>) {
+    let granted = storyhook_test_support::load_grace::graced_by(GATE_CLEANUP_PATIENCE, reading);
+    command.env(
+        "STORYHOOK_VERIFIER_CLEANUP_GRACE_MS",
+        granted.as_millis().to_string(),
+    );
+}
+
+#[test]
+fn sh846_gate_cleanup_receipt_patience_reaches_the_child_and_keeps_idle_policy() {
+    for (reading, expected) in [
+        (None, "8000"),
+        (Some(1.0), "8000"),
+        (Some(3.0), "24000"),
+        (Some(1000.0), "900000"),
+    ] {
+        let mut command = Command::new("unused-fixture-command");
+        gate_cleanup_patience(&mut command, reading);
+        let actual = command
+            .get_envs()
+            .find(|(name, _)| *name == "STORYHOOK_VERIFIER_CLEANUP_GRACE_MS")
+            .and_then(|(_, value)| value)
+            .unwrap();
+        assert_eq!(
+            actual, expected,
+            "the cancellation helper receives the caller's actual patience"
+        );
     }
 }

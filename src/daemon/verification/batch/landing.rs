@@ -281,7 +281,14 @@ pub(in crate::daemon::verification) fn recover<S: Store, A: VerificationActuator
         .map(|row| (row.story, row.story_id.clone()))
         .collect();
     let locks = match actuator.batch() {
-        Some(_) => Some(MemberLocks::acquire(&candidate.checkout, &others)?.0),
+        Some(_) => Some(
+            MemberLocks::acquire_with_bound(
+                env.subprocess_bound(std::time::Duration::from_secs(30)),
+                &candidate.checkout,
+                &others,
+            )?
+            .0,
+        ),
         None => None,
     };
     match complete(

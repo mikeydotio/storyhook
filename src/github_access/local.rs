@@ -6,6 +6,43 @@ use std::path::Path;
 
 /// Executes the local GitHub helper protocol and returns its machine output.
 pub fn run_local(arguments: &[String]) -> Result<Vec<u8>, AppError> {
+    run_local_with_env(arguments, None)
+}
+
+/// Runs the same local protocol with one fixture's explicit subprocess policy.
+/// Authority checks and the existing discovery-only retry are unchanged.
+#[cfg(feature = "test-seam")]
+pub fn run_local_for_fixture(
+    arguments: &[String],
+    env: &crate::env::Environment,
+) -> Result<Vec<u8>, AppError> {
+    run_local_with_env(arguments, Some(env))
+}
+
+fn resolve_repository(
+    path: &Path,
+    env: Option<&crate::env::Environment>,
+) -> Result<Repository, AppError> {
+    match env {
+        Some(env) => Repository::resolve_with_env(path, env),
+        None => Repository::resolve(path),
+    }
+}
+
+fn resolve_observation(
+    path: &Path,
+    env: Option<&crate::env::Environment>,
+) -> Result<super::OriginObservation, AppError> {
+    match env {
+        Some(env) => super::OriginObservation::resolve_with_env(path, env),
+        None => super::OriginObservation::resolve(path),
+    }
+}
+
+fn run_local_with_env(
+    arguments: &[String],
+    env: Option<&crate::env::Environment>,
+) -> Result<Vec<u8>, AppError> {
     if arguments.first().is_some_and(|mode| mode == "observe") {
         let usage = || {
             AppError::Usage(
@@ -15,11 +52,11 @@ pub fn run_local(arguments: &[String]) -> Result<Vec<u8>, AppError> {
         if arguments.len() < 5 || arguments[1] != "--checkout" {
             return Err(usage());
         }
-        let observation = super::OriginObservation::resolve(Path::new(&arguments[2]))?;
+        let observation = resolve_observation(Path::new(&arguments[2]), env)?;
         let mut remaining = &arguments[3..];
         if remaining.first().is_some_and(|arg| arg == "--authority") {
             let authority = remaining.get(1).ok_or_else(usage)?;
-            let source = super::OriginObservation::resolve(Path::new(authority))?;
+            let source = resolve_observation(Path::new(authority), env)?;
             observation.require_authority(&source)?;
             remaining = &remaining[2..];
         }
@@ -28,10 +65,14 @@ pub fn run_local(arguments: &[String]) -> Result<Vec<u8>, AppError> {
         }
         return observation.git(&remaining[1..]);
     }
-    run_attempt(arguments, true)
+    run_attempt(arguments, true, env)
 }
 
-fn run_attempt(arguments: &[String], may_refresh: bool) -> Result<Vec<u8>, AppError> {
+fn run_attempt(
+    arguments: &[String],
+    may_refresh: bool,
+    env: Option<&crate::env::Environment>,
+) -> Result<Vec<u8>, AppError> {
     let usage = || {
         AppError::Usage(
             "usage: story github resolve|exec|git --checkout PATH [--authority PATH] [--expected HOST/OWNER/REPO] [-- ARGUMENTS]".into(),
@@ -40,7 +81,7 @@ fn run_attempt(arguments: &[String], may_refresh: bool) -> Result<Vec<u8>, AppEr
     if arguments.len() < 3 || arguments[1] != "--checkout" {
         return Err(usage());
     }
-    let repository = Repository::resolve(Path::new(&arguments[2]))?;
+    let repository = resolve_repository(Path::new(&arguments[2]), env)?;
     let mut remaining = &arguments[3..];
     let mut seen_authority = false;
     let mut seen_expected = false;
@@ -48,7 +89,7 @@ fn run_attempt(arguments: &[String], may_refresh: bool) -> Result<Vec<u8>, AppEr
         match option.as_str() {
             "--authority" if !seen_authority => {
                 let path = remaining.get(1).ok_or_else(usage)?;
-                let authority = Repository::resolve(Path::new(path))?;
+                let authority = resolve_repository(Path::new(path), env)?;
                 if authority.identity() != repository.identity() {
                     return Err(AppError::Validation(format!(
                         "checkout {} differs from source authority {}; refusing GitHub operation",
@@ -87,7 +128,7 @@ fn run_attempt(arguments: &[String], may_refresh: bool) -> Result<Vec<u8>, AppEr
     if !may_refresh || seen_expected || !is_discovery_read(&arguments[0], remaining) {
         return Err(error);
     }
-    let refreshed = Repository::resolve(Path::new(&arguments[2])).map_err(|refresh| {
+    let refreshed = resolve_repository(Path::new(&arguments[2]), env).map_err(|refresh| {
         refresh.with_context(&format!("origin refresh after failed read: {error}"))
     })?;
     if refreshed.identity() == repository.identity() {
@@ -95,7 +136,7 @@ fn run_attempt(arguments: &[String], may_refresh: bool) -> Result<Vec<u8>, AppEr
     }
     // Reparse all authority and URL constraints. A moved origin cannot
     // authorize a previously supplied foreign PR URL or stale source checkout.
-    run_attempt(arguments, false).map_err(|retry| {
+    run_attempt(arguments, false, env).map_err(|retry| {
         retry.with_context(&format!(
             "one read retry after origin changed from {} to {}; initial failure: {error}",
             repository.qualified(),
