@@ -14,7 +14,7 @@ ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
 
 
 def running_target(line):
-    """Return source/target for normal headers or a verbose Cargo test command.
+    """Return source/target, or source/None for known verbose build chatter.
 
     Verbose commands identify the executable, not the source file. Strip only
     Cargo's artifact suffix, never arguments or an arbitrary hyphenated name.
@@ -33,15 +33,28 @@ def running_target(line):
             return None
         while args and ENV_ASSIGNMENT.match(args[0]):
             args.pop(0)
+        if args and args[0].rsplit("/", 1)[-1] == "rustc-slot.py":
+            if len(args) < 2 or args[1].rsplit("/", 1)[-1] != "rustc":
+                return None
+            return args[1], None
         # The repository's Cargo runner execs exactly the command after --.
         if args and args[0].rsplit("/", 1)[-1] == "host-admit.py":
-            if args[1:4] != ["--entry", "cargo-test-binary", "--"]:
+            if args[1:4] not in (["--entry", "cargo-test-binary", "--"],
+                                 ["--entry", "rustc", "--"]):
                 return None
+            compiler = args[2] == "rustc"
             args = args[4:]
+            if compiler and (not args or args[0].rsplit("/", 1)[-1] != "rustc"):
+                return None
         if not args:
             return None
         executable = args[0]
         parts = executable.replace("\\", "/").rsplit("/", 2)
+        if parts[-1] == "rustc" or (len(parts) == 3 and parts[-1] == "build-script-build"
+                                    and parts[0].rsplit("/", 1)[-1] == "build"):
+            # A test may synchronously run nested Cargo before its own case
+            # result. Compilation must not replace or erase the parent target.
+            return executable, None
         if len(parts) < 2 or parts[-2] != "deps":
             return None
         artifact = ARTIFACT.fullmatch(parts[-1])
@@ -66,12 +79,15 @@ class TestOutputParser:
         running = running_target(line)
         if running is not None:
             source, name = running
+            if name is None:
+                return events
             self.current = name
             events.append(("stage", f"running {source}"))
             return events
         if line.startswith("     Running "):
-            # A compiler/build-script/unknown runner is not a test target, and
-            # must not lend the preceding binary's identity to later chatter.
+            # An unrecognized or malformed runner cannot lend the preceding
+            # binary's identity to later cases. Known nested build chatter was
+            # handled above without changing the parent test identity.
             self.current = ""
             return events
 

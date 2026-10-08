@@ -377,6 +377,15 @@ fn shared_test_output_parser_handles_verbose_commands_and_refuses_unknown_target
         "     Running tests/previous.rs (target/previous)\n",
         "     Running unknown command\n",
         "test unknown_header ... ok\n",
+        // The compiler collector contract runs a nested failing cargo check
+        // before libtest reports each selected parent case.
+        "     Running `/tmp/target/debug/deps/first-0123456789abcdef --exact selected`\n",
+        "     Running `CARGO_MANIFEST_DIR='/tmp/nested crate' /toolchain/bin/rustc --crate-name nested src/lib.rs --out-dir /tmp/nested/target/debug/deps`\n",
+        "error: nested_absent\n",
+        "test selected ... ok\n",
+        "     Running `/tmp/target/debug/deps/second-fedcba9876543210 --exact selected`\n",
+        "     Running `/checkout/scripts/rustc-slot.py /toolchain/bin/rustc --crate-name nested src/lib.rs --out-dir /tmp/nested/target/debug/deps`\n",
+        "test selected ... ok\n",
         "     Running tests/omega.rs (target/debug/deps/omega-0123456789abcdef)\n",
         "  Executable `/tmp/target/debug/deps/not_running-fedcba9876543210`\n",
         "test resumed ... ok\n",
@@ -401,10 +410,10 @@ fn shared_test_output_parser_handles_verbose_commands_and_refuses_unknown_target
         concat!(
             "alpha\tnormal\tPASS\nalpha\tverbose\tFAIL\nbeta\twrapped\tPASS\n",
             "hyphen-name\tenvironment\tPASS\nlib\tnormal_library\tPASS\nstoryhook\tverbose_library\tPASS\n",
-            "(unknown)\tcompiler_chatter\tPASS\n(unknown)\tbuild_chatter\tPASS\n",
+            "storyhook\tcompiler_chatter\tPASS\nprevious\tbuild_chatter\tPASS\n",
             "(unknown)\tinvalid_hash\tPASS\n(unknown)\tunterminated\tPASS\n",
             "(unknown)\tinvalid_quoting\tPASS\n(unknown)\twrong_runner\tPASS\n",
-            "(unknown)\tunknown_header\tPASS\nomega\tresumed\tPASS\n",
+            "(unknown)\tunknown_header\tPASS\nfirst\tselected\tPASS\nsecond\tselected\tPASS\nomega\tresumed\tPASS\n",
         )
     );
 }

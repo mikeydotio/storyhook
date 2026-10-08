@@ -355,6 +355,7 @@ fn blocks(output: &str) -> Vec<(String, Vec<String>)> {
     let mut blocks: Vec<(String, Vec<String>)> = Vec::new();
     let mut current = false;
     for line in output.lines() {
+        let previous = current;
         if line.starts_with("     Running ") {
             current = false;
         }
@@ -387,6 +388,17 @@ fn blocks(output: &str) -> Vec<(String, Vec<String>)> {
             let Some(executable) = args.first().map(Path::new) else {
                 continue;
             };
+            if executable.file_name() == Some(std::ffi::OsStr::new("rustc"))
+                || (executable.file_name() == Some(std::ffi::OsStr::new("build-script-build"))
+                    && executable
+                        .parent()
+                        .and_then(Path::parent)
+                        .and_then(Path::file_name)
+                        == Some(std::ffi::OsStr::new("build")))
+            {
+                current = previous;
+                continue;
+            }
             if executable.parent().and_then(Path::file_name) != Some(std::ffi::OsStr::new("deps")) {
                 continue;
             }
@@ -451,8 +463,6 @@ fn pooled_output_blocks_preserve_order_for_normal_and_verbose_cargo_headers() {
             "crossed case blocks must remain observable"
         );
         for unknown in [
-            "     Running `rustc --crate-name stray --out-dir /tmp/target/debug/deps`",
-            "     Running `/tmp/target/debug/build/pkg-0123456789abcdef/build-script-build`",
             "     Running `/tmp/target/debug/deps/stray-0123456789abcdef",
             "     Running tests/incomplete.rs",
         ] {
@@ -462,6 +472,15 @@ fn pooled_output_blocks_preserve_order_for_normal_and_verbose_cargo_headers() {
             );
             assert_eq!(blocks(&interrupted), expected, "{interrupted}");
         }
+        let nested = format!(
+            "{}\n     Running `rustc --crate-name nested src/lib.rs --out-dir /tmp/nested/target/debug/deps`\ntest alpha_case ... ok\n{}\n     Running `/tmp/target/debug/build/pkg-0123456789abcdef/build-script-build`\ntest beta_case ... FAILED\n",
+            headers[0], headers[1]
+        );
+        assert_eq!(
+            blocks(&nested),
+            expected,
+            "nested build must preserve its parent block"
+        );
     }
 }
 
