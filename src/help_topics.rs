@@ -253,7 +253,12 @@ set-prefix
   It takes no path or slug: it rewrites the project this directory
   resolves to, or the one --project names. Refuses if the prefix given
   is invalid, is the one this project already has, or already belongs
-  to another project in this store.
+  to another project in this store. It also refuses while a resumable
+  Full Auto run or pending reset, cleanup, landing, verification batch
+  or continuation still uses this project's current story IDs. The
+  refusal names the operation to finish or resolve. --force skips only
+  confirmation; it does not bypass these protections. Completed history
+  does not block a rename.
 
   Free-text description and comment bodies are left untouched — there
   is no reliable way to tell a genuine story-id reference in prose
