@@ -218,6 +218,10 @@ pub struct SqliteStore {
     config: StoreConfig,
     pool: Mutex<Vec<Connection>>,
     write_lock: Mutex<()>,
+    /// Monotonic observation only: tests must not acquire the writer gate to
+    /// discover whether another thread has attempted SQLite admission.
+    #[cfg(test)]
+    write_admission_attempts: std::sync::atomic::AtomicU64,
     /// The thread holding `write_lock`, if any (SH-838).
     ///
     /// Invariant: this is `Some(t)` exactly while thread `t` holds
@@ -291,6 +295,8 @@ impl SqliteStore {
             config,
             pool: Mutex::new(Vec::new()),
             write_lock: Mutex::new(()),
+            #[cfg(test)]
+            write_admission_attempts: std::sync::atomic::AtomicU64::new(0),
             write_owner: Mutex::new(None),
             change_conn: Mutex::new(Connection::open_in_memory()?),
             access,
@@ -472,6 +478,9 @@ impl SqliteStore {
         f: impl FnOnce(&mut SqliteWriteTx<'_>) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
         self.explain_corruption((|| {
+            #[cfg(test)]
+            self.write_admission_attempts
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let mut tx = SqliteWriteTx::begin(self.checkout()?)?;
             // On the error path `tx` drops here and rolls back — the whole
             // reason the transaction owns its own teardown rather than relying
@@ -483,6 +492,13 @@ impl SqliteStore {
             fire(FaultPoint::AfterCommitBeforeAck)?;
             Ok(value)
         })())
+    }
+
+    /// Reads a test-only counter without taking any store or SQLite lock.
+    #[cfg(test)]
+    pub(crate) fn write_admission_attempts_for_test(&self) -> u64 {
+        self.write_admission_attempts
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Rewrites a corruption error into a diagnosis and a way back.

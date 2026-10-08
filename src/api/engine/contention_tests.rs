@@ -23,6 +23,7 @@ fn fixture() -> (
 }
 
 fn contended<T: Send + std::fmt::Debug>(
+    stage: &str,
     daemon: &SqliteStore,
     controller: &EngineController,
     change: impl FnOnce(&mut <SqliteStore as Store>::WriteTx<'_>) -> Result<(), StoreError>,
@@ -33,12 +34,13 @@ fn contended<T: Send + std::fmt::Debug>(
         let mut early = None;
         daemon
             .write(|tx| {
+                let before = controller.store.write_admission_attempts_for_test();
                 scope.spawn(move || {
                     let _ = send.send(action());
                 });
-                // Observe the control inside its own local admission before
-                // measuring patience or committing a manual-mode change. This
-                // distinguishes contention from a thread not scheduled yet.
+                // A monotonic counter observes admission without competing for
+                // the control's write gate. A probe write here can itself hold
+                // that gate during SQLite's busy wait and starve the action.
                 let observed = Instant::now()
                     + storyhook_test_support::load_grace::graced_now(Duration::from_secs(5));
                 loop {
@@ -46,18 +48,12 @@ fn contended<T: Send + std::fmt::Debug>(
                         early = Some(Ok(result));
                         break;
                     }
-                    match controller.store.try_write(|_| Ok(())) {
-                        Err(StoreError::Busy(detail))
-                            if detail == "project write admission is occupied" =>
-                        {
-                            break;
-                        }
-                        Err(StoreError::Busy(_)) => {}
-                        other => panic!("the daemon writer must exclude admission: {other:?}"),
+                    if controller.store.write_admission_attempts_for_test() > before {
+                        break;
                     }
                     assert!(
                         Instant::now() < observed,
-                        "the control never attempted admission"
+                        "{stage}: the control never attempted admission"
                     );
                     std::thread::sleep(Duration::from_millis(1));
                 }
@@ -72,11 +68,11 @@ fn contended<T: Send + std::fmt::Debug>(
         let early = early.unwrap();
         assert!(
             matches!(early, Err(mpsc::RecvTimeoutError::Timeout)),
-            "the control must wait for admission instead of returning early: {early:?}"
+            "{stage}: the control must wait for admission instead of returning early: {early:?}"
         );
         receive
             .recv_timeout(storyhook_test_support::load_grace::PATIENCE_CEILING)
-            .expect("the control must finish after the contending transaction commits")
+            .unwrap_or_else(|error| panic!("{stage}: the control must finish after the contending transaction commits: {error}"))
     })
 }
 
@@ -84,6 +80,7 @@ fn contended<T: Send + std::fmt::Debug>(
 fn engine_controls_wait_for_a_contending_writer_without_replaying() {
     let (_fixture, controller, daemon) = fixture();
     let run = contended(
+        "start",
         &daemon,
         &controller,
         |_| Ok(()),
@@ -95,6 +92,7 @@ fn engine_controls_wait_for_a_contending_writer_without_replaying() {
     assert_eq!(controller.status("fixture", None).unwrap().len(), 1);
     let body = serde_json::json!({"run":run,"lanes":3,"agent":"codex"}).to_string();
     let configured = contended(
+        "configure",
         &daemon,
         &controller,
         |_| Ok(()),
@@ -106,12 +104,13 @@ fn engine_controls_wait_for_a_contending_writer_without_replaying() {
     assert_eq!(configured.run.agent, EngineAgent::Codex);
     let body = serde_json::json!({"run":run}).to_string();
     let inflight = InFlight::new(controller.env.clone());
-    for (action, state) in [
-        (EngineAction::Pause, EngineRunState::Paused),
-        (EngineAction::Resume, EngineRunState::Running),
-        (EngineAction::Stop, EngineRunState::Finished),
+    for (stage, action, state) in [
+        ("pause", EngineAction::Pause, EngineRunState::Paused),
+        ("resume", EngineAction::Resume, EngineRunState::Running),
+        ("stop", EngineAction::Stop, EngineRunState::Finished),
     ] {
         let result = contended(
+            stage,
             &daemon,
             &controller,
             |_| Ok(()),
@@ -121,6 +120,7 @@ fn engine_controls_wait_for_a_contending_writer_without_replaying() {
         assert_eq!(result.run.state, state);
     }
     let ack = contended(
+        "ack",
         &daemon,
         &controller,
         |_| Ok(()),
@@ -131,6 +131,7 @@ fn engine_controls_wait_for_a_contending_writer_without_replaying() {
     let next = controller.start("fixture", "{}").unwrap();
     let body = serde_json::json!({"run":next.run.id,"now":true}).to_string();
     let stopped = contended(
+        "stop now",
         &daemon,
         &controller,
         |_| Ok(()),
@@ -156,9 +157,13 @@ fn delayed_engine_admission_rechecks_manual_mode_before_start_and_resume() {
         settings.automations_enabled = Some(false);
         tx.put_settings(project, &settings)
     };
-    let result = contended(&daemon, &controller, disable, || {
-        controller.start("fixture", "{}")
-    });
+    let result = contended(
+        "manual mode before start",
+        &daemon,
+        &controller,
+        disable,
+        || controller.start("fixture", "{}"),
+    );
     assert!(
         matches!(result, Err(AppError::Validation(ref detail)) if detail.contains("Enable project automations"))
     );
@@ -172,9 +177,13 @@ fn delayed_engine_admission_rechecks_manual_mode_before_start_and_resume() {
     controller
         .action("fixture", EngineAction::Pause, &body, &inflight)
         .unwrap();
-    let result = contended(&daemon, &controller, disable, || {
-        controller.action("fixture", EngineAction::Resume, &body, &inflight)
-    });
+    let result = contended(
+        "manual mode before resume",
+        &daemon,
+        &controller,
+        disable,
+        || controller.action("fixture", EngineAction::Resume, &body, &inflight),
+    );
     assert!(
         matches!(result, Err(AppError::Validation(ref detail)) if detail.contains("Enable project automations"))
     );
