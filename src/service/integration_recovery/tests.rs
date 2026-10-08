@@ -155,7 +155,10 @@ fn native_single_proposal_rejects_code_binary_semantic_and_candidate_policy_chan
             theirs,
         );
         let before = f.snapshot();
-        assert!(matches!(f.inspect(), Inspection::Held { .. }));
+        assert!(
+            matches!(f.inspect(), Inspection::Held { .. }),
+            "accepted {path}"
+        );
         assert_eq!(f.snapshot(), before);
     }
     let mut f = Fixture::new(
@@ -179,6 +182,46 @@ fn native_single_proposal_rejects_code_binary_semantic_and_candidate_policy_chan
     let before = f.snapshot();
     assert!(matches!(f.inspect(), Inspection::Held { .. }));
     assert_eq!(f.snapshot(), before);
+}
+
+#[test]
+fn single_integration_non_code_scope_cannot_be_widened_by_allowlist() {
+    for (path, supported) in [
+        ("docs/guide.md", true),
+        ("docs/guide.txt", true),
+        ("docs/guide.rst", true),
+        ("docs/.gitignore", true),
+        ("docs/example.rs", false),
+        ("docs/example.py", false),
+        ("docs/config.yaml", false),
+        ("docs/README", false),
+    ] {
+        let f = Fixture::new(
+            SINGLE,
+            path,
+            b"start\nbase addition\nend\n",
+            b"start\nauthor addition\nend\n",
+        );
+        let before = f.snapshot();
+        match f.inspect() {
+            Inspection::Proposed(proposal) if supported => {
+                assert_eq!(proposal.files()[0].path, path);
+                proposal.settle().unwrap();
+            }
+            Inspection::Held { reason } if !supported => {
+                assert!(
+                    reason.contains("supported non-code paths"),
+                    "{path}: {reason}"
+                );
+            }
+            _ => panic!("incorrect supported non-code classification for {path}"),
+        }
+        assert_eq!(
+            f.snapshot(),
+            before,
+            "inspection changed source custody for {path}"
+        );
+    }
 }
 
 #[test]

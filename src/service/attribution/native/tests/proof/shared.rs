@@ -85,20 +85,12 @@ fn settled_named(
 #[test]
 fn native_shared_failure_grants_recovery_but_never_a_causal_return() {
     let mut f = Fixture::new(false);
-    // The defect is already committed on the base. The candidate changes only
-    // unrelated documentation, so both pinned inputs execute the same failure.
-    // Both pinned trees carry the same path inventory; only unrelated bytes differ.
-    f.write("README.md", "existing shared documentation\n");
-    f.git(&["add", "README.md"]);
-    f.git(&[
-        "commit",
-        "-qm",
-        "shared failing base with existing documentation",
-    ]);
+    // The base already fails with 41. An equivalent Rust expression preserves
+    // that exact failure while staying inside the native source intervention.
     f.base = f.git(&["rev-parse", "HEAD"]);
-    f.write("README.md", "unrelated submitted documentation\n");
-    f.git(&["add", "README.md"]);
-    f.git(&["commit", "-qm", "unrelated candidate"]);
+    f.write("src/lib.rs", "pub fn answer() -> u32 { 40 + 1 }\n");
+    f.git(&["add", "src/lib.rs"]);
+    f.git(&["commit", "-qm", "equivalent failing candidate"]);
     let evidence = Evidence::new();
     let (settled, record) = settled(&evidence, &f, true);
     assert_eq!(

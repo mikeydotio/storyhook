@@ -6,18 +6,12 @@ mod joins;
 
 fn fixture(mixed: bool) -> (Fixture, Evidence, SharedRecoveryEvidence) {
     let mut f = Fixture::new(false);
-    // Both pinned trees carry the same path inventory; only unrelated bytes differ.
-    f.write("README.md", "existing shared documentation\n");
-    f.git(&["add", "README.md"]);
-    f.git(&[
-        "commit",
-        "-qm",
-        "shared failing base with existing documentation",
-    ]);
+    // The base already fails with 41. An equivalent Rust expression preserves
+    // that exact failure while staying inside the native source intervention.
     f.base = f.git(&["rev-parse", "HEAD"]);
-    f.write("README.md", "unrelated submitted documentation\n");
-    f.git(&["add", "README.md"]);
-    f.git(&["commit", "-qm", "unrelated candidate"]);
+    f.write("src/lib.rs", "pub fn answer() -> u32 { 40 + 1 }\n");
+    f.git(&["add", "src/lib.rs"]);
+    f.git(&["commit", "-qm", "equivalent failing candidate"]);
     let mut evidence = Evidence::new();
     evidence
         .fixture
@@ -33,6 +27,7 @@ fn fixture(mixed: bool) -> (Fixture, Evidence, SharedRecoveryEvidence) {
             .unwrap();
     }
     evidence.candidate = VerificationQueue::new(&evidence.store)
+        .with_environment(Environment::at(evidence.fixture.cwd()).with_subprocess_patience())
         .next()
         .unwrap()
         .unwrap();
@@ -66,7 +61,8 @@ fn decision(view: &RecoveryView, scope: RepairScope) -> DecisionInput {
         context: "Both native pinned inputs reproduce the same check".into(),
         question: "Who owns the shared failure?".into(),
         decision: "Use the explicitly selected recovery scope".into(),
-        rationale: "The submitted documentation did not introduce the failing assertion".into(),
+        rationale: "The equivalent submitted expression did not introduce the failing assertion"
+            .into(),
         evidence: vec![format!("attempt:{}", view.observations[0].attempt_id)],
         repair: (scope == RepairScope::SeparateStory).then(|| RepairSpec {
             title: "Repair the shared assertion".into(),
@@ -117,6 +113,7 @@ fn shared_recovery_readmits_original_generation_once_after_restart_and_release()
         .unwrap();
     assert!(
         VerificationQueue::new(&evidence.store)
+            .with_environment(Environment::at(evidence.fixture.cwd()).with_subprocess_patience())
             .next()
             .unwrap()
             .is_none()
@@ -201,7 +198,11 @@ fn shared_recovery_readmits_original_generation_once_after_restart_and_release()
         restarted.reconcile_landing(&opened.record.id).unwrap(),
         readmitted
     );
-    let ready = VerificationQueue::new(&reopened).next().unwrap().unwrap();
+    let ready = VerificationQueue::new(&reopened)
+        .with_environment(Environment::at(evidence.fixture.cwd()).with_subprocess_patience())
+        .next()
+        .unwrap()
+        .unwrap();
     assert_eq!(ready.story_id, evidence.candidate.story_id);
     assert_eq!(
         ready.verifying_generation, evidence.candidate.verifying_generation,
@@ -250,7 +251,11 @@ fn shared_recovery_readmits_original_generation_once_after_restart_and_release()
         .write(|tx| tx.put_verification_enabled(ready.project, false))
         .unwrap();
     assert!(
-        VerificationQueue::new(&reopened).next().unwrap().is_none(),
+        VerificationQueue::new(&reopened)
+            .with_environment(Environment::at(evidence.fixture.cwd()).with_subprocess_patience())
+            .next()
+            .unwrap()
+            .is_none(),
         "readmission entered skipped verification after stop"
     );
     reopened
@@ -320,6 +325,7 @@ fn shared_recovery_keeps_one_managed_repair_and_never_releases_for_manual_done()
         .set_state(&repair, "verifying", None, None, None)
         .unwrap();
     let queue = VerificationQueue::new(&evidence.store)
+        .with_environment(Environment::at(evidence.fixture.cwd()).with_subprocess_patience())
         .ordered_for(ctx.project())
         .unwrap();
     assert_eq!(
@@ -423,6 +429,7 @@ fn shared_recovery_keeps_one_managed_repair_and_never_releases_for_manual_done()
     );
     assert!(
         VerificationQueue::new(&evidence.store)
+            .with_environment(Environment::at(evidence.fixture.cwd()).with_subprocess_patience())
             .ordered_for(ctx.project())
             .unwrap()
             .is_empty()
@@ -448,6 +455,7 @@ fn shared_recovery_keeps_one_managed_repair_and_never_releases_for_manual_done()
         .unwrap();
     assert_eq!(
         VerificationQueue::new(&evidence.store)
+            .with_environment(Environment::at(evidence.fixture.cwd()).with_subprocess_patience())
             .ordered_for(other_ctx.project())
             .unwrap()
             .len(),
@@ -513,6 +521,9 @@ fn shared_release_preserves_mixed_components_and_replacement_manual_holds() {
         );
         assert!(
             VerificationQueue::new(&evidence.store)
+                .with_environment(
+                    Environment::at(evidence.fixture.cwd()).with_subprocess_patience()
+                )
                 .next()
                 .unwrap()
                 .is_none()
@@ -540,6 +551,7 @@ fn matching_shared_submissions_join_one_owner_across_different_candidate_heads()
         .set_state(&second_id, "verifying", None, None, None)
         .unwrap();
     let second = VerificationQueue::new(&evidence.store)
+        .with_environment(Environment::at(evidence.fixture.cwd()).with_subprocess_patience())
         .ordered_for(ctx.project())
         .unwrap()
         .into_iter()
@@ -559,6 +571,7 @@ fn matching_shared_submissions_join_one_owner_across_different_candidate_heads()
         .set_state(&third_id, "verifying", None, None, None)
         .unwrap();
     let third = VerificationQueue::new(&evidence.store)
+        .with_environment(Environment::at(evidence.fixture.cwd()).with_subprocess_patience())
         .ordered_for(ctx.project())
         .unwrap()
         .into_iter()
@@ -569,8 +582,8 @@ fn matching_shared_submissions_join_one_owner_across_different_candidate_heads()
         .unwrap()
         .unwrap();
     // Same failing pinned base and detector, but another submitted commit and story.
-    f.write("README.md", "different unrelated documentation\n");
-    f.git(&["add", "README.md"]);
+    f.write("src/lib.rs", "pub fn answer() -> u32 { 39 + 2 }\n");
+    f.git(&["add", "src/lib.rs"]);
     f.git(&["commit", "-qm", "second candidate"]);
     let (settled, record) = settled_named(
         &evidence,
@@ -642,8 +655,8 @@ fn matching_shared_submissions_join_one_owner_across_different_candidate_heads()
             .unwrap()
     );
     f.base = f.git(&["rev-parse", "HEAD"]);
-    f.write("README.md", "third unrelated documentation\n");
-    f.git(&["add", "README.md"]);
+    f.write("src/lib.rs", "pub fn answer() -> u32 { 38 + 3 }\n");
+    f.git(&["add", "src/lib.rs"]);
     f.git(&["commit", "-qm", "third candidate"]);
     let (settled, record) = settled_named(
         &evidence,
@@ -723,6 +736,7 @@ fn matching_shared_submissions_join_one_owner_across_different_candidate_heads()
         .unwrap();
     assert!(
         VerificationQueue::new(&evidence.store)
+            .with_environment(Environment::at(evidence.fixture.cwd()).with_subprocess_patience())
             .ordered_for(ctx.project())
             .unwrap()
             .is_empty(),

@@ -217,6 +217,19 @@ pub fn inspect(
             });
         }
     };
+    // A broad operator allowlist must not widen this single-submission
+    // capability to source code or unknown executable/configuration formats.
+    if let Some(file) = files
+        .iter()
+        .find(|file| !supported_non_code_path(&file.path))
+    {
+        let reason = format!(
+            "{} is outside single integration's supported non-code paths (.md, .txt, .rst, .gitignore)",
+            file.path
+        );
+        objects.close()?;
+        return Ok(Inspection::Held { reason });
+    }
     let plan = IntegrationPlan {
         version: 1,
         base: base.into(),
@@ -244,3 +257,14 @@ pub fn inspect(
 
 #[cfg(test)]
 mod tests;
+
+// This closed scope supplements, never replaces, the shared deny floor,
+// pinned allowlist, blob checks and insertion-only conflict classification.
+fn supported_non_code_path(path: &str) -> bool {
+    let path = Path::new(path);
+    path.file_name().and_then(|name| name.to_str()) == Some(".gitignore")
+        || matches!(
+            path.extension().and_then(|extension| extension.to_str()),
+            Some("md" | "txt" | "rst")
+        )
+}

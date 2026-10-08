@@ -56,7 +56,11 @@ impl OwnedFixture {
         StoryService::new(&ctx)
             .set_state(&id, "verifying", None, None, None)
             .unwrap();
-        let candidate = VerificationQueue::new(&store).next().unwrap().unwrap();
+        let candidate = VerificationQueue::new(&store)
+            .with_environment(ctx.env().clone())
+            .next()
+            .unwrap()
+            .unwrap();
         let submission = GateSubmission {
             project,
             story_id: id,
@@ -205,7 +209,13 @@ fn integration_claim_survives_restart_without_replaying_or_rewriting_submission(
         f.candidate.verifying_generation
     );
     assert_eq!(owner.phase, IntegrationPhase::Assembling);
-    assert!(VerificationQueue::new(&reopened).next().unwrap().is_none());
+    assert!(
+        VerificationQueue::new(&reopened)
+            .with_environment(ctx.env().clone())
+            .next()
+            .unwrap()
+            .is_none()
+    );
     proof.settle().unwrap();
     assert_eq!(
         f.native.snapshot(),

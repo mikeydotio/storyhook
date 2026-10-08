@@ -20,6 +20,7 @@ fn distinct_faults(inflight: bool) -> (Fixture, Evidence, RecoveryView, Recovery
         .set_state(&id, "verifying", None, None, None)
         .unwrap();
     let candidate = VerificationQueue::new(&evidence.store)
+        .with_environment(Environment::at(evidence.fixture.cwd()).with_subprocess_patience())
         .ordered_for(ctx.project())
         .unwrap()
         .into_iter()
@@ -37,8 +38,8 @@ fn distinct_faults(inflight: bool) -> (Fixture, Evidence, RecoveryView, Recovery
             .unwrap();
     }
     f.base = f.git(&["rev-parse", "HEAD"]);
-    f.write("README.md", "another head on a different failing base\n");
-    f.git(&["add", "README.md"]);
+    f.write("src/lib.rs", "pub fn answer() -> u32 { 39 + 2 }\n");
+    f.git(&["add", "src/lib.rs"]);
     f.git(&["commit", "-qm", "different shared candidate"]);
     let (settled, record) = settled_named(
         &evidence,
@@ -100,6 +101,7 @@ fn submit(evidence: &Evidence, owner: &RecoveryView) -> VerificationCandidate {
         .set_state(&id, "verifying", None, None, None)
         .unwrap();
     VerificationQueue::new(&evidence.store)
+        .with_environment(Environment::at(evidence.fixture.cwd()).with_subprocess_patience())
         .ordered_for(ctx.project())
         .unwrap()
         .into_iter()
@@ -242,7 +244,8 @@ fn coordinated_faults_release_only_after_exact_certified_landing() {
         assert!(service.show(id).unwrap().record.active);
         assert!(!service.landing_release_ready(id).unwrap());
     }
-    let queue = VerificationQueue::new(&evidence.store);
+    let queue = VerificationQueue::new(&evidence.store)
+        .with_environment(Environment::at(evidence.fixture.cwd()).with_subprocess_patience());
     let cert = crate::service::landing::VerifiedSubmission {
         head: pinned.head,
         tree: pinned.tree,

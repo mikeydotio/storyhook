@@ -362,6 +362,7 @@ pub struct VerificationCandidate {
 /// Store-backed verification queue and completion writer.
 pub struct VerificationQueue<'a, S: Store> {
     pub(super) store: &'a S,
+    environment: Option<crate::env::Environment>,
 }
 
 /// Acknowledges exactly the halted verification incident `incident_id` for the
@@ -387,7 +388,18 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     /// Creates a queue over every project in one daemon store.
     #[must_use]
     pub fn new(store: &'a S) -> Self {
-        Self { store }
+        Self {
+            store,
+            environment: None,
+        }
+    }
+
+    /// Carry an explicitly configured subprocess policy into origin validation.
+    /// The default queue keeps resolving its environment per candidate checkout.
+    #[must_use]
+    pub fn with_environment(mut self, environment: crate::env::Environment) -> Self {
+        self.environment = Some(environment);
+        self
     }
 
     /// Whether this attempt still has permission to act for a person.
@@ -529,7 +541,9 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                     self.store,
                     candidate.project,
                     &candidate.checkout,
-                    crate::env::Environment::at(&candidate.checkout),
+                    self.environment
+                        .clone()
+                        .unwrap_or_else(|| crate::env::Environment::at(&candidate.checkout)),
                 );
                 super::github_repository::repository(&ctx).map_err(|e| e.to_string())
             });
