@@ -194,6 +194,7 @@ host_admission	scripts/tests/test_host_admission_runners.py
 host_admission	scripts/tests/test_host_admission_sensors.py
 host_admission	scripts/tests/test_host_admission_system.py
 host_admission	scripts/tests/test_host_admission_usage.py
+host_admission	scripts/tests/test_host_restoration.py
 host_admission	scripts/tests/test_runner_admission_wiring.py
 host_admission	scripts/tests/test_rustc_slot_admission.py
 host_admission	scripts/tests/test_verifier_admission.py
