@@ -64,6 +64,8 @@ pub mod install_guard;
 pub(crate) mod launchd;
 pub mod lifecycle;
 mod linux_scheduling;
+#[cfg(target_os = "macos")]
+mod nofile;
 pub mod parent_contract;
 pub mod project_recovery;
 pub(crate) mod qos;

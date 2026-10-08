@@ -175,6 +175,43 @@ fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
+#[test]
+fn nofile_operator_policy_is_removed_by_rust_and_shell_isolation() {
+    use storyhook::env::test_environment::resolve;
+    use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE};
+
+    let root = scratch_dir();
+    let settings = resolve(root.path(), std::process::id(), Scope::StoryhookProcessOnly);
+    let policy = settings
+        .iter()
+        .find(|setting| setting.name == "STORYHOOK_DAEMON_NOFILE")
+        .expect("operator policy belongs to fixture isolation");
+    assert!(
+        policy.value.is_none(),
+        "Rust fixtures must remove an inherited policy"
+    );
+    let mut command = std::process::Command::new("/bin/bash");
+    command
+        .args([
+            "-c",
+            ". \"$1\"; storyhook_isolate --home \"$2\"; test -z \"${STORYHOOK_DAEMON_NOFILE+x}\"",
+            "sh800-isolation",
+        ])
+        .arg(repo_root().join("scripts/test-env.sh"))
+        .arg(root.path())
+        .env("STORYHOOK_DAEMON_NOFILE", "inherit");
+    let output = ChildGuard::spawn_with_output(&mut command)
+        .expect("spawn isolated shell policy probe")
+        .wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "NOFILE shell isolation probe did not finish".to_string(),
+        );
+    assert!(
+        output.status.success(),
+        "shell retained the operator's policy: {output:?}"
+    );
+}
+
 /// The environment a `bash` that has sourced `scripts/test-env.sh` and called
 /// `storyhook_isolate` actually ends up with, plus that shell's own pid.
 ///
