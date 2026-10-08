@@ -296,6 +296,15 @@ fn host_owner_restarts_once_and_readmits_only_original_head_with_fresh_restorati
             .read(super::super::owner::blocks_admission)
             .unwrap()
     );
+    // The next central gate records its own admission before pinned-input
+    // validation. It must not be mistaken for replacement author evidence.
+    let mut next = GateAttempt::new(
+        "fresh-after-host-restoration".into(),
+        f.subject.attribution.submission.clone(),
+        AT,
+    );
+    next.control_revision = Some(f.subject.control);
+    reopened.write(|tx| tx.insert_gate_attempt(&next)).unwrap();
     reopened
         .read(|tx| super::super::owner::check_input(tx, &f.subject.candidate, &"a".repeat(40)))
         .unwrap();
@@ -325,6 +334,40 @@ fn host_owner_restarts_once_and_readmits_only_original_head_with_fresh_restorati
             .unwrap()
             .map(|(_, generation)| generation),
         f.subject.candidate.verifying_generation
+    );
+}
+
+#[test]
+fn native_host_archive_refuses_fifo_without_blocking_store_admission() {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt, sync::mpsc};
+    let root = storyhook_test_support::scratch_dir();
+    let path = root.path().join("substituted-journal");
+    let name = CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: the NUL-terminated path belongs to this isolated scratch fixture.
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let (send, receive) = mpsc::channel();
+    let target = path.clone();
+    let worker = std::thread::spawn(move || {
+        send.send(Archive::capture(&target).map(|_| ())).unwrap();
+    });
+    let patience = storyhook_test_support::load_grace::graced_now(Duration::from_secs(10));
+    let answer = receive.recv_timeout(patience);
+    if answer.is_err() {
+        // A negative control that removes O_NONBLOCK waits for a FIFO writer.
+        // Release that fixture-owned open before failing, without reading it.
+        let writer = fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&path);
+        if writer.is_ok() && receive.recv_timeout(patience).is_ok() {
+            worker.join().unwrap();
+        }
+        panic!("special-file replacement blocked native evidence capture");
+    }
+    worker.join().unwrap();
+    assert!(
+        answer.unwrap().is_err(),
+        "FIFO was accepted as a retained native journal"
     );
 }
 

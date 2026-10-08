@@ -74,7 +74,7 @@ impl Archive {
         }
         let mut file = fs::OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(path)
             .map_err(|e| invalid(&format!("native journal unavailable: {e}")))?;
         let metadata = file.metadata().map_err(|e| invalid(&e.to_string()))?;
@@ -367,8 +367,17 @@ fn capture(
 pub(super) fn current(tx: &impl ReadOps, subject: &Subject) -> Result<(), StoreError> {
     authority(tx, subject)?;
     if !tx
-        .attributions(subject.candidate.project)?
-        .contains(&subject.attribution)
+        .gate_attempts(subject.candidate.project)?
+        .iter()
+        .rev()
+        .find(|a| {
+            a.submission
+                .matches_story(subject.candidate.project, &subject.candidate.story_id)
+        })
+        .is_some_and(|a| a.id == subject.attribution.attempt)
+        || !tx
+            .attributions(subject.candidate.project)?
+            .contains(&subject.attribution)
     {
         return Err(invalid("original host attribution changed"));
     }
@@ -396,18 +405,14 @@ pub(super) fn authority(tx: &impl ReadOps, subject: &Subject) -> Result<(), Stor
         || tx.verification_control_revision(c.project)? != subject.control
         || crate::service::project_recovery::recovery_label_revision(tx, c.project, story)?
             != subject.labels
-        || !attempts
-            .iter()
-            .rev()
-            .find(|a| a.submission.matches_story(c.project, &c.story_id))
-            .is_some_and(|a| {
-                a.id == subject.attribution.attempt
-                    && a.submission == subject.attribution.submission
-                    && a.executions.contains(&subject.execution)
-                    && a.control_revision == Some(subject.control)
-                    && a.finished_at.is_some()
-                    && !a.elapsed.estimated
-            })
+        || !attempts.iter().any(|a| {
+            a.id == subject.attribution.attempt
+                && a.submission == subject.attribution.submission
+                && a.executions.contains(&subject.execution)
+                && a.control_revision == Some(subject.control)
+                && a.finished_at.is_some()
+                && !a.elapsed.estimated
+        })
     {
         return Err(invalid(
             "host subject authority, original evidence or resource custody changed",
