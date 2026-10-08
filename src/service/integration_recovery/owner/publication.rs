@@ -26,6 +26,8 @@ pub struct PublicationClaim {
     record: IntegrationRecovery,
     owner: IntegrationOwner,
     native: NativeAssembly,
+    deadline: Instant,
+    cancellation: Cancellation,
 }
 
 /// An intent records a potentially begun effect. It is not a remote receipt.
@@ -66,6 +68,9 @@ impl PublicationClaim {
     /// Live path/stamp custody only. The adapter must additionally inspect exact
     /// Git objects and native remote metadata immediately before publication.
     pub fn validate_custody(&self) -> Result<(), AppError> {
+        if self.cancellation.is_cancelled() || Instant::now() >= self.deadline {
+            return Err(invalid("original publication operation expired or was cancelled").into());
+        }
         self.native.validate_custody()
     }
 }
@@ -151,6 +156,8 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
             record,
             owner,
             native: ready.native,
+            deadline: proof.deadline,
+            cancellation: proof.cancellation.clone(),
         }))
     }
 

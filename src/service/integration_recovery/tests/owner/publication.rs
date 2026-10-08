@@ -156,3 +156,28 @@ fn managed_publication_refuses_replaced_native_workspace_without_adopting_it() {
     assert!(moved.join("storyhook-assembly.json").exists());
     proof.settle().unwrap();
 }
+
+#[test]
+fn fresh_native_inspection_cannot_renew_cancelled_publication_operation() {
+    let f = OwnedFixture::new(true);
+    let initial = proof(&f);
+    let ready = assembled(&f, &initial);
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let mut claim = service.claim_publication(ready, &initial).unwrap().unwrap();
+    let before = service.show(claim.id()).unwrap();
+    initial.cancellation.cancel();
+    let fresh = proof(&f);
+    fresh.check_live().unwrap();
+    assert_eq!(initial.plan(), fresh.plan());
+    assert_eq!(initial.submission(), fresh.submission());
+    assert!(service.publication_permitted(&claim, &fresh).is_err());
+    assert!(
+        service
+            .claim_publication_effect(&mut claim, &fresh, PublicationEffect::PushBranch)
+            .is_err()
+    );
+    assert_eq!(service.show(claim.id()).unwrap(), before);
+    initial.settle().unwrap();
+    fresh.settle().unwrap();
+}
