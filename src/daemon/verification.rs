@@ -752,6 +752,24 @@ pub trait VerificationActuator: Send + Sync {
         candidate: &VerificationCandidate,
         intent: &crate::store::LandingIntent,
     ) -> LandingOutcome;
+    /// A separately owned, one-shot managed merge; ordinary adapters refuse.
+    fn land_integration(
+        &self,
+        _claim: &crate::service::integration_recovery::IntegrationLandingClaim,
+    ) -> LandingOutcome {
+        LandingOutcome::Uncertain {
+            detail: "this adapter cannot land managed integration authority".into(),
+        }
+    }
+    /// Read-only recovery of the exact managed target, never a repeated request.
+    fn recover_integration(
+        &self,
+        _query: &crate::service::integration_recovery::IntegrationLandingObservation,
+    ) -> LandingOutcome {
+        LandingOutcome::Uncertain {
+            detail: "this adapter cannot observe managed integration authority".into(),
+        }
+    }
     /// Observes an uncertain attempt without sending another merge request.
     fn recover_landing(
         &self,
@@ -1047,6 +1065,16 @@ impl ShellVerificationActuator {
                 detail: error.to_string(),
             };
         }
+        self.run_landing_target(candidate, intent, recover, None)
+    }
+
+    fn run_landing_target(
+        &self,
+        candidate: &VerificationCandidate,
+        intent: &crate::store::LandingIntent,
+        recover: bool,
+        managed_owner: Option<&str>,
+    ) -> LandingOutcome {
         let _log = self.log_scope(candidate);
         let run = || -> Result<LandingOutcome, AppError> {
             let link = candidate
@@ -1064,9 +1092,14 @@ impl ShellVerificationActuator {
                 journal.with_file_name(format!("landing-{}.attempted", intent.landing_attempt()));
             let mut command = Command::new("bash");
             apply_verification_allowlist(&mut command);
+            command.arg(script).arg("--landing");
+            if let Some(owner) = managed_owner {
+                command
+                    .arg("--managed-integration")
+                    .arg(owner)
+                    .arg(intent.landing_attempt());
+            }
             command
-                .arg(script)
-                .arg("--landing")
                 .arg(if recover { "recover" } else { "attempt" })
                 .arg(intent.landing_pull_request())
                 .arg(intent.certification.head())
@@ -1947,6 +1980,67 @@ impl VerificationActuator for ShellVerificationActuator {
             pull_request,
             &self.activity.cancellation_for(candidate.project),
         )
+    }
+
+    fn land_integration(
+        &self,
+        claim: &crate::service::integration_recovery::IntegrationLandingClaim,
+    ) -> LandingOutcome {
+        let run = || -> Result<LandingOutcome, AppError> {
+            claim.validate_custody()?;
+            let active = self
+                .activity
+                .active_for(claim.candidate().project)
+                .ok_or_else(|| {
+                    AppError::Validation("managed landing has no central guard".into())
+                })?;
+            if active.story_id != claim.candidate().story_id
+                || active.generation != claim.candidate().verifying_generation
+                || active.attempt_id != claim.certification().attempt
+                || active.mode != VerificationMode::Gated
+                || !claim.owns_cancellation(&self.activity.cancellation_for(active.project))
+            {
+                return Err(AppError::Validation(
+                    "managed landing lost its exact central gate owner".into(),
+                ));
+            }
+            if !claim.take_request()? {
+                return Err(AppError::Validation(
+                    "managed merge request was already consumed; observe without retrying".into(),
+                ));
+            }
+            Ok(self.run_landing_target(claim.candidate(), claim.intent(), false, Some(claim.id())))
+        };
+        run().unwrap_or_else(|error| LandingOutcome::Uncertain {
+            detail: error.to_string(),
+        })
+    }
+
+    fn recover_integration(
+        &self,
+        query: &crate::service::integration_recovery::IntegrationLandingObservation,
+    ) -> LandingOutcome {
+        let run = || -> Result<LandingOutcome, AppError> {
+            query.validate_lifetime()?;
+            let active = self
+                .activity
+                .active_for(query.candidate().project)
+                .ok_or_else(|| {
+                    AppError::Validation("managed recovery has no central guard".into())
+                })?;
+            if active.story_id != query.candidate().story_id
+                || active.generation != query.candidate().verifying_generation
+                || !query.owns_cancellation(&self.activity.cancellation_for(active.project))
+            {
+                return Err(AppError::Validation(
+                    "managed observation lost its exact central owner".into(),
+                ));
+            }
+            Ok(self.run_landing_target(query.candidate(), query.intent(), true, Some(query.id())))
+        };
+        run().unwrap_or_else(|error| LandingOutcome::Uncertain {
+            detail: error.to_string(),
+        })
     }
 
     fn current_pr_head(&self, candidate: &VerificationCandidate) -> Result<String, AppError> {

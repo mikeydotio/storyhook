@@ -16,6 +16,7 @@ pub struct IntegrationLandingClaim {
     native: NativeAssembly,
     deadline: Instant,
     cancellation: Cancellation,
+    request_taken: std::sync::atomic::AtomicBool,
 }
 impl IntegrationLandingClaim {
     /// Original integration coordinator.
@@ -48,6 +49,27 @@ impl IntegrationLandingClaim {
     /// Exact central certificate and original ancestry inputs.
     pub fn certification(&self) -> &gate::IntegrationCertificationEvidence {
         self.owner.gate.as_ref().expect("landing constructor")
+    }
+    /// Exact native owner, checked against the central guard before launch.
+    pub(crate) fn owns_cancellation(&self, cancellation: &Cancellation) -> bool {
+        self.cancellation.same_owner(cancellation)
+    }
+    /// The native adapter consumes this latch once after the durable intent.
+    /// An error never renews it, even when no child was demonstrably launched.
+    pub(crate) fn take_request(&self) -> Result<bool, AppError> {
+        self.validate_custody()?;
+        if !self.owner.landing_started {
+            return Err(invalid("managed merge request lacks its durable one-shot intent").into());
+        }
+        Ok(self
+            .request_taken
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok())
     }
     /// Original bounded merge operation and retained private custody.
     pub fn validate_custody(&self) -> Result<(), AppError> {
@@ -142,6 +164,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
             native: ready.native,
             deadline: proof.deadline,
             cancellation: proof.cancellation.clone(),
+            request_taken: std::sync::atomic::AtomicBool::new(false),
         }))
     }
     /// Durable one-shot intent immediately before the protected merge adapter.
@@ -326,6 +349,10 @@ impl IntegrationLandingObservation {
     /// The retained exact central certificate to compare with actual landed Git.
     pub fn certification(&self) -> &gate::IntegrationCertificationEvidence {
         self.owner.gate.as_ref().expect("observation constructor")
+    }
+    /// Exact fresh observation owner, separate from the retired merge call.
+    pub(crate) fn owns_cancellation(&self, cancellation: &Cancellation) -> bool {
+        self.cancellation.same_owner(cancellation)
     }
     /// A new bounded read-only observation, never renewal of the old merge call.
     pub fn validate_lifetime(&self) -> Result<(), AppError> {

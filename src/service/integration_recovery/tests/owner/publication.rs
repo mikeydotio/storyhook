@@ -974,3 +974,62 @@ fn managed_landing_restart_mints_only_fresh_read_only_observation() {
     assert_eq!(restarted.show(&id).unwrap(), before);
     proof.settle().unwrap();
 }
+
+#[test]
+fn managed_native_merge_token_requires_durable_intent_and_is_single_use() {
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let ready = certified(&f, &proof);
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let mut claim = service.claim_landing(ready, &proof).unwrap().unwrap();
+    assert!(
+        claim.take_request().is_err(),
+        "native request bypassed durable intent"
+    );
+    assert!(service.claim_landing_effect(&mut claim).unwrap());
+    let before = service.show(claim.id()).unwrap();
+    let taken = std::thread::scope(|scope| {
+        let first = scope.spawn(|| claim.take_request().unwrap());
+        let second = scope.spawn(|| claim.take_request().unwrap());
+        usize::from(first.join().unwrap()) + usize::from(second.join().unwrap())
+    });
+    assert_eq!(
+        taken, 1,
+        "parallel native callers obtained repeated merge authority"
+    );
+    assert!(!claim.take_request().unwrap());
+    assert_eq!(service.show(claim.id()).unwrap(), before);
+    proof.settle().unwrap();
+}
+
+#[test]
+fn managed_native_landing_refuses_missing_central_guard_before_consuming_request() {
+    use crate::daemon::verification::{
+        LandingOutcome, ShellVerificationActuator, VerificationActivity, VerificationActuator,
+    };
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let ready = certified(&f, &proof);
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let mut claim = service.claim_landing(ready, &proof).unwrap().unwrap();
+    assert!(service.claim_landing_effect(&mut claim).unwrap());
+    let activity = VerificationActivity::new();
+    let adapter = ShellVerificationActuator::with_paths(
+        ctx.env().clone(),
+        f.native.root.path().join("must-not-run-helper"),
+        f.native.root.path().join("must-not-run-story"),
+    )
+    .with_activity(activity);
+    let outcome = adapter.land_integration(&claim);
+    assert!(
+        matches!(outcome, LandingOutcome::Uncertain { ref detail } if detail.contains("no central guard")),
+        "{outcome:?}"
+    );
+    assert!(
+        claim.take_request().unwrap(),
+        "adapter consumed a request without the actual original central slot"
+    );
+    proof.settle().unwrap();
+}
