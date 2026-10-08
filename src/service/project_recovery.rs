@@ -52,7 +52,10 @@ pub use prerequisite::{PrerequisiteInput, PrerequisiteReceipt};
 pub(crate) use references::naming;
 pub use refusal::RepairRefusalDisposition;
 pub(crate) use resume::owns_resume;
-pub(crate) use resume::resource_hold as recovery_resource_hold;
+pub(crate) use resume::{
+    resource_hold as recovery_resource_hold,
+    resource_hold_except_managed_landing as recovery_resource_hold_except_managed_landing,
+};
 pub(crate) use shared::blocks_admission as shared_blocks_admission;
 pub use shared::{SharedFaultIdentity, SharedReadmission, SharedRecovery};
 pub use status::RecoveryStatus;

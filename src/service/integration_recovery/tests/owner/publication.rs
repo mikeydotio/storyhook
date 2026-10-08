@@ -26,11 +26,43 @@ fn assembled_with_id(
     (record.id, ready)
 }
 
-fn proof(f: &OwnedFixture) -> BoundIntegrationProposal {
+/// Own only the actual read-only inspection handle. Panic cleanup asks its
+/// existing native close path to settle; uncertain custody remains retained.
+struct FixtureProof(Option<BoundIntegrationProposal>);
+impl std::ops::Deref for FixtureProof {
+    type Target = BoundIntegrationProposal;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("fixture proof already settled")
+    }
+}
+impl std::ops::DerefMut for FixtureProof {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().expect("fixture proof already settled")
+    }
+}
+impl FixtureProof {
+    fn settle(mut self) -> Result<(IntegrationPlan, SubmissionObservation), AppError> {
+        self.0
+            .take()
+            .expect("fixture proof already settled")
+            .settle()
+    }
+}
+impl Drop for FixtureProof {
+    fn drop(&mut self) {
+        if let Some(proof) = self.0.take()
+            && let Err(error) = proof.settle()
+        {
+            eprintln!("fixture inspection cleanup refused or lifetime expired: {error}");
+        }
+    }
+}
+
+fn proof(f: &OwnedFixture) -> FixtureProof {
     let mut proof = f.proof();
     proof.deadline =
         Instant::now() + storyhook_test_support::load_grace::graced_now(Duration::from_secs(90));
-    proof
+    FixtureProof(Some(proof))
 }
 
 #[test]
@@ -1785,5 +1817,76 @@ fn integration_recovery_status_distinguishes_admissions_from_effect_epochs() {
         "read-only projection adopted interrupted effects"
     );
     drop(claim);
+    proof.settle().unwrap();
+}
+
+#[test]
+fn managed_landing_resource_hold_excludes_only_its_exact_validated_intent() {
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let ready = certified(&f, &proof);
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let mut claim = service.claim_landing(ready, &proof).unwrap().unwrap();
+    let intent = claim.intent().clone();
+    f.store.read(|tx| {
+        assert!(crate::service::project_recovery::recovery_resource_hold(tx, intent.project, intent.story)?);
+        assert!(!crate::service::project_recovery::recovery_resource_hold_except_managed_landing(tx, intent.project, intent.story, &intent)?);
+        for field in ["id", "epoch", "head", "project", "story"] {
+            let mut foreign = intent.clone();
+            match field {
+                "id" => foreign.id = uuid::Uuid::new_v4().to_string(),
+                "epoch" => if let crate::domain::landing::LandingAuthority::Integration(ref mut value) = foreign.certification { value.integration.epoch += 1; },
+                "head" => if let crate::domain::landing::LandingAuthority::Integration(ref mut value) = foreign.certification { value.integration.original_head = "f".repeat(40); },
+                "project" => foreign.project = crate::store::ProjectId::new(intent.project.get() + 1),
+                "story" => foreign.story = crate::store::StoryNo::new(intent.story.get() + 1),
+                _ => unreachable!(),
+            }
+            assert!(crate::service::project_recovery::recovery_resource_hold_except_managed_landing(tx, intent.project, intent.story, &foreign)?, "excluded foreign {field}");
+        }
+        Ok(())
+    }).unwrap();
+    assert!(service.landing_permitted(&claim).unwrap());
+    assert!(service.claim_landing_effect(&mut claim).unwrap());
+    // An independent actual reset record still holds even inside the exact
+    // owner's transaction. Roll the fixture reservation back deliberately.
+    let blocked: Result<(), crate::store::StoreError> = f.store.write(|tx| {
+        tx.put_story_reset(&crate::store::StoryReset {
+            project: intent.project,
+            story: intent.story,
+            story_id: intent.story_id.clone(),
+            token: uuid::Uuid::new_v4().to_string(),
+            original_state: "verifying".into(),
+            lanes: Vec::new(),
+            resources: None,
+            paths: Vec::new(),
+            completed: false,
+            failure: None,
+            residue: Vec::new(),
+            recovery: None,
+            origin: Default::default(),
+        })?;
+        assert!(
+            crate::service::project_recovery::recovery_resource_hold_except_managed_landing(
+                tx,
+                intent.project,
+                intent.story,
+                &intent
+            )?
+        );
+        Err(crate::store::StoreError::Validation(
+            "fixture reset rolled back after hold assertion".into(),
+        ))
+    });
+    assert!(
+        blocked
+            .unwrap_err()
+            .to_string()
+            .contains("fixture reset rolled back")
+    );
+    assert!(
+        service.landing_permitted(&claim).unwrap(),
+        "rolled-back reset left an invented hold"
+    );
     proof.settle().unwrap();
 }

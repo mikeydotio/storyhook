@@ -462,6 +462,14 @@ pub(super) fn check_candidate(
     tx: &impl ReadOps,
     candidate: &VerificationCandidate,
 ) -> Result<(), StoreError> {
+    check_candidate_with_landing(tx, candidate, None)
+}
+
+fn check_candidate_with_landing(
+    tx: &impl ReadOps,
+    candidate: &VerificationCandidate,
+    owned_landing: Option<&crate::store::LandingIntent>,
+) -> Result<(), StoreError> {
     let prefix = crate::service::project_prefix(tx, candidate.project)?;
     let story = StoryNo::parse_id(&prefix, &candidate.story_id)?;
     let row = tx
@@ -474,6 +482,19 @@ pub(super) fn check_candidate(
     let expected = crate::domain::pr_url::parse_pr_url(&expected_pr.url)
         .map_err(|e| invalid(&e.to_string()))?;
     let links = tx.open_pr_links_for_story(candidate.project, story)?;
+    let resource_hold = match owned_landing {
+        Some(intent) => {
+            crate::service::project_recovery::recovery_resource_hold_except_managed_landing(
+                tx,
+                candidate.project,
+                story,
+                intent,
+            )?
+        }
+        None => {
+            crate::service::project_recovery::recovery_resource_hold(tx, candidate.project, story)?
+        }
+    };
     if crate::service::host_recovery::blocks_admission(tx)?
         || crate::service::project_recovery::shared_blocks_admission(
             tx,
@@ -491,7 +512,7 @@ pub(super) fn check_candidate(
         || !crate::service::verification::candidate_is_current(tx, &row, candidate)?
         || !crate::service::verification::submission_is_current(tx, &row, candidate)?
         || !crate::service::verification::recovery_cleanup_history_is_current(tx, candidate)?
-        || crate::service::project_recovery::recovery_resource_hold(tx, candidate.project, story)?
+        || resource_hold
         || tx.checkout_path(candidate.project)?.as_ref() != Some(&candidate.checkout)
         || links.iter().filter(|link| link.close_on_merge).count() != 1
         || !links.iter().any(|link| {
@@ -529,7 +550,7 @@ fn check_retained_authority(
     record: &IntegrationRecovery,
     state: &IntegrationOwner,
 ) -> Result<(), StoreError> {
-    check_candidate(tx, &state.candidate)?;
+    check_candidate_with_landing(tx, &state.candidate, state.landing.as_ref())?;
     if tx.verification_control_revision(record.project)? != state.control_revision
         || crate::service::project_recovery::recovery_label_revision(
             tx,

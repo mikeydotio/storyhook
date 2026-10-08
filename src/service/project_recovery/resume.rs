@@ -96,15 +96,42 @@ pub(crate) fn resource_hold(
     project: ProjectId,
     story: StoryNo,
 ) -> Result<bool, StoreError> {
+    resource_hold_with_intent(tx, project, story, None)
+}
+
+/// The dedicated managed landing controller may continue its own exact durable
+/// intent. This excludes no other landing, reset, or quarantined engine custody.
+pub(crate) fn resource_hold_except_managed_landing(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+    owned: &crate::store::LandingIntent,
+) -> Result<bool, StoreError> {
+    if owned.project != project
+        || owned.story != story
+        || owned.certification.integration().is_none()
+        || !tx.landing_intents()?.contains(owned)
+    {
+        return Ok(true);
+    }
+    crate::service::integration_recovery::validate_landing_intent(tx, owned)?;
+    resource_hold_with_intent(tx, project, story, Some(owned))
+}
+
+fn resource_hold_with_intent(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+    owned: Option<&crate::store::LandingIntent>,
+) -> Result<bool, StoreError> {
     if tx.story_resets(project)?.contains_key(&story)
         || tx
             .story_reset(project, story)?
             .is_some_and(|reset| !reset.completed)
         || tx.engine_reset(project, story)?.is_some()
-        || tx
-            .landing_intents()?
-            .iter()
-            .any(|intent| intent.project == project && intent.story == story)
+        || tx.landing_intents()?.iter().any(|intent| {
+            intent.project == project && intent.story == story && Some(intent) != owned
+        })
     {
         return Ok(true);
     }

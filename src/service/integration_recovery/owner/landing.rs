@@ -558,7 +558,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
                 || !crate::service::verification::human::permits(tx,&state.candidate)?
                 || !crate::service::verification::submission_is_current(tx,&row,&state.candidate)?
                 || !crate::service::verification::recovery_cleanup_history_is_current(tx,&state.candidate)?
-                || crate::service::project_recovery::recovery_resource_hold(tx,record.project,record.story)? {
+                || crate::service::project_recovery::recovery_resource_hold_except_managed_landing(tx,record.project,record.story,query.intent())? {
                 return Ok(false);
             }
             validate_landed(&state,&record,native.evidence())?;
