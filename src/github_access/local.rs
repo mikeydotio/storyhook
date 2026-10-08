@@ -1,6 +1,7 @@
 //! Local helper protocol; no daemon or store is opened.
 
 use super::Repository;
+use crate::cli::model::GithubVerb;
 use crate::error::AppError;
 use std::path::Path;
 
@@ -43,12 +44,11 @@ fn run_local_with_env(
     arguments: &[String],
     env: Option<&crate::env::Environment>,
 ) -> Result<Vec<u8>, AppError> {
-    if arguments.first().is_some_and(|mode| mode == "observe") {
-        let usage = || {
-            AppError::Usage(
-            "usage: story github observe --checkout PATH [--authority PATH] -- ls-remote|fetch ARGUMENTS".into(),
-        )
-        };
+    if arguments
+        .first()
+        .is_some_and(|mode| GithubVerb::find(mode) == Some(GithubVerb::Observe))
+    {
+        let usage = || AppError::Usage(crate::cli::model::usage::U111.into());
         if arguments.len() < 5 || arguments[1] != "--checkout" {
             return Err(usage());
         }
@@ -73,11 +73,7 @@ fn run_attempt(
     may_refresh: bool,
     env: Option<&crate::env::Environment>,
 ) -> Result<Vec<u8>, AppError> {
-    let usage = || {
-        AppError::Usage(
-            "usage: story github resolve|exec|git|merge --checkout PATH [--authority PATH] [--expected HOST/OWNER/REPO] [-- ARGUMENTS]".into(),
-        )
-    };
+    let usage = || AppError::Usage(crate::cli::model::usage::U112.into());
     if arguments.len() < 3 || arguments[1] != "--checkout" {
         return Err(usage());
     }
@@ -114,19 +110,31 @@ fn run_attempt(
         }
         remaining = &remaining[2..];
     }
-    let result = match arguments[0].as_str() {
-        "resolve" if remaining.is_empty() => serde_json::to_vec(&repository).map_err(|error| {
-            AppError::GithubApi(format!("encoding resolved GitHub origin: {error}"))
-        }),
-        "merge" if remaining.len() == 3 && remaining[0] == "--" => {
+    let result = match GithubVerb::find(&arguments[0]) {
+        Some(GithubVerb::Resolve) if remaining.is_empty() => serde_json::to_vec(&repository)
+            .map_err(|error| {
+                AppError::GithubApi(format!("encoding resolved GitHub origin: {error}"))
+            }),
+        Some(GithubVerb::Merge) if remaining.len() == 3 && remaining[0] == "--" => {
             let number = remaining[1].parse::<u64>().map_err(|_| usage())?;
             repository
                 .merge_once(number, &remaining[2])
                 .and_then(|reply| serde_json::to_vec(&reply).map_err(Into::into))
         }
-        "exec" if remaining.len() > 1 && remaining[0] == "--" => repository.gh(&remaining[1..]),
-        "git" if remaining.len() > 1 && remaining[0] == "--" => repository.git(&remaining[1..]),
-        _ => Err(usage()),
+        Some(GithubVerb::Exec) if remaining.len() > 1 && remaining[0] == "--" => {
+            repository.gh(&remaining[1..])
+        }
+        Some(GithubVerb::Git) if remaining.len() > 1 && remaining[0] == "--" => {
+            repository.git(&remaining[1..])
+        }
+        None
+        | Some(
+            GithubVerb::Observe
+            | GithubVerb::Resolve
+            | GithubVerb::Merge
+            | GithubVerb::Exec
+            | GithubVerb::Git,
+        ) => Err(usage()),
     };
     let Err(error) = result else {
         return result;

@@ -1,7 +1,9 @@
 use std::env;
 use std::process;
 
-use storyhook::cli::{self, DaemonAction, Invocation, StoreAction, WebAction};
+use storyhook::cli::{self, Invocation};
+#[cfg(test)]
+use storyhook::cli::{DaemonAction, WebAction};
 use storyhook::invoke::{HttpInvoker, InvokeRequest, Invoker};
 use storyhook::output::{self, Response};
 
@@ -204,58 +206,51 @@ fn main() {
         Err(error) => fail(&error, json),
     };
 
-    if let Invocation::Daemon {
-        action: DaemonAction::Logs { follow, directory },
-    } = &invocation
-    {
-        let environment = storyhook::env::Environment::from_process(flags.store_path.as_deref())
-            .unwrap_or_else(|error| fail(&error, json));
-        if let Err(error) = storyhook::daemon::activity::read_logs_from(
-            &environment,
-            directory.as_deref(),
-            *follow,
-            json,
-        ) {
-            fail(&error, json);
+    match cli::model::before_environment(&invocation) {
+        Some(cli::model::BeforeEnvironment::Logs { follow, directory }) => {
+            let environment =
+                storyhook::env::Environment::from_process(flags.store_path.as_deref())
+                    .unwrap_or_else(|error| fail(&error, json));
+            if let Err(error) =
+                storyhook::daemon::activity::read_logs_from(&environment, directory, follow, json)
+            {
+                fail(&error, json);
+            }
+            return;
         }
-        return;
-    }
-
-    // Foreground daemon mode: `story daemon --serve` (and its `story web
-    // --serve` alias). Runs the daemon in this process — what the background
-    // spawner execs and what a launchd agent runs — so it never returns.
-    if let Some(port) = foreground_serve_port(&invocation) {
-        let environment =
-            match storyhook::env::Environment::from_process(flags.store_path.as_deref()) {
-                Ok(environment) => environment,
-                Err(error) => fail(&error, json),
+        Some(cli::model::BeforeEnvironment::Serve { port, owner }) => {
+            let environment =
+                match storyhook::env::Environment::from_process(flags.store_path.as_deref()) {
+                    Ok(environment) => environment,
+                    Err(error) => fail(&error, json),
+                };
+            let environment = match port {
+                Some(port) => environment.daemon_port(port),
+                None => environment,
             };
-        let environment = match port {
-            Some(port) => environment.daemon_port(port),
-            None => environment,
-        };
-        // A daemon whose test-harness owner has already gone would serve a
-        // finished run's fixture and bind its listeners before the parent
-        // watch ever ran. It leaves before it opens, or creates, anything:
-        // no store, no portfile, and no startup-failure record, because each
-        // of those would recreate a directory the run has deleted.
-        if let Err(refusal) = environment.parent_contract().still_here() {
-            eprintln!("storyhook daemon: not starting: {refusal}");
-            process::exit(refusal.exit_code());
+            // A daemon whose test-harness owner has already gone would serve a
+            // finished run's fixture and bind its listeners before the parent
+            // watch ever ran. It leaves before it opens, or creates, anything:
+            // no store, no portfile, and no startup-failure record, because each
+            // of those would recreate a directory the run has deleted.
+            if let Err(refusal) = environment.parent_contract().still_here() {
+                eprintln!("storyhook daemon: not starting: {refusal}");
+                process::exit(refusal.exit_code());
+            }
+            let result = storyhook::invoke::open_store(&environment)
+                .and_then(|store| storyhook::daemon::lifecycle::run(&store, &environment, owner));
+            if let Err(e) = result {
+                // The client that started this process is waiting on a portfile it
+                // is never going to get, and this is the only process that knows
+                // why. Recorded before the message is printed, because stderr here
+                // is a log file nothing parses — see `Environment::daemon_failure`.
+                storyhook::daemon::lifecycle::record_startup_failure(&environment, &e);
+                eprintln!("error: {e}");
+                process::exit(e.exit_code());
+            }
+            return;
         }
-        let owner_flag = foreground_serve_owner(&invocation);
-        let result = storyhook::invoke::open_store(&environment)
-            .and_then(|store| storyhook::daemon::lifecycle::run(&store, &environment, owner_flag));
-        if let Err(e) = result {
-            // The client that started this process is waiting on a portfile it
-            // is never going to get, and this is the only process that knows
-            // why. Recorded before the message is printed, because stderr here
-            // is a log file nothing parses — see `Environment::daemon_failure`.
-            storyhook::daemon::lifecycle::record_startup_failure(&environment, &e);
-            eprintln!("error: {e}");
-            process::exit(e.exit_code());
-        }
-        return;
+        None => {}
     }
 
     let cwd = match env::current_dir() {
@@ -282,33 +277,27 @@ fn main() {
     // Run before opening a store or contacting the daemon: the packaged
     // helper owns that work itself, and its exact JSON streams and exit status
     // are part of the skill contract.
-    if let Invocation::Plugin {
-        action: storyhook::cli::PluginAction::Run { target, args },
-    } = &invocation
-    {
-        match storyhook::plugin::run_helper(target, args) {
-            Ok(status) if status.success() => return,
-            Ok(status) => process::exit(status.code().unwrap_or(1)),
-            Err(error) => fail(&error, json),
-        }
-    }
-
-    // `store new` names the store it creates, and is the one command that must
-    // not resolve the ambient one first — see `invoke::create_store`.
-    if let Invocation::Store {
-        action: StoreAction::New { path },
-    } = &invocation
-    {
-        match storyhook::invoke::create_store(&cwd, path) {
-            Ok(response) => {
-                let rendered = output::render_response(&response, json, flags.quiet);
-                if !rendered.is_empty() {
-                    print!("{rendered}");
-                }
-                return;
+    match cli::model::before_store(&invocation) {
+        Some(cli::model::BeforeStore::Plugin { target, args }) => {
+            match storyhook::plugin::run_helper(target, args) {
+                Ok(status) if status.success() => return,
+                Ok(status) => process::exit(status.code().unwrap_or(1)),
+                Err(error) => fail(&error, json),
             }
-            Err(error) => fail(&error, json),
         }
+        Some(cli::model::BeforeStore::StoreNew { path }) => {
+            match storyhook::invoke::create_store(&cwd, path) {
+                Ok(response) => {
+                    let rendered = output::render_response(&response, json, flags.quiet);
+                    if !rendered.is_empty() {
+                        print!("{rendered}");
+                    }
+                    return;
+                }
+                Err(error) => fail(&error, json),
+            }
+        }
+        None => {}
     }
 
     // A command that needs no store must not open one, and this is the line
@@ -630,12 +619,7 @@ fn ask_about_a_new_project(invocation: Invocation, cwd: &std::path::Path, json: 
     use storyhook::cli::{NewProjectRequest, ProjectAction};
     use storyhook::service::questionnaire::{self, Answered, Surroundings};
 
-    if !matches!(
-        invocation,
-        Invocation::Project {
-            action: ProjectAction::New(NewProjectRequest::Ask)
-        }
-    ) {
+    if !cli::model::needs_questionnaire(&invocation) {
         return Asked::Proceed(Box::new(invocation));
     }
 
@@ -763,14 +747,10 @@ fn read_stdin() -> Result<String, storyhook::error::AppError> {
 /// `Some(Some(port))` names one. Both spellings land here so that there is
 /// exactly one place in the program where the daemon is started in the
 /// foreground.
+#[cfg(test)]
 fn foreground_serve_port(invocation: &Invocation) -> Option<Option<u16>> {
-    match invocation {
-        Invocation::Daemon {
-            action: DaemonAction::Serve { port, .. },
-        } => Some(*port),
-        Invocation::Web {
-            action: WebAction::Serve { port },
-        } => Some(*port),
+    match cli::model::before_environment(invocation) {
+        Some(cli::model::BeforeEnvironment::Serve { port, .. }) => Some(port),
         _ => None,
     }
 }
@@ -781,11 +761,10 @@ fn foreground_serve_port(invocation: &Invocation) -> Option<Option<u16>> {
 /// [`storyhook::daemon::lifecycle::ForkReason::Manual`] inside `run`: nothing
 /// internal ever calls `web --serve` with `--owner`, so reaching this alias
 /// at all already means a human typed the command by hand.
+#[cfg(test)]
 fn foreground_serve_owner(invocation: &Invocation) -> Option<&str> {
-    match invocation {
-        Invocation::Daemon {
-            action: DaemonAction::Serve { owner, .. },
-        } => owner.as_deref(),
+    match cli::model::before_environment(invocation) {
+        Some(cli::model::BeforeEnvironment::Serve { owner, .. }) => owner,
         _ => None,
     }
 }

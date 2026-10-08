@@ -120,13 +120,13 @@ commands! {
                     value if !value.starts_with('-') && id.is_none() => id = Some(value.to_owned()),
                     _ => {
                         return Err(AppError::Usage(
-                            "usage: story reset <id> [--force] [--dry-run]".into(),
+                            usage::U103.into(),
                         ));
                     }
                 }
             }
             let id = id.ok_or_else(|| {
-                AppError::Usage("usage: story reset <id> [--force] [--dry-run]".into())
+                AppError::Usage(usage::U103.into())
             })?;
             let caller = crate::service::reset::ResetCaller::capture();
             if dry_run {
@@ -141,7 +141,7 @@ commands! {
     Cleanup ["cleanup"] Parsed (args) => parse_cleanup(args),
     Resources ["resources"] Parsed (args) => parse_resources(args),
     Summary ["summary"] Parsed (args) => {
-            expect_no_more(&args[1..], "usage: story summary")?;
+            expect_no_more(&args[1..], usage::U104)?;
             Ok(Invocation::Summary)
         },
     Report ["report"] Parsed (args) => parse_report(args),
@@ -163,7 +163,7 @@ commands! {
                 .to_string(),
         )),
     Export ["export"] Parsed (args) => {
-            expect_no_more(&args[1..], "usage: story export")?;
+            expect_no_more(&args[1..], usage::U105)?;
             Ok(Invocation::Export)
         },
     LoadContext ["load-context", "context"] Parsed (args) => parse_context(args),
@@ -174,7 +174,7 @@ commands! {
     Graph ["graph"] Parsed (args) => parse_graph(args),
     Doctor ["doctor"] Parsed (args) => parse_doctor(args),
     LaneBudget ["lane-budget"] Parsed (args) => {
-            expect_no_more(&args[1..], "usage: story lane-budget")?;
+            expect_no_more(&args[1..], usage::U106)?;
             Ok(Invocation::LaneBudget)
         },
     Hooks ["hooks"] Parsed (args) => parse_hooks(args),
@@ -193,7 +193,7 @@ commands! {
     SessionEligibility ["session-eligibility"] Parsed (args) => {
             if args.len() != 2 {
                 return Err(AppError::Usage(
-                    "usage: story session-eligibility <id>".into(),
+                    usage::U107.into(),
                 ));
             }
             Ok(Invocation::SessionEligibility {
@@ -221,7 +221,7 @@ commands! {
     Relate ["relate", "link"] Parsed (args) => parse_relate(args),
     Unrelate ["unrelate", "unlink"] Parsed (args) => parse_unrelate(args),
     SessionStart ["session-start"] Parsed (args) => {
-            expect_no_more(&args[1..], "usage: story session-start")?;
+            expect_no_more(&args[1..], usage::U108)?;
             Ok(Invocation::SessionStart)
         },
     Github ["github"] Github (args) => unknown(&args[0]),
@@ -1040,4 +1040,398 @@ help_syntax! {
     Epic => r#"  story epic add <epic-id> <story-id>
 "#,
 ; "\nStory ids:\n  Everywhere <id> appears above, both forms name the same story: the canonical\n  `SH-5`, and the bare number `5` on its own. The number is read against the\n  project the command is acting on, so `5` means nothing until that is settled —\n  with no project, you get the same refusal every other command gives, not a\n  missing story. An id carrying a *different* project's prefix is refused\n  outright rather than resolved: `--project` decides which project you are in,\n  and an id never overrides it.\n\nAgent workflow and output contracts: story help agent-guide; story help json-format\n\nGlobal options:\n  --json          Emit structured JSON\n  --quiet         Suppress success output\n  --no-hooks      Suppress event hook execution\n  --store-path <file>\n                  Run against a named store rather than the default one. Also\n                  spelled $STORYHOOK_STORE_PATH. One daemon serves one store, so\n                  a command under this flag can neither read nor write any other.\n  --project <slug>\n                  Act on this project, whatever directory you are in. Also\n                  spelled $STORYHOOK_PROJECT, which the flag beats. With neither,\n                  storyhook uses the project this checkout belongs to, and\n                  refuses rather than guessing when there is none.\n                  `story project list` shows the slugs.\n  --deadline <seconds>\n                  Give up waiting on the daemon after this long, rather than\n                  however long starting one and running the command could\n                  otherwise take. The request is not cancelled: the daemon\n                  finishes what it accepted, this process just stops waiting\n                  for the answer. For a caller — a session hook, a script —\n                  that cannot wait regardless of whether storyhook could.\n  -h, --help\n  -V, --version   Print the installed story version\n"
+}
+
+/// A nested command selection used by the parser itself. Each group's enum is
+/// generated here and matched by its handler, so discovery cannot invent a leaf.
+#[derive(Clone, Copy, Debug)]
+pub struct CommandGroup {
+    pub command: CommandId,
+    pub prefix: &'static [&'static str],
+    pub words: &'static [&'static str],
+}
+macro_rules! subcommands {
+    ($( $group:ident ($root:ident [$($prefix:literal),*]) { $($variant:ident = $word:literal),+ $(,)? } )*) => {
+        $(
+            #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+            pub enum $group { $($variant),+ }
+            impl $group {
+                pub fn find(word: &str) -> Option<Self> {
+                    match word { $($word => Some(Self::$variant),)+ _ => None }
+                }
+            }
+        )*
+        pub static GROUPS: &[CommandGroup] = &[
+            $(CommandGroup { command: CommandId::$root, prefix: &[$($prefix),*], words: &[$($word),+] },)*
+        ];
+    }
+}
+subcommands! {
+    ProjectVerb (Project []) {
+        New = "new",
+        Delete = "delete",
+        SetPrefix = "set-prefix",
+        Init = "init",
+        Deinit = "deinit",
+        List = "list",
+        Show = "show",
+        Link = "link",
+        Unlink = "unlink",
+        Settings = "settings",
+    }
+    ProjectLinkVerb (Project ["link"]) {
+        Origin = "origin",
+        Checkout = "checkout",
+    }
+    ProjectUnlinkVerb (Project ["unlink"]) {
+        Origin = "origin",
+        Checkout = "checkout",
+    }
+    ProjectSettingsVerb (Project ["settings"]) {
+        List = "list",
+        Get = "get",
+        Set = "set",
+        Unset = "unset",
+    }
+    StateVerb (State []) {
+        List = "list",
+        Add = "add",
+        Set = "set",
+        Remove = "remove",
+        Reorder = "reorder",
+    }
+    EngineVerb (Engine []) {
+        ResetCheck = "reset-check",
+        ResetTarget = "reset-target",
+        Start = "start",
+        Configure = "configure",
+        Adopt = "adopt",
+        Status = "status",
+        Pause = "pause",
+        Resume = "resume",
+        Stop = "stop",
+        Ack = "ack",
+    }
+    VerifierVerb (Verifier []) {
+        Landing = "landing",
+        Evidence = "evidence",
+        RepairAdmit = "repair-admit",
+        Repair = "repair",
+        GateConfig = "gate-config",
+        Status = "status",
+        Start = "start",
+        Stop = "stop",
+        Drain = "drain",
+        Ack = "ack",
+    }
+    PhaseVerb (Phase []) {
+        List = "list",
+        Show = "show",
+        Add = "add",
+        Remove = "remove",
+        Create = "create",
+    }
+    TypeVerb (Type []) {
+        List = "list",
+        Add = "add",
+        Set = "set",
+        Remove = "remove",
+    }
+    EpicVerb (Epic []) {
+        List = "list",
+        Show = "show",
+        Create = "create",
+        Add = "add",
+    }
+    HooksVerb (Hooks []) {
+        Install = "install",
+        Uninstall = "uninstall",
+        List = "list",
+        Test = "test",
+    }
+    AttachmentVerb (Attachment []) {
+        Add = "add",
+        List = "list",
+        Remove = "remove",
+        Save = "save",
+    }
+    PluginVerb (Plugin []) {
+        Install = "install",
+        Uninstall = "uninstall",
+        Reinstall = "reinstall",
+        Run = "run",
+    }
+    StoreVerb (Store []) {
+        New = "new",
+        Backup = "backup",
+    }
+    DaemonVerb (Daemon []) {
+        Logs = "logs",
+        Start = "start",
+        Restart = "restart",
+        Serve = "--serve",
+        Stop = "stop",
+        Gc = "gc",
+        Status = "status",
+        Install = "install",
+        Uninstall = "uninstall",
+        Token = "token",
+    }
+    WebVerb (Web []) {
+        Start = "start",
+        Stop = "stop",
+        Status = "status",
+        Open = "open",
+        Address = "address",
+        Revoke = "revoke",
+        Serve = "--serve",
+    }
+    TokenVerb (Token []) {
+        New = "new",
+        List = "list",
+        Revoke = "revoke",
+    }
+    VerifierLandingVerb (Verifier ["landing"]) { Show = "show", Release = "release" }
+
+    VerifierRepairVerb (Verifier ["repair"]) { Show = "show", Decide = "decide", Satisfy = "satisfy" }
+
+    InternalVerb (Internal []) { SupersedeBlockDeliveries = "supersede-block-deliveries", SupersedeContinuations = "supersede-continuations" }
+
+    DoctorVerb (Doctor []) { Abandoned = "abandoned", Crashes = "crashes", Install = "install" }
+
+    DoctorAbandonedVerb (Doctor ["abandoned"]) { Clear = "clear" }
+
+    DoctorCrashesVerb (Doctor ["crashes"]) { Clear = "clear" }
+
+    ScaffoldVerb (Scaffold []) { AgentsMd = "agents-md", ClaudeMd = "claude-md", CursorRules = "cursor-rules" }
+
+    ContinuationVerb (Continuation []) { Capabilities = "capabilities", Request = "request", Status = "status", Receipt = "receipt", Retry = "retry", Ack = "ack" }
+
+    DispatchPolicyVerb (DispatchPolicy []) { Show = "show", Set = "set", Reset = "reset", Resolve = "resolve" }
+
+    GithubVerb (Github []) { Observe = "observe", Resolve = "resolve", Merge = "merge", Exec = "exec", Git = "git" }
+
+}
+
+/// Syntax quoted by the real argument validators. Kept separately from prose so
+/// offline consumers can inspect the same usage that a failed parse returns.
+#[derive(Clone, Copy, Debug)]
+pub struct UsageSyntax {
+    pub command: CommandId,
+    pub text: &'static str,
+}
+macro_rules! usages {
+    ($( $name:ident ($command:ident) = $text:literal; )*) => {
+        pub mod usage { $(pub const $name: &str = $text;)* }
+        pub static USAGE_SYNTAX: &[UsageSyntax] = &[
+            $(UsageSyntax { command: CommandId::$command, text: usage::$name },)*
+        ];
+    }
+}
+usages! {
+    U1 (Internal) = "usage: story internal supersede-block-deliveries <id> --json\n       \
+             story internal supersede-continuations <id> --json";
+    U2 (Resources) = "usage: story resources <id> [--lease-json JSON] [--window-name NAME] [--worktree-root PATH] [--tmux-socket PATH] [--location-only]";
+    U3 (Cleanup) = "usage: story cleanup [--dry-run]";
+    U4 (Claim) = "usage: story claim <id> [--comment <text> | --no-comment] \
+                           [--dry-run]\n       story claim --next [--phase <N>] [--epic <id>] \
+                           [--exclude-label <csv>] [--comment <text> | --no-comment] \
+                           [--dry-run]";
+    U5 (Unclaim) = "usage: story unclaim <id> [--comment <text> | --no-comment] \
+                             [--dry-run]";
+    U6 (Project) = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
+                             [--attach <PATH> | --no-attach] [--no-agents-md] | delete \
+                             [--force] | set-prefix <NEW-PREFIX> [--force] | show | list | \
+                             link origin [URL]|checkout [PATH] | unlink origin [URL]|checkout \
+                             | settings list|get|set|unset";
+    U7 (Project) = "usage: story project show\n\n`story project show` takes no \
+                                  argument. It reports the project this directory resolves \
+                                  to — name a different one with `--project <slug>`.";
+    U8 (Project) = "usage: story project delete [--force]\n\n`story project \
+                                    delete` takes no positional argument. It destroys the \
+                                    project this directory resolves to; name a different one \
+                                    with `--project <slug>`.";
+    U9 (Project) = "usage: story project set-prefix <NEW-PREFIX> \
+                                        [--force]\n\n`story project set-prefix` takes exactly \
+                                        one positional argument, the new prefix. It rewrites \
+                                        the project this directory resolves to; name a \
+                                        different one with `--project <slug>`.";
+    U10 (Project) = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
+                                 [--attach <PATH> | --no-attach] [--no-agents-md]\n\nRun with no \
+                                 flags at a terminal to be asked. `story project new` takes no \
+                                 positional argument: name the project with --name and the \
+                                 checkout with --attach.";
+    U11 (Project) = "usage: story project link origin [URL] | story project link checkout [PATH]\n\nThese attach \
+     *git* associations to a project. They are unrelated to `story link`, which is an alias for \
+     `story relate` and joins one story to another.";
+    U12 (Project) = "usage: story project unlink origin [URL] | story project unlink checkout\n\n`unlink \
+     checkout` takes no path: a project has at most one. These are unrelated to `story unlink`, \
+     which is an alias for `story unrelate`.";
+    U13 (Project) = "usage: story project settings list | get <key> | \
+                                      set <key> <value> | unset <key>";
+    U14 (New) = "usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--complexity low|medium|high] [--label <name> ...] [--labels <csv>] [--blocked-by <id> ...] [--draft]";
+    U15 (Publish) = "usage: story publish <id>";
+    U16 (Type) = "usage: story type list | story type add <slug> [...] | story type set <slug> [...] | story type remove <slug>";
+    U17 (Type) = "usage: story type add <slug> [--description \"<text>\"] [--emoji <glyph>]";
+    U18 (Type) = "usage: story type set <slug> [--description \"<text>\"] [--no-description] [--emoji <glyph>] [--no-emoji]";
+    U19 (Type) = "usage: story type remove <slug>";
+    U20 (State) = "usage: story state list | story state add <slug> --super OPEN|CLOSED | story state set <slug> [...] | story state remove <slug> | story state reorder <slug,...>";
+    U21 (State) = "usage: story state add <slug> --super OPEN|CLOSED [--role active] [--description \"<text>\"]";
+    U22 (State) = "usage: story state set <slug> [--super OPEN|CLOSED] [--role active|none] [--description \"<text>\"] [--no-description] [--move-stories-to <slug>]";
+    U23 (State) = "usage: story state remove <slug> [--move-stories-to <slug>]";
+    U24 (State) = "usage: story state reorder <slug,slug,...>";
+    U25 (List) = "usage: story list [--state <slug>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]";
+    U26 (Next) = "usage: story next [--count <n>] [--phase <N>] [--epic <id>] \
+                 [--exclude-label <csv>]";
+    U27 (Engine) = "usage: story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex] [--model <id>] [--effort <id>] [--speed standard|fast]";
+    U28 (Engine) = "usage: story engine status [--run <id>]";
+    U29 (Engine) = "usage: story engine pause [--run <id>]";
+    U30 (Engine) = "usage: story engine resume [--run <id>]";
+    U31 (Engine) = "usage: story engine stop [--run <id>] [--now]";
+    U32 (Engine) = "usage: story engine ack [--run <id>]";
+    U33 (Engine) = "usage: story engine <start|configure|adopt|status|pause|resume|stop|ack>";
+    U34 (Engine) = "usage: story engine reset-check <story-id>";
+    U35 (Engine) = "usage: story engine reset-target --run <id> --token <token>";
+    U36 (Engine) = "usage: story engine adopt <id> [<id> ...] [--run <id>]";
+    U37 (Engine) = "usage: story engine configure (--lanes <n> | --model <id> | --effort <id> | --speed standard|fast) [--run <id>]";
+    U38 (Verifier) = "usage: story verifier ack <incident-id> [--leave-stopped]";
+    U39 (Verifier) = "usage: story verifier <status|evidence|landing|start|stop|drain|ack|repair>";
+    U40 (Verifier) = "usage: story verifier landing show | release <intent-id> --reason <reason>";
+    U41 (Verifier) = "usage: story verifier evidence <story-id> [--json]";
+    U42 (Verifier) = "usage: story verifier repair-admit <story> <attempt> <generation> <base> <head> <head-tree> <tree> --json (private verifier callback)";
+    U43 (Verifier) = "usage: story verifier repair show <recovery-id> | decide <recovery-id> --input <json-file> | satisfy <recovery-id> --input <json-file>";
+    U44 (Verifier) = "usage: story verifier gate-config <checkout> <base> <head> <tree> --json";
+    U45 (Verifier) = "usage: story verifier <status|start|stop|drain>";
+    U46 (Report) = "usage: story report [--html]";
+    U47 (Search) = "usage: story search <query>";
+    U48 (Import) = "usage: story import [<file>]";
+    U49 (Decompose) = "usage: story decompose <file> [--dry-run] | story decompose --stdin [--dry-run]";
+    U50 (ImportProject) = "usage: story import-project <file> [--legacy-links]";
+    U51 (Migrate) = "usage: story migrate [<path>] [--dry-run]";
+    U52 (LoadContext) = "usage: story load-context [--format markdown|json] [--story <id>]";
+    U53 (Phase) = "usage: story phase list|show <N>|add <id> <N>|remove <id>|create <N> [\"<title>\"]";
+    U54 (Phase) = "usage: story phase show <N>";
+    U55 (Phase) = "usage: story phase add <id> <N>";
+    U56 (Phase) = "usage: story phase remove <id>";
+    U57 (Phase) = "usage: story phase create <N> [\"<title>\"]";
+    U58 (Epic) = "usage: story epic list|show <id>|create \"<title>\"|add <epic-id> <story-id>";
+    U59 (Epic) = "usage: story epic show <id>";
+    U60 (Epic) = "usage: story epic create \"<title>\"";
+    U61 (Epic) = "usage: story epic add <epic-id> <story-id>";
+    U62 (Handoff) = "usage: story handoff [--since <duration>]";
+    U63 (Graph) = "usage: story graph --blocked-by <id>";
+    U64 (Graph) = "usage: story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]";
+    U65 (Doctor) = "usage: story doctor install";
+    U66 (Doctor) = "usage: story doctor [--fix] | install | abandoned [clear (--all | <request-id>)] \
+         | crashes [clear (--all | <crash-id>)]";
+    U67 (Doctor) = "usage: story doctor abandoned [clear (--all | <request-id>)]";
+    U68 (Doctor) = "usage: story doctor crashes [clear (--all | <crash-id>)]";
+    U69 (Update) = "usage: story update [--check] [--force] [--source HOST/OWNER/REPO]";
+    U70 (Hooks) = "usage: story hooks install|uninstall|list|test <event_type>";
+    U71 (Hooks) = "usage: story hooks test <event_type>";
+    U72 (Scaffold) = "usage: story scaffold agents-md|claude-md|cursor-rules";
+    U73 (CommitSync) = "usage: story commit-sync [--since <duration>]";
+    U74 (LinkPr) = "usage: story link-pr <id> <url> [--no-close-on-merge]";
+    U75 (UnlinkPr) = "usage: story unlink-pr <id> <url>";
+    U76 (Attachment) = "usage: story attachment add <id> <path> [--name <text>] | \
+    list <id> | remove <id> <n> | save <id> <n> <path>";
+    U77 (PrCheck) = "usage: story pr-check [<id>]";
+    U78 (Help) = "usage: story help [<topic>] [--all|--compact]";
+    U79 (Plugin) = "usage: story plugin install|uninstall <claude|codex> | story plugin reinstall | story plugin run codex -- <helper-command> [args...]";
+    U80 (Store) = "usage: story store new <path> | story store backup [--label <text>]";
+    U81 (Daemon) = "usage: story daemon start [--port <PORT>] | restart | stop [--force] | status | \
+                 install [--this-binary] | uninstall | token | gc [--force] | logs [--follow] [--directory <PATH>]";
+    U82 (Web) = "usage: story web start [--port <PORT>] | stop | status | open | address";
+    U83 (Token) = "usage: story token new <name> | story token list | story token revoke <name>";
+    U84 (Show) = "usage: story show <id>";
+    U85 (Log) = "usage: story log <id>";
+    U86 (Comment) = "usage: story comment <id> \"<text>\"";
+    U87 (Move) = "usage: story move <id> <state> [--if-state <expected>] [--reason <text>] [\"<comment>\"]";
+    U88 (Close) = "usage: story close <id> \"<reason>\"";
+    U89 (Block) = "usage: story block <id> --on <blocker> [--on <blocker>]... \
+                          [\"<reason>\"] | story block <id> \"<reason>\"";
+    U90 (Unblock) = "usage: story unblock <id> [--on <blocker>]...";
+    U91 (Prioritize) = "usage: story prioritize <id> <level>";
+    U92 (Label) = "usage: story label <id> <labels-csv>";
+    U93 (Unlabel) = "usage: story unlabel <id> <labels-csv>";
+    U94 (Reopen) = "usage: story reopen <id>";
+    U95 (Archive) = "usage: story archive <id>";
+    U96 (Unarchive) = "usage: story unarchive <id>";
+    U97 (ArchiveState) = "usage: story archive-state <state> [--force]";
+    U98 (Delete) = "usage: story delete <id> [--force]";
+    U99 (Relate) = "usage: story relate <a> <relationship-type> <b>";
+    U100 (Unrelate) = "usage: story unrelate <a> <relationship-type> <b>";
+    U101 (Set) = "usage: story set <id> [--field value ...]";
+    U102 (Set) = "usage: story set <id> [--title \"<title>\"] [--state <slug>] [--priority <level>] [--complexity low|medium|high] [--labels \"<csv>\"] [--blocked \"<reason>\"] [--unblocked] [--json \"<json>\"] [--type <slug>] [--description \"<text>\"]";
+    U103 (Reset) = "usage: story reset <id> [--force] [--dry-run]";
+    U104 (Summary) = "usage: story summary";
+    U105 (Export) = "usage: story export";
+    U106 (LaneBudget) = "usage: story lane-budget";
+    U107 (SessionEligibility) = "usage: story session-eligibility <id>";
+    U108 (SessionStart) = "usage: story session-start";
+    U109 (Continuation) = "usage: story continuation request <id> --stdin | status <id> | receipt <id> <request> --stdin | retry <id> <request> | ack <id> <request> --reviewed-seq <n> --head <sha> --provider <codex|claude> --session-id <id> | capabilities";
+    U110 (DispatchPolicy) = "usage: story dispatch-policy show|set|reset|resolve [<story-id>] [--global] [--agent codex|claude] [--complexity low|medium|high] [--model <id>] [--effort <id>]. For reset, --model and --effort take no value. See story help dispatch-policy";
+    U111 (Github) = "usage: story github observe --checkout PATH [--authority PATH] -- ls-remote|fetch ARGUMENTS";
+    U112 (Github) = "usage: story github resolve|exec|git|merge --checkout PATH [--authority PATH] [--expected HOST/OWNER/REPO] [-- ARGUMENTS]";
+}
+
+/// Local protocols before current-directory and project resolution.
+pub enum BeforeEnvironment<'a> {
+    Logs {
+        follow: bool,
+        directory: Option<&'a std::path::Path>,
+    },
+    Serve {
+        port: Option<u16>,
+        owner: Option<&'a str>,
+    },
+}
+/// Resolve an already parsed invocation without accessing the runtime.
+pub fn before_environment(invocation: &Invocation) -> Option<BeforeEnvironment<'_>> {
+    match invocation {
+        Invocation::Daemon {
+            action: DaemonAction::Logs { follow, directory },
+        } => Some(BeforeEnvironment::Logs {
+            follow: *follow,
+            directory: directory.as_deref(),
+        }),
+        Invocation::Daemon {
+            action: DaemonAction::Serve { port, owner },
+        } => Some(BeforeEnvironment::Serve {
+            port: *port,
+            owner: owner.as_deref(),
+        }),
+        Invocation::Web {
+            action: WebAction::Serve { port },
+        } => Some(BeforeEnvironment::Serve {
+            port: *port,
+            owner: None,
+        }),
+        _ => None,
+    }
+}
+/// Local protocols after current-directory resolution but before opening a store.
+pub enum BeforeStore<'a> {
+    Plugin { target: &'a str, args: &'a [String] },
+    StoreNew { path: &'a str },
+}
+pub fn before_store(invocation: &Invocation) -> Option<BeforeStore<'_>> {
+    match invocation {
+        Invocation::Plugin {
+            action: PluginAction::Run { target, args },
+        } => Some(BeforeStore::Plugin { target, args }),
+        Invocation::Store {
+            action: StoreAction::New { path },
+        } => Some(BeforeStore::StoreNew { path }),
+        _ => None,
+    }
+}
+/// Interactive preparation is conditional; stated project creation skips it.
+pub fn needs_questionnaire(invocation: &Invocation) -> bool {
+    matches!(
+        invocation,
+        Invocation::Project {
+            action: ProjectAction::New(NewProjectRequest::Ask)
+        }
+    )
 }

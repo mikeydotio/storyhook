@@ -29,10 +29,10 @@ pub enum PolicyAction {
 }
 
 pub(super) fn parse(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story dispatch-policy show|set|reset|resolve [<story-id>] [--global] [--agent codex|claude] [--complexity low|medium|high] [--model <id>] [--effort <id>]. For reset, --model and --effort take no value. See story help dispatch-policy";
+    let usage = crate::cli::model::usage::U110;
     let fail = || AppError::Usage(usage.into());
     let verb = args.get(1).map(String::as_str).unwrap_or("show");
-    if !matches!(verb, "show" | "set" | "reset" | "resolve") {
+    if super::model::DispatchPolicyVerb::find(verb).is_none() {
         return Err(fail());
     }
     let mut global = false;

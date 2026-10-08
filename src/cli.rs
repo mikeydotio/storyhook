@@ -1640,7 +1640,7 @@ pub fn is_help_request(args: &[String]) -> bool {
 /// The help a recognized verb answers a help request with: its own topic
 /// when one exists, otherwise the general help.
 fn help_for_verb(verb: &str) -> Invocation {
-    let topic = model::CommandId::find(verb).map_or(verb, model::CommandId::help_topic);
+    let topic = model::CommandId::find(verb).map_or(verb, |command| command.help_topic());
     match crate::help_topics::get_help_topic(topic) {
         Some(_) => Invocation::HelpTopic {
             topic: topic.to_string(),
@@ -1853,22 +1853,22 @@ fn strip_terminator(args: &[String]) -> Vec<String> {
 fn parse_internal(args: &[String]) -> Result<Invocation, AppError> {
     match args {
         [_, operation, id]
-            if operation == "supersede-block-deliveries"
+            if model::InternalVerb::find(operation)
+                == Some(model::InternalVerb::SupersedeBlockDeliveries)
                 && !id.is_empty()
                 && !id.starts_with('-') =>
         {
             Ok(Invocation::SupersedeBlockDeliveries { id: id.clone() })
         }
         [_, operation, id]
-            if operation == "supersede-continuations" && !id.is_empty() && !id.starts_with('-') =>
+            if model::InternalVerb::find(operation)
+                == Some(model::InternalVerb::SupersedeContinuations)
+                && !id.is_empty()
+                && !id.starts_with('-') =>
         {
             Ok(Invocation::SupersedeContinuations { id: id.clone() })
         }
-        _ => Err(AppError::Usage(
-            "usage: story internal supersede-block-deliveries <id> --json\n       \
-             story internal supersede-continuations <id> --json"
-                .into(),
-        )),
+        _ => Err(AppError::Usage(crate::cli::model::usage::U1.into())),
     }
 }
 
@@ -1886,7 +1886,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_resources(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story resources <id> [--lease-json JSON] [--window-name NAME] [--worktree-root PATH] [--tmux-socket PATH] [--location-only]";
+    let usage = crate::cli::model::usage::U2;
     // The client owns its terminal locator; the daemon must not supply its own.
     let tmux_socket = match std::env::var("TMUX") {
         Ok(value) => value
@@ -1957,66 +1957,40 @@ fn parse_cleanup(args: &[String]) -> Result<Invocation, AppError> {
     for arg in &args[1..] {
         match arg.as_str() {
             "--dry-run" => dry_run = true,
-            _ => return Err(AppError::Usage("usage: story cleanup [--dry-run]".into())),
+            _ => return Err(AppError::Usage(crate::cli::model::usage::U3.into())),
         }
     }
     Ok(Invocation::Cleanup { dry_run })
 }
 
-const CLAIM_USAGE: &str = "usage: story claim <id> [--comment <text> | --no-comment] \
-                           [--dry-run]\n       story claim --next [--phase <N>] [--epic <id>] \
-                           [--exclude-label <csv>] [--comment <text> | --no-comment] \
-                           [--dry-run]";
+const CLAIM_USAGE: &str = crate::cli::model::usage::U4;
 
-const UNCLAIM_USAGE: &str = "usage: story unclaim <id> [--comment <text> | --no-comment] \
-                             [--dry-run]";
+const UNCLAIM_USAGE: &str = crate::cli::model::usage::U5;
 
-const PROJECT_USAGE: &str = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
-                             [--attach <PATH> | --no-attach] [--no-agents-md] | delete \
-                             [--force] | set-prefix <NEW-PREFIX> [--force] | show | list | \
-                             link origin [URL]|checkout [PATH] | unlink origin [URL]|checkout \
-                             | settings list|get|set|unset";
+const PROJECT_USAGE: &str = crate::cli::model::usage::U6;
 
-const PROJECT_SHOW_USAGE: &str = "usage: story project show\n\n`story project show` takes no \
-                                  argument. It reports the project this directory resolves \
-                                  to — name a different one with `--project <slug>`.";
+const PROJECT_SHOW_USAGE: &str = crate::cli::model::usage::U7;
 
-const PROJECT_DELETE_USAGE: &str = "usage: story project delete [--force]\n\n`story project \
-                                    delete` takes no positional argument. It destroys the \
-                                    project this directory resolves to; name a different one \
-                                    with `--project <slug>`.";
+const PROJECT_DELETE_USAGE: &str = crate::cli::model::usage::U8;
 
-const PROJECT_SET_PREFIX_USAGE: &str = "usage: story project set-prefix <NEW-PREFIX> \
-                                        [--force]\n\n`story project set-prefix` takes exactly \
-                                        one positional argument, the new prefix. It rewrites \
-                                        the project this directory resolves to; name a \
-                                        different one with `--project <slug>`.";
+const PROJECT_SET_PREFIX_USAGE: &str = crate::cli::model::usage::U9;
 
-const PROJECT_NEW_USAGE: &str = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
-                                 [--attach <PATH> | --no-attach] [--no-agents-md]\n\nRun with no \
-                                 flags at a terminal to be asked. `story project new` takes no \
-                                 positional argument: name the project with --name and the \
-                                 checkout with --attach.";
+const PROJECT_NEW_USAGE: &str = crate::cli::model::usage::U10;
 
-const PROJECT_LINK_USAGE: &str = "usage: story project link origin [URL] | story project link checkout [PATH]\n\nThese attach \
-     *git* associations to a project. They are unrelated to `story link`, which is an alias for \
-     `story relate` and joins one story to another.";
+const PROJECT_LINK_USAGE: &str = crate::cli::model::usage::U11;
 
-const PROJECT_UNLINK_USAGE: &str = "usage: story project unlink origin [URL] | story project unlink checkout\n\n`unlink \
-     checkout` takes no path: a project has at most one. These are unrelated to `story unlink`, \
-     which is an alias for `story unrelate`.";
+const PROJECT_UNLINK_USAGE: &str = crate::cli::model::usage::U12;
 
-const PROJECT_SETTINGS_USAGE: &str = "usage: story project settings list | get <key> | \
-                                      set <key> <value> | unset <key>";
+const PROJECT_SETTINGS_USAGE: &str = crate::cli::model::usage::U13;
 
 fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
     let action = args
         .get(1)
         .ok_or_else(|| AppError::Usage(PROJECT_USAGE.to_string()))?;
-    match action.as_str() {
-        "new" => parse_project_new(args),
-        "delete" => parse_project_delete(args),
-        "set-prefix" => parse_project_set_prefix(args),
+    match model::ProjectVerb::find(action.as_str()) {
+        Some(model::ProjectVerb::New) => parse_project_new(args),
+        Some(model::ProjectVerb::Delete) => parse_project_delete(args),
+        Some(model::ProjectVerb::SetPrefix) => parse_project_set_prefix(args),
         // Redirects, never `unknown command`. Being told where a command went
         // is the whole difference from being told it never existed, and 34
         // files and five years of documents say `story project init`. Kept for
@@ -2027,7 +2001,7 @@ fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
         // shape alive under a new name, and that shape is the thing being
         // retired: a positional nobody could tell from a name, and a prefix
         // minted silently into every id the project will ever have.
-        "init" => Err(AppError::Usage(
+        Some(model::ProjectVerb::Init) => Err(AppError::Usage(
             "`story project init` is now `story project new`.\n\nIt takes no path: name the \
              checkout with `--attach <PATH>`, or `--no-attach` for a project with no checkout \
              here. `--prefix` is required — it is minted into every story id and cannot be \
@@ -2035,14 +2009,14 @@ fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
              [--attach <PATH> | --no-attach]\n\nRun it with no flags at a terminal to be asked."
                 .to_string(),
         )),
-        "deinit" => Err(AppError::Usage(
+        Some(model::ProjectVerb::Deinit) => Err(AppError::Usage(
             "`story project deinit` is now `story project delete`.\n\nIt takes no path or slug: \
              it destroys the project this directory resolves to, or the one named by `--project \
              <slug>`. It no longer deletes `.storyhook.toml` or `AGENTS.md` from any checkout.\n\n\
              \x20 story project delete [--force]"
                 .to_string(),
         )),
-        "list" => {
+        Some(model::ProjectVerb::List) => {
             expect_no_more(&args[2..], PROJECT_USAGE)?;
             Ok(Invocation::Project {
                 action: ProjectAction::List,
@@ -2051,14 +2025,14 @@ fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
         // Refused with its own usage rather than the group's: a trailing word
         // here is most likely somebody reaching for a target this verb
         // deliberately does not take, and the message that helps says so.
-        "show" if args.len() == 2 => Ok(Invocation::Project {
+        Some(model::ProjectVerb::Show) if args.len() == 2 => Ok(Invocation::Project {
             action: ProjectAction::Show,
         }),
-        "show" => Err(AppError::Usage(PROJECT_SHOW_USAGE.to_string())),
-        "link" => parse_project_link(args),
-        "unlink" => parse_project_unlink(args),
-        "settings" => parse_project_settings(args),
-        _ => Err(AppError::Usage(PROJECT_USAGE.to_string())),
+        Some(model::ProjectVerb::Show) => Err(AppError::Usage(PROJECT_SHOW_USAGE.to_string())),
+        Some(model::ProjectVerb::Link) => parse_project_link(args),
+        Some(model::ProjectVerb::Unlink) => parse_project_unlink(args),
+        Some(model::ProjectVerb::Settings) => parse_project_settings(args),
+        None => Err(AppError::Usage(PROJECT_USAGE.to_string())),
     }
 }
 
@@ -2073,10 +2047,10 @@ fn parse_project_link(args: &[String]) -> Result<Invocation, AppError> {
         return Err(usage());
     }
     let value = args.get(3).cloned();
-    let target = match args.get(2).ok_or_else(usage)?.as_str() {
-        "origin" => LinkTarget::Origin { url: value },
-        "checkout" => LinkTarget::Checkout { path: value },
-        _ => return Err(usage()),
+    let target = match model::ProjectLinkVerb::find(args.get(2).ok_or_else(usage)?.as_str()) {
+        Some(model::ProjectLinkVerb::Origin) => LinkTarget::Origin { url: value },
+        Some(model::ProjectLinkVerb::Checkout) => LinkTarget::Checkout { path: value },
+        None => return Err(usage()),
     };
     Ok(Invocation::Project {
         action: ProjectAction::Link(target),
@@ -2086,14 +2060,16 @@ fn parse_project_link(args: &[String]) -> Result<Invocation, AppError> {
 /// `story project unlink origin [URL]` / `story project unlink checkout`.
 fn parse_project_unlink(args: &[String]) -> Result<Invocation, AppError> {
     let usage = || AppError::Usage(PROJECT_UNLINK_USAGE.to_string());
-    let target = match args.get(2).ok_or_else(usage)?.as_str() {
-        "origin" if args.len() <= 4 => UnlinkTarget::Origin {
+    let target = match model::ProjectUnlinkVerb::find(args.get(2).ok_or_else(usage)?.as_str()) {
+        Some(model::ProjectUnlinkVerb::Origin) if args.len() <= 4 => UnlinkTarget::Origin {
             url: args.get(3).cloned(),
         },
         // A path here is not ignored: a caller who typed one believes a project
         // has several checkouts and is about to be surprised by which one went.
-        "checkout" if args.len() == 3 => UnlinkTarget::Checkout,
-        _ => return Err(usage()),
+        Some(model::ProjectUnlinkVerb::Checkout) if args.len() == 3 => UnlinkTarget::Checkout,
+        None
+        | Some(model::ProjectUnlinkVerb::Origin)
+        | Some(model::ProjectUnlinkVerb::Checkout) => return Err(usage()),
     };
     Ok(Invocation::Project {
         action: ProjectAction::Unlink(target),
@@ -2109,15 +2085,23 @@ fn parse_project_settings(args: &[String]) -> Result<Invocation, AppError> {
     let usage = || AppError::Usage(PROJECT_SETTINGS_USAGE.to_string());
     let word = |index: usize| args.get(index).cloned().ok_or_else(usage);
 
-    let action = match args.get(2).ok_or_else(usage)?.as_str() {
-        "list" if args.len() == 3 => SettingsAction::List,
-        "get" if args.len() == 4 => SettingsAction::Get { key: word(3)? },
-        "set" if args.len() == 5 => SettingsAction::Set {
+    let action = match model::ProjectSettingsVerb::find(args.get(2).ok_or_else(usage)?.as_str()) {
+        Some(model::ProjectSettingsVerb::List) if args.len() == 3 => SettingsAction::List,
+        Some(model::ProjectSettingsVerb::Get) if args.len() == 4 => {
+            SettingsAction::Get { key: word(3)? }
+        }
+        Some(model::ProjectSettingsVerb::Set) if args.len() == 5 => SettingsAction::Set {
             key: word(3)?,
             value: word(4)?,
         },
-        "unset" if args.len() == 4 => SettingsAction::Unset { key: word(3)? },
-        _ => return Err(usage()),
+        Some(model::ProjectSettingsVerb::Unset) if args.len() == 4 => {
+            SettingsAction::Unset { key: word(3)? }
+        }
+        None
+        | Some(model::ProjectSettingsVerb::List)
+        | Some(model::ProjectSettingsVerb::Get)
+        | Some(model::ProjectSettingsVerb::Set)
+        | Some(model::ProjectSettingsVerb::Unset) => return Err(usage()),
     };
 
     Ok(Invocation::Project {
@@ -2284,7 +2268,7 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
     let mut draft = false;
     let mut blocked_by: Vec<String> = Vec::new();
     let mut index = 1;
-    let usage = "usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--complexity low|medium|high] [--label <name> ...] [--labels <csv>] [--blocked-by <id> ...] [--draft]";
+    let usage = crate::cli::model::usage::U14;
     while index < args.len() {
         match args[index].as_str() {
             "--state" => {
@@ -2382,25 +2366,23 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_publish(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 2 {
-        return Err(AppError::Usage("usage: story publish <id>".to_string()));
+        return Err(AppError::Usage(crate::cli::model::usage::U15.to_string()));
     }
     Ok(Invocation::Publish {
         id: args[1].clone(),
     })
 }
 
-const TYPE_USAGE: &str = "usage: story type list | story type add <slug> [...] | story type set <slug> [...] | story type remove <slug>";
-const TYPE_ADD_USAGE: &str =
-    "usage: story type add <slug> [--description \"<text>\"] [--emoji <glyph>]";
-const TYPE_SET_USAGE: &str = "usage: story type set <slug> [--description \"<text>\"] [--no-description] [--emoji <glyph>] [--no-emoji]";
-const TYPE_REMOVE_USAGE: &str = "usage: story type remove <slug>";
+const TYPE_USAGE: &str = crate::cli::model::usage::U16;
+const TYPE_ADD_USAGE: &str = crate::cli::model::usage::U17;
+const TYPE_SET_USAGE: &str = crate::cli::model::usage::U18;
+const TYPE_REMOVE_USAGE: &str = crate::cli::model::usage::U19;
 
-const STATE_USAGE: &str = "usage: story state list | story state add <slug> --super OPEN|CLOSED | story state set <slug> [...] | story state remove <slug> | story state reorder <slug,...>";
-const STATE_ADD_USAGE: &str =
-    "usage: story state add <slug> --super OPEN|CLOSED [--role active] [--description \"<text>\"]";
-const STATE_SET_USAGE: &str = "usage: story state set <slug> [--super OPEN|CLOSED] [--role active|none] [--description \"<text>\"] [--no-description] [--move-stories-to <slug>]";
-const STATE_REMOVE_USAGE: &str = "usage: story state remove <slug> [--move-stories-to <slug>]";
-const STATE_REORDER_USAGE: &str = "usage: story state reorder <slug,slug,...>";
+const STATE_USAGE: &str = crate::cli::model::usage::U20;
+const STATE_ADD_USAGE: &str = crate::cli::model::usage::U21;
+const STATE_SET_USAGE: &str = crate::cli::model::usage::U22;
+const STATE_REMOVE_USAGE: &str = crate::cli::model::usage::U23;
+const STATE_REORDER_USAGE: &str = crate::cli::model::usage::U24;
 
 /// Splits `--flag value` / `--flag=value` / `--flag` into (name, value)
 /// pairs. A value that itself starts with `--` is read as the next flag, so
@@ -2442,13 +2424,13 @@ fn parse_state(args: &[String]) -> Result<Invocation, AppError> {
         .get(1)
         .ok_or_else(|| AppError::Usage(STATE_USAGE.to_string()))?;
 
-    let action = match subcommand.as_str() {
-        "list" => {
+    let action = match model::StateVerb::find(subcommand.as_str()) {
+        Some(model::StateVerb::List) => {
             expect_no_more(&args[2..], STATE_USAGE)?;
             StateAction::List
         }
 
-        "add" => {
+        Some(model::StateVerb::Add) => {
             let slug = args
                 .get(2)
                 .cloned()
@@ -2475,7 +2457,7 @@ fn parse_state(args: &[String]) -> Result<Invocation, AppError> {
             }
         }
 
-        "set" => {
+        Some(model::StateVerb::Set) => {
             let slug = args
                 .get(2)
                 .cloned()
@@ -2515,7 +2497,7 @@ fn parse_state(args: &[String]) -> Result<Invocation, AppError> {
             }
         }
 
-        "remove" => {
+        Some(model::StateVerb::Remove) => {
             let slug = args
                 .get(2)
                 .cloned()
@@ -2538,7 +2520,7 @@ fn parse_state(args: &[String]) -> Result<Invocation, AppError> {
 
         // Accepts both `reorder a,b,c` and `reorder a b c`, so the order can
         // be pasted from `story state list` output either way.
-        "reorder" => {
+        Some(model::StateVerb::Reorder) => {
             let order: Vec<String> = args[1..]
                 .iter()
                 .skip(1)
@@ -2553,7 +2535,7 @@ fn parse_state(args: &[String]) -> Result<Invocation, AppError> {
             StateAction::Reorder { order }
         }
 
-        _ => return Err(AppError::Usage(STATE_USAGE.to_string())),
+        None => return Err(AppError::Usage(STATE_USAGE.to_string())),
     };
 
     Ok(Invocation::State { action })
@@ -2576,7 +2558,7 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
     let mut include_closed = false;
     let mut include_archived = false;
     let mut index = 1;
-    let usage = "usage: story list [--state <slug>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]";
+    let usage = crate::cli::model::usage::U25;
 
     while index < args.len() {
         match args[index].as_str() {
@@ -2712,8 +2694,7 @@ fn parse_next(args: &[String]) -> Result<Invocation, AppError> {
     let mut epic = None;
     let mut exclude_label = None;
     let mut index = 1;
-    let usage = "usage: story next [--count <n>] [--phase <N>] [--epic <id>] \
-                 [--exclude-label <csv>]";
+    let usage = crate::cli::model::usage::U26;
 
     while index < args.len() {
         match args[index].as_str() {
@@ -2966,12 +2947,12 @@ fn parse_unclaim(args: &[String]) -> Result<Invocation, AppError> {
     })
 }
 
-const ENGINE_START_USAGE: &str = "usage: story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex] [--model <id>] [--effort <id>] [--speed standard|fast]";
-const ENGINE_STATUS_USAGE: &str = "usage: story engine status [--run <id>]";
-const ENGINE_PAUSE_USAGE: &str = "usage: story engine pause [--run <id>]";
-const ENGINE_RESUME_USAGE: &str = "usage: story engine resume [--run <id>]";
-const ENGINE_STOP_USAGE: &str = "usage: story engine stop [--run <id>] [--now]";
-const ENGINE_ACK_USAGE: &str = "usage: story engine ack [--run <id>]";
+const ENGINE_START_USAGE: &str = crate::cli::model::usage::U27;
+const ENGINE_STATUS_USAGE: &str = crate::cli::model::usage::U28;
+const ENGINE_PAUSE_USAGE: &str = crate::cli::model::usage::U29;
+const ENGINE_RESUME_USAGE: &str = crate::cli::model::usage::U30;
+const ENGINE_STOP_USAGE: &str = crate::cli::model::usage::U31;
+const ENGINE_ACK_USAGE: &str = crate::cli::model::usage::U32;
 
 /// `story engine start|status|pause|resume|stop|ack` (SH-467).
 ///
@@ -2981,13 +2962,11 @@ const ENGINE_ACK_USAGE: &str = "usage: story engine ack [--run <id>]";
 /// rejected the word, the exact SH-357 parser contract this family inherits.
 fn parse_engine(args: &[String]) -> Result<Invocation, AppError> {
     let Some(action) = args.get(1).map(String::as_str) else {
-        return Err(AppError::Usage(
-            "usage: story engine <start|configure|adopt|status|pause|resume|stop|ack>".to_string(),
-        ));
+        return Err(AppError::Usage(crate::cli::model::usage::U33.to_string()));
     };
-    let action = match action {
-        "reset-check" => {
-            let usage = "usage: story engine reset-check <story-id>";
+    let action = match model::EngineVerb::find(action) {
+        Some(model::EngineVerb::ResetCheck) => {
+            let usage = crate::cli::model::usage::U34;
             if args.len() != 3 {
                 return Err(AppError::Usage(usage.into()));
             }
@@ -2995,8 +2974,8 @@ fn parse_engine(args: &[String]) -> Result<Invocation, AppError> {
                 story: args[2].clone(),
             }
         }
-        "reset-target" => {
-            let usage = "usage: story engine reset-target --run <id> --token <token>";
+        Some(model::EngineVerb::ResetTarget) => {
+            let usage = crate::cli::model::usage::U35;
             if args.len() != 6 || args[2] != "--run" || args[4] != "--token" {
                 return Err(AppError::Usage(usage.into()));
             }
@@ -3005,33 +2984,30 @@ fn parse_engine(args: &[String]) -> Result<Invocation, AppError> {
                 token: args[5].clone(),
             }
         }
-        "start" => parse_engine_start(args)?,
-        "configure" => parse_engine_configure(args)?,
-        "adopt" => parse_engine_adopt(args)?,
-        "status" => EngineAction::Status {
+        Some(model::EngineVerb::Start) => parse_engine_start(args)?,
+        Some(model::EngineVerb::Configure) => parse_engine_configure(args)?,
+        Some(model::EngineVerb::Adopt) => parse_engine_adopt(args)?,
+        Some(model::EngineVerb::Status) => EngineAction::Status {
             run: parse_engine_run(args, ENGINE_STATUS_USAGE)?,
         },
-        "pause" => EngineAction::Pause {
+        Some(model::EngineVerb::Pause) => EngineAction::Pause {
             run: parse_engine_run(args, ENGINE_PAUSE_USAGE)?,
         },
-        "resume" => EngineAction::Resume {
+        Some(model::EngineVerb::Resume) => EngineAction::Resume {
             run: parse_engine_run(args, ENGINE_RESUME_USAGE)?,
         },
-        "stop" => parse_engine_stop(args)?,
-        "ack" => EngineAction::Ack {
+        Some(model::EngineVerb::Stop) => parse_engine_stop(args)?,
+        Some(model::EngineVerb::Ack) => EngineAction::Ack {
             run: parse_engine_run(args, ENGINE_ACK_USAGE)?,
         },
-        _ => {
-            return Err(AppError::Usage(
-                "usage: story engine <start|configure|adopt|status|pause|resume|stop|ack>"
-                    .to_string(),
-            ));
+        None => {
+            return Err(AppError::Usage(crate::cli::model::usage::U33.to_string()));
         }
     };
     Ok(Invocation::Engine { action })
 }
 
-const ENGINE_ADOPT_USAGE: &str = "usage: story engine adopt <id> [<id> ...] [--run <id>]";
+const ENGINE_ADOPT_USAGE: &str = crate::cli::model::usage::U36;
 
 fn parse_engine_adopt(args: &[String]) -> Result<EngineAction, AppError> {
     let mut run = None;
@@ -3060,7 +3036,7 @@ fn parse_engine_adopt(args: &[String]) -> Result<EngineAction, AppError> {
     Ok(EngineAction::Adopt { run, ids })
 }
 
-const ENGINE_CONFIGURE_USAGE: &str = "usage: story engine configure (--lanes <n> | --model <id> | --effort <id> | --speed standard|fast) [--run <id>]";
+const ENGINE_CONFIGURE_USAGE: &str = crate::cli::model::usage::U37;
 
 fn parse_engine_configure(args: &[String]) -> Result<EngineAction, AppError> {
     use crate::service::engine::ConfigurePatch;
@@ -3216,7 +3192,7 @@ fn parse_engine_run(args: &[String], usage: &str) -> Result<Option<String>, AppE
     Ok(run)
 }
 
-const VERIFIER_ACK_USAGE: &str = "usage: story verifier ack <incident-id> [--leave-stopped]";
+const VERIFIER_ACK_USAGE: &str = crate::cli::model::usage::U38;
 
 /// `story verifier ack <incident-id>` (SH-666).
 ///
@@ -3227,18 +3203,19 @@ const VERIFIER_ACK_USAGE: &str = "usage: story verifier ack <incident-id> [--lea
 /// complete arm ends in [`expect_no_more`] with its own usage string.
 fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
     let Some(action) = args.get(1).map(String::as_str) else {
-        return Err(AppError::Usage(
-            "usage: story verifier <status|evidence|landing|start|stop|drain|ack|repair>"
-                .to_string(),
-        ));
+        return Err(AppError::Usage(crate::cli::model::usage::U39.to_string()));
     };
-    let action = match action {
-        "landing" => {
-            const USAGE: &str =
-                "usage: story verifier landing show | release <intent-id> --reason <reason>";
-            match args.get(2).map(String::as_str) {
-                Some("show") if args.len() == 3 => VerifierAction::LandingShow,
-                Some("release")
+    let action = match model::VerifierVerb::find(action) {
+        Some(model::VerifierVerb::Landing) => {
+            const USAGE: &str = crate::cli::model::usage::U40;
+            match args
+                .get(2)
+                .and_then(|word| model::VerifierLandingVerb::find(word))
+            {
+                Some(model::VerifierLandingVerb::Show) if args.len() == 3 => {
+                    VerifierAction::LandingShow
+                }
+                Some(model::VerifierLandingVerb::Release)
                     if args.len() == 6
                         && args[4] == "--reason"
                         && !is_flag_shaped(&args[3])
@@ -3249,11 +3226,15 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
                         reason: args[5].clone(),
                     }
                 }
-                _ => return Err(AppError::Usage(USAGE.into())),
+                None
+                | Some(model::VerifierLandingVerb::Show)
+                | Some(model::VerifierLandingVerb::Release) => {
+                    return Err(AppError::Usage(USAGE.into()));
+                }
             }
         }
-        "evidence" => {
-            const USAGE: &str = "usage: story verifier evidence <story-id> [--json]";
+        Some(model::VerifierVerb::Evidence) => {
+            const USAGE: &str = crate::cli::model::usage::U41;
             if args.len() != 3 || args[2].trim().is_empty() || is_flag_shaped(&args[2]) {
                 return Err(AppError::Usage(USAGE.into()));
             }
@@ -3261,8 +3242,8 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
                 story_id: args[2].clone(),
             }
         }
-        "repair-admit" => {
-            const USAGE: &str = "usage: story verifier repair-admit <story> <attempt> <generation> <base> <head> <head-tree> <tree> --json (private verifier callback)";
+        Some(model::VerifierVerb::RepairAdmit) => {
+            const USAGE: &str = crate::cli::model::usage::U42;
             if args.len() != 9
                 || args[2..]
                     .iter()
@@ -3289,17 +3270,22 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
                 input,
             }
         }
-        "repair" => {
-            const USAGE: &str = "usage: story verifier repair show <recovery-id> | decide <recovery-id> --input <json-file> | satisfy <recovery-id> --input <json-file>";
+        Some(model::VerifierVerb::Repair) => {
+            const USAGE: &str = crate::cli::model::usage::U43;
             let id = args
                 .get(3)
                 .filter(|s| !is_flag_shaped(s))
                 .ok_or_else(|| AppError::Usage(USAGE.into()))?;
-            match args.get(2).map(String::as_str) {
-                Some("show") if args.len() == 4 => VerifierAction::RepairShow {
-                    recovery_id: id.clone(),
-                },
-                Some("decide")
+            match args
+                .get(2)
+                .and_then(|word| model::VerifierRepairVerb::find(word))
+            {
+                Some(model::VerifierRepairVerb::Show) if args.len() == 4 => {
+                    VerifierAction::RepairShow {
+                        recovery_id: id.clone(),
+                    }
+                }
+                Some(model::VerifierRepairVerb::Decide)
                     if args.len() == 6 && args[4] == "--input" && !is_flag_shaped(&args[5]) =>
                 {
                     VerifierAction::RepairDecide {
@@ -3307,7 +3293,7 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
                         input: args[5].clone(),
                     }
                 }
-                Some("satisfy")
+                Some(model::VerifierRepairVerb::Satisfy)
                     if args.len() == 6 && args[4] == "--input" && !is_flag_shaped(&args[5]) =>
                 {
                     VerifierAction::RepairSatisfy {
@@ -3315,12 +3301,16 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
                         input: args[5].clone(),
                     }
                 }
-                _ => return Err(AppError::Usage(USAGE.into())),
+                None
+                | Some(model::VerifierRepairVerb::Show)
+                | Some(model::VerifierRepairVerb::Decide)
+                | Some(model::VerifierRepairVerb::Satisfy) => {
+                    return Err(AppError::Usage(USAGE.into()));
+                }
             }
         }
-        "gate-config" => {
-            const USAGE: &str =
-                "usage: story verifier gate-config <checkout> <base> <head> <tree> --json";
+        Some(model::VerifierVerb::GateConfig) => {
+            const USAGE: &str = crate::cli::model::usage::U44;
             if args.len() != 6 {
                 return Err(AppError::Usage(USAGE.into()));
             }
@@ -3331,11 +3321,11 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
                 tree: args[5].clone(),
             }
         }
-        "status" | "start" | "stop" | "drain" => {
-            expect_no_more(
-                &args[2..],
-                "usage: story verifier <status|start|stop|drain>",
-            )?;
+        Some(model::VerifierVerb::Status)
+        | Some(model::VerifierVerb::Start)
+        | Some(model::VerifierVerb::Stop)
+        | Some(model::VerifierVerb::Drain) => {
+            expect_no_more(&args[2..], crate::cli::model::usage::U45)?;
             match action {
                 "status" => VerifierAction::Status,
                 "start" => VerifierAction::Start,
@@ -3343,7 +3333,7 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
                 _ => VerifierAction::Drain,
             }
         }
-        "ack" => {
+        Some(model::VerifierVerb::Ack) => {
             let Some(incident_id) = args.get(2).filter(|word| !is_flag_shaped(word)) else {
                 return Err(AppError::Usage(format!(
                     "`story verifier ack` needs the incident id the halt comment printed\n{VERIFIER_ACK_USAGE}"
@@ -3361,11 +3351,12 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
                 }
             }
         }
-        _ => {
-            return Err(AppError::Usage(
-                "usage: story verifier <status|evidence|landing|start|stop|drain|ack|repair>"
-                    .to_string(),
-            ));
+        None
+        | Some(model::VerifierVerb::Status)
+        | Some(model::VerifierVerb::Start)
+        | Some(model::VerifierVerb::Stop)
+        | Some(model::VerifierVerb::Drain) => {
+            return Err(AppError::Usage(crate::cli::model::usage::U39.to_string()));
         }
     };
     Ok(Invocation::Verifier { action })
@@ -3410,7 +3401,7 @@ fn parse_report(args: &[String]) -> Result<Invocation, AppError> {
                 index += 1;
             }
             _ => {
-                return Err(AppError::Usage("usage: story report [--html]".to_string()));
+                return Err(AppError::Usage(crate::cli::model::usage::U46.to_string()));
             }
         }
     }
@@ -3419,7 +3410,7 @@ fn parse_report(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_search(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() < 2 {
-        return Err(AppError::Usage("usage: story search <query>".to_string()));
+        return Err(AppError::Usage(crate::cli::model::usage::U47.to_string()));
     }
     Ok(Invocation::Search {
         query: join_tokens(&args[1..]),
@@ -3428,7 +3419,7 @@ fn parse_search(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_import(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() > 2 {
-        return Err(AppError::Usage("usage: story import [<file>]".to_string()));
+        return Err(AppError::Usage(crate::cli::model::usage::U48.to_string()));
     }
     let file = args.get(1).cloned();
     Ok(Invocation::Import { file })
@@ -3439,7 +3430,7 @@ fn parse_decompose(args: &[String]) -> Result<Invocation, AppError> {
     let mut stdin = false;
     let mut dry_run = false;
     let mut index = 1;
-    let usage = "usage: story decompose <file> [--dry-run] | story decompose --stdin [--dry-run]";
+    let usage = crate::cli::model::usage::U49;
 
     while index < args.len() {
         match args[index].as_str() {
@@ -3473,7 +3464,7 @@ fn parse_decompose(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_import_project(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story import-project <file> [--legacy-links]";
+    let usage = crate::cli::model::usage::U50;
     let mut file = None;
     let mut legacy_links = false;
     let mut index = 1;
@@ -3500,7 +3491,7 @@ fn parse_import_project(args: &[String]) -> Result<Invocation, AppError> {
 /// from inside the repository being migrated; when it is absent the invocation
 /// carries `None` and the dispatcher walks up from the working directory.
 fn parse_migrate(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story migrate [<path>] [--dry-run]";
+    let usage = crate::cli::model::usage::U51;
     let mut path = None;
     let mut dry_run = false;
     let mut index = 1;
@@ -3524,7 +3515,7 @@ fn parse_context(args: &[String]) -> Result<Invocation, AppError> {
     let mut format = None;
     let mut story = None;
     let mut index = 1;
-    let usage = "usage: story load-context [--format markdown|json] [--story <id>]";
+    let usage = crate::cli::model::usage::U52;
     while index < args.len() {
         match args[index].as_str() {
             "--format" => {
@@ -3563,33 +3554,30 @@ fn validate_phase_number(s: &str) -> Result<(), AppError> {
 }
 
 fn parse_phase(args: &[String]) -> Result<Invocation, AppError> {
-    let usage =
-        "usage: story phase list|show <N>|add <id> <N>|remove <id>|create <N> [\"<title>\"]";
+    let usage = crate::cli::model::usage::U53;
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
-    match args[1].as_str() {
-        "list" => {
+    match model::PhaseVerb::find(args[1].as_str()) {
+        Some(model::PhaseVerb::List) => {
             expect_no_more(&args[2..], usage)?;
             Ok(Invocation::Phase {
                 action: PhaseAction::List,
             })
         }
-        "show" => {
+        Some(model::PhaseVerb::Show) => {
             let phase = args
                 .get(2)
-                .ok_or_else(|| AppError::Usage("usage: story phase show <N>".to_string()))?
+                .ok_or_else(|| AppError::Usage(crate::cli::model::usage::U54.to_string()))?
                 .clone();
             validate_phase_number(&phase)?;
             Ok(Invocation::Phase {
                 action: PhaseAction::Show { phase },
             })
         }
-        "add" => {
+        Some(model::PhaseVerb::Add) => {
             if args.len() < 4 {
-                return Err(AppError::Usage(
-                    "usage: story phase add <id> <N>".to_string(),
-                ));
+                return Err(AppError::Usage(crate::cli::model::usage::U55.to_string()));
             }
             validate_phase_number(&args[3])?;
             Ok(Invocation::Phase {
@@ -3599,8 +3587,8 @@ fn parse_phase(args: &[String]) -> Result<Invocation, AppError> {
                 },
             })
         }
-        "remove" => {
-            let remove_usage = "usage: story phase remove <id>";
+        Some(model::PhaseVerb::Remove) => {
+            let remove_usage = crate::cli::model::usage::U56;
             let id = args
                 .get(2)
                 .ok_or_else(|| AppError::Usage(remove_usage.to_string()))?
@@ -3610,12 +3598,10 @@ fn parse_phase(args: &[String]) -> Result<Invocation, AppError> {
                 action: PhaseAction::Remove { id },
             })
         }
-        "create" => {
+        Some(model::PhaseVerb::Create) => {
             let phase = args
                 .get(2)
-                .ok_or_else(|| {
-                    AppError::Usage("usage: story phase create <N> [\"<title>\"]".to_string())
-                })?
+                .ok_or_else(|| AppError::Usage(crate::cli::model::usage::U57.to_string()))?
                 .clone();
             validate_phase_number(&phase)?;
             let title = if args.len() > 3 {
@@ -3627,7 +3613,7 @@ fn parse_phase(args: &[String]) -> Result<Invocation, AppError> {
                 action: PhaseAction::Create { phase, title },
             })
         }
-        _ => Err(AppError::Usage(usage.to_string())),
+        None => Err(AppError::Usage(usage.to_string())),
     }
 }
 
@@ -3636,13 +3622,13 @@ fn parse_type(args: &[String]) -> Result<Invocation, AppError> {
         .get(1)
         .ok_or_else(|| AppError::Usage(TYPE_USAGE.to_string()))?;
 
-    let action = match subcommand.as_str() {
-        "list" => {
+    let action = match model::TypeVerb::find(subcommand.as_str()) {
+        Some(model::TypeVerb::List) => {
             expect_no_more(&args[2..], TYPE_USAGE)?;
             TypeAction::List
         }
 
-        "add" => {
+        Some(model::TypeVerb::Add) => {
             let slug = args
                 .get(2)
                 .cloned()
@@ -3665,7 +3651,7 @@ fn parse_type(args: &[String]) -> Result<Invocation, AppError> {
             }
         }
 
-        "set" => {
+        Some(model::TypeVerb::Set) => {
             let slug = args
                 .get(2)
                 .cloned()
@@ -3704,7 +3690,7 @@ fn parse_type(args: &[String]) -> Result<Invocation, AppError> {
             }
         }
 
-        "remove" => {
+        Some(model::TypeVerb::Remove) => {
             let slug = args
                 .get(2)
                 .cloned()
@@ -3713,26 +3699,26 @@ fn parse_type(args: &[String]) -> Result<Invocation, AppError> {
             TypeAction::Remove { slug }
         }
 
-        _ => return Err(AppError::Usage(TYPE_USAGE.to_string())),
+        None => return Err(AppError::Usage(TYPE_USAGE.to_string())),
     };
 
     Ok(Invocation::Type { action })
 }
 
 fn parse_epic(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story epic list|show <id>|create \"<title>\"|add <epic-id> <story-id>";
+    let usage = crate::cli::model::usage::U58;
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
-    match args[1].as_str() {
-        "list" => {
+    match model::EpicVerb::find(args[1].as_str()) {
+        Some(model::EpicVerb::List) => {
             expect_no_more(&args[2..], usage)?;
             Ok(Invocation::Epic {
                 action: EpicAction::List,
             })
         }
-        "show" => {
-            let show_usage = "usage: story epic show <id>";
+        Some(model::EpicVerb::Show) => {
+            let show_usage = crate::cli::model::usage::U59;
             let id = args
                 .get(2)
                 .ok_or_else(|| AppError::Usage(show_usage.to_string()))?
@@ -3742,24 +3728,20 @@ fn parse_epic(args: &[String]) -> Result<Invocation, AppError> {
                 action: EpicAction::Show { id },
             })
         }
-        "create" => {
+        Some(model::EpicVerb::Create) => {
             if args.len() < 3 {
-                return Err(AppError::Usage(
-                    "usage: story epic create \"<title>\"".to_string(),
-                ));
+                return Err(AppError::Usage(crate::cli::model::usage::U60.to_string()));
             }
             let title = join_tokens(&args[2..]);
             if title.is_empty() {
-                return Err(AppError::Usage(
-                    "usage: story epic create \"<title>\"".to_string(),
-                ));
+                return Err(AppError::Usage(crate::cli::model::usage::U60.to_string()));
             }
             Ok(Invocation::Epic {
                 action: EpicAction::Create { title },
             })
         }
-        "add" => {
-            let add_usage = "usage: story epic add <epic-id> <story-id>";
+        Some(model::EpicVerb::Add) => {
+            let add_usage = crate::cli::model::usage::U61;
             if args.len() < 4 {
                 return Err(AppError::Usage(add_usage.to_string()));
             }
@@ -3771,7 +3753,7 @@ fn parse_epic(args: &[String]) -> Result<Invocation, AppError> {
                 },
             })
         }
-        _ => Err(AppError::Usage(usage.to_string())),
+        None => Err(AppError::Usage(usage.to_string())),
     }
 }
 
@@ -3781,16 +3763,14 @@ fn parse_handoff(args: &[String]) -> Result<Invocation, AppError> {
     while index < args.len() {
         match args[index].as_str() {
             "--since" => {
-                let value = args.get(index + 1).ok_or_else(|| {
-                    AppError::Usage("usage: story handoff [--since <duration>]".to_string())
-                })?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(crate::cli::model::usage::U62.to_string()))?;
                 since = Some(value.clone());
                 index += 2;
             }
             _ => {
-                return Err(AppError::Usage(
-                    "usage: story handoff [--since <duration>]".to_string(),
-                ));
+                return Err(AppError::Usage(crate::cli::model::usage::U62.to_string()));
             }
         }
     }
@@ -3808,9 +3788,9 @@ fn parse_graph(args: &[String]) -> Result<Invocation, AppError> {
             mode: GraphMode::CriticalPath,
         }),
         "--blocked-by" => {
-            let id = args.get(2).ok_or_else(|| {
-                AppError::Usage("usage: story graph --blocked-by <id>".to_string())
-            })?;
+            let id = args
+                .get(2)
+                .ok_or_else(|| AppError::Usage(crate::cli::model::usage::U63.to_string()))?;
             Ok(Invocation::Graph {
                 mode: GraphMode::BlockedBy(id.clone()),
             })
@@ -3818,22 +3798,19 @@ fn parse_graph(args: &[String]) -> Result<Invocation, AppError> {
         "--parallel-groups" => Ok(Invocation::Graph {
             mode: GraphMode::ParallelGroups,
         }),
-        _ => Err(AppError::Usage(
-            "usage: story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]"
-                .to_string(),
-        )),
+        _ => Err(AppError::Usage(crate::cli::model::usage::U64.to_string())),
     }
 }
 
 fn parse_doctor(args: &[String]) -> Result<Invocation, AppError> {
-    if args.len() >= 2 && args[1] == "abandoned" {
+    if args.len() >= 2 && model::DoctorVerb::find(&args[1]) == Some(model::DoctorVerb::Abandoned) {
         return parse_doctor_abandoned(args);
     }
-    if args.len() >= 2 && args[1] == "crashes" {
+    if args.len() >= 2 && model::DoctorVerb::find(&args[1]) == Some(model::DoctorVerb::Crashes) {
         return parse_doctor_crashes(args);
     }
-    if args.len() >= 2 && args[1] == "install" {
-        expect_no_more(&args[2..], "usage: story doctor install")?;
+    if args.len() >= 2 && model::DoctorVerb::find(&args[1]) == Some(model::DoctorVerb::Install) {
+        expect_no_more(&args[2..], crate::cli::model::usage::U65)?;
         return Ok(Invocation::DoctorInstall);
     }
 
@@ -3845,23 +3822,28 @@ fn parse_doctor(args: &[String]) -> Result<Invocation, AppError> {
         return Ok(Invocation::Doctor { fix: true });
     }
 
-    Err(AppError::Usage(
-        "usage: story doctor [--fix] | install | abandoned [clear (--all | <request-id>)] \
-         | crashes [clear (--all | <crash-id>)]"
-            .to_string(),
-    ))
+    Err(AppError::Usage(crate::cli::model::usage::U66.to_string()))
 }
 
 fn parse_doctor_abandoned(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story doctor abandoned [clear (--all | <request-id>)]";
+    let usage = crate::cli::model::usage::U67;
     let action = match &args[2..] {
         [] => AbandonedAction::List,
-        [clear, target] if clear == "clear" && target == "--all" => {
+        [clear, target]
+            if model::DoctorAbandonedVerb::find(clear)
+                == Some(model::DoctorAbandonedVerb::Clear)
+                && target == "--all" =>
+        {
             AbandonedAction::Clear { request_id: None }
         }
-        [clear, id] if clear == "clear" => AbandonedAction::Clear {
-            request_id: Some(id.clone()),
-        },
+        [clear, id]
+            if model::DoctorAbandonedVerb::find(clear)
+                == Some(model::DoctorAbandonedVerb::Clear) =>
+        {
+            AbandonedAction::Clear {
+                request_id: Some(id.clone()),
+            }
+        }
         // `clear` with nothing after it is refused rather than treated as
         // `--all`: forgetting the whole ledger should never be the default
         // reading of a token a user might have forgotten to finish typing.
@@ -3871,15 +3853,22 @@ fn parse_doctor_abandoned(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_doctor_crashes(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story doctor crashes [clear (--all | <crash-id>)]";
+    let usage = crate::cli::model::usage::U68;
     let action = match &args[2..] {
         [] => CrashesAction::List,
-        [clear, target] if clear == "clear" && target == "--all" => {
+        [clear, target]
+            if model::DoctorCrashesVerb::find(clear) == Some(model::DoctorCrashesVerb::Clear)
+                && target == "--all" =>
+        {
             CrashesAction::Clear { crash_id: None }
         }
-        [clear, id] if clear == "clear" => CrashesAction::Clear {
-            crash_id: Some(id.clone()),
-        },
+        [clear, id]
+            if model::DoctorCrashesVerb::find(clear) == Some(model::DoctorCrashesVerb::Clear) =>
+        {
+            CrashesAction::Clear {
+                crash_id: Some(id.clone()),
+            }
+        }
         // `clear` with nothing after it is refused rather than treated as
         // `--all`, the same reasoning `parse_doctor_abandoned` uses.
         _ => return Err(AppError::Usage(usage.to_string())),
@@ -3888,7 +3877,7 @@ fn parse_doctor_crashes(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_update(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story update [--check] [--force] [--source HOST/OWNER/REPO]";
+    let usage = crate::cli::model::usage::U69;
     let mut check = false;
     let mut force = false;
     let mut source = None;
@@ -3929,31 +3918,31 @@ fn parse_update(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_hooks(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story hooks install|uninstall|list|test <event_type>";
-    let test_usage = "usage: story hooks test <event_type>";
+    let usage = crate::cli::model::usage::U70;
+    let test_usage = crate::cli::model::usage::U71;
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
-    match args[1].as_str() {
-        "install" => {
+    match model::HooksVerb::find(args[1].as_str()) {
+        Some(model::HooksVerb::Install) => {
             expect_no_more(&args[2..], usage)?;
             Ok(Invocation::Hooks {
                 action: HooksAction::Install,
             })
         }
-        "uninstall" => {
+        Some(model::HooksVerb::Uninstall) => {
             expect_no_more(&args[2..], usage)?;
             Ok(Invocation::Hooks {
                 action: HooksAction::Uninstall,
             })
         }
-        "list" => {
+        Some(model::HooksVerb::List) => {
             expect_no_more(&args[2..], usage)?;
             Ok(Invocation::Hooks {
                 action: HooksAction::List,
             })
         }
-        "test" => {
+        Some(model::HooksVerb::Test) => {
             let event_type = args
                 .get(2)
                 .ok_or_else(|| AppError::Usage(test_usage.to_string()))?;
@@ -3964,21 +3953,20 @@ fn parse_hooks(args: &[String]) -> Result<Invocation, AppError> {
                 },
             })
         }
-        other => Err(AppError::Usage(format!("unknown hooks action: {other}"))),
+        None => Err(AppError::Usage(format!(
+            "unknown hooks action: {}",
+            args[1]
+        ))),
     }
 }
 
 fn parse_scaffold(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 2 {
-        return Err(AppError::Usage(
-            "usage: story scaffold agents-md|claude-md|cursor-rules".to_string(),
-        ));
+        return Err(AppError::Usage(crate::cli::model::usage::U72.to_string()));
     }
     let kind = args[1].clone();
-    if kind != "agents-md" && kind != "claude-md" && kind != "cursor-rules" {
-        return Err(AppError::Usage(
-            "usage: story scaffold agents-md|claude-md|cursor-rules".to_string(),
-        ));
+    if model::ScaffoldVerb::find(&kind).is_none() {
+        return Err(AppError::Usage(crate::cli::model::usage::U72.to_string()));
     }
     Ok(Invocation::Scaffold { kind })
 }
@@ -3986,7 +3974,7 @@ fn parse_scaffold(args: &[String]) -> Result<Invocation, AppError> {
 fn parse_commit_sync(args: &[String]) -> Result<Invocation, AppError> {
     let mut since = None;
     let mut index = 1;
-    let usage = "usage: story commit-sync [--since <duration>]";
+    let usage = crate::cli::model::usage::U73;
     while index < args.len() {
         match args[index].as_str() {
             "--since" => {
@@ -4005,7 +3993,7 @@ fn parse_commit_sync(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_link_pr(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story link-pr <id> <url> [--no-close-on-merge]";
+    let usage = crate::cli::model::usage::U74;
     if args.len() < 3 || args.len() > 4 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -4023,9 +4011,7 @@ fn parse_link_pr(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_unlink_pr(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 3 {
-        return Err(AppError::Usage(
-            "usage: story unlink-pr <id> <url>".to_string(),
-        ));
+        return Err(AppError::Usage(crate::cli::model::usage::U75.to_string()));
     }
     Ok(Invocation::UnlinkPr {
         id: args[1].clone(),
@@ -4033,8 +4019,7 @@ fn parse_unlink_pr(args: &[String]) -> Result<Invocation, AppError> {
     })
 }
 
-const ATTACHMENT_USAGE: &str = "usage: story attachment add <id> <path> [--name <text>] | \
-    list <id> | remove <id> <n> | save <id> <n> <path>";
+const ATTACHMENT_USAGE: &str = crate::cli::model::usage::U76;
 
 /// `story attachment add|list|remove|save` (SH-315).
 fn parse_attachment(args: &[String]) -> Result<Invocation, AppError> {
@@ -4042,8 +4027,8 @@ fn parse_attachment(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() < 2 {
         return Err(usage());
     }
-    match args[1].as_str() {
-        "add" => {
+    match model::AttachmentVerb::find(args[1].as_str()) {
+        Some(model::AttachmentVerb::Add) => {
             let mut positionals: Vec<String> = Vec::new();
             let mut name = None;
             let mut index = 2;
@@ -4071,14 +4056,14 @@ fn parse_attachment(args: &[String]) -> Result<Invocation, AppError> {
                 },
             })
         }
-        "list" => {
+        Some(model::AttachmentVerb::List) => {
             let id = args.get(2).ok_or_else(usage)?.clone();
             expect_no_more(&args[3..], ATTACHMENT_USAGE)?;
             Ok(Invocation::Attachment {
                 action: AttachmentAction::List { id },
             })
         }
-        "remove" => {
+        Some(model::AttachmentVerb::Remove) => {
             let id = args.get(2).ok_or_else(usage)?.clone();
             let attachment_id = parse_attachment_id(args.get(3))?;
             expect_no_more(&args[4..], ATTACHMENT_USAGE)?;
@@ -4086,7 +4071,7 @@ fn parse_attachment(args: &[String]) -> Result<Invocation, AppError> {
                 action: AttachmentAction::Remove { id, attachment_id },
             })
         }
-        "save" => {
+        Some(model::AttachmentVerb::Save) => {
             let id = args.get(2).ok_or_else(usage)?.clone();
             let attachment_id = parse_attachment_id(args.get(3))?;
             let path = args.get(4).ok_or_else(usage)?.clone();
@@ -4099,7 +4084,7 @@ fn parse_attachment(args: &[String]) -> Result<Invocation, AppError> {
                 },
             })
         }
-        _ => Err(usage()),
+        None => Err(usage()),
     }
 }
 
@@ -4123,7 +4108,7 @@ fn parse_attachment_id(raw: Option<&String>) -> Result<u32, AppError> {
 
 fn parse_pr_check(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() > 2 {
-        return Err(AppError::Usage("usage: story pr-check [<id>]".to_string()));
+        return Err(AppError::Usage(crate::cli::model::usage::U77.to_string()));
     }
     Ok(Invocation::PrCheck {
         id: args.get(1).cloned(),
@@ -4150,7 +4135,7 @@ fn parse_help(args: &[String]) -> Result<Invocation, AppError> {
     // second (SH-357).
     expect_no_more(
         positional.get(1..).unwrap_or_default(),
-        "usage: story help [<topic>] [--all|--compact]",
+        crate::cli::model::usage::U78,
     )?;
 
     let has_compact = flags.contains(&"--compact");
@@ -4174,44 +4159,55 @@ fn parse_help(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
-    const USAGE: &str = "usage: story plugin install|uninstall <claude|codex> | story plugin reinstall | story plugin run codex -- <helper-command> [args...]";
+    const USAGE: &str = crate::cli::model::usage::U79;
     let Some(action) = args.get(1).map(String::as_str) else {
         return Err(AppError::Usage(USAGE.to_string()));
     };
-    match action {
-        "install" | "uninstall" if args.len() != 3 => Err(AppError::Usage(USAGE.to_string())),
-        "install" => Ok(Invocation::Plugin {
+    match model::PluginVerb::find(action) {
+        Some(model::PluginVerb::Install) | Some(model::PluginVerb::Uninstall)
+            if args.len() != 3 =>
+        {
+            Err(AppError::Usage(USAGE.to_string()))
+        }
+        Some(model::PluginVerb::Install) => Ok(Invocation::Plugin {
             action: PluginAction::Install {
                 target: args[2].clone(),
             },
         }),
-        "uninstall" => Ok(Invocation::Plugin {
+        Some(model::PluginVerb::Uninstall) => Ok(Invocation::Plugin {
             action: PluginAction::Uninstall {
                 target: args[2].clone(),
             },
         }),
-        "reinstall" if args.len() != 2 => Err(AppError::Usage(USAGE.to_string())),
-        "reinstall" => Ok(Invocation::Plugin {
+        Some(model::PluginVerb::Reinstall) if args.len() != 2 => {
+            Err(AppError::Usage(USAGE.to_string()))
+        }
+        Some(model::PluginVerb::Reinstall) => Ok(Invocation::Plugin {
             action: PluginAction::Reinstall,
         }),
-        "run" if args.len() < 4 => Err(AppError::Usage(USAGE.to_string())),
-        "run" => Ok(Invocation::Plugin {
+        Some(model::PluginVerb::Run) if args.len() < 4 => Err(AppError::Usage(USAGE.to_string())),
+        Some(model::PluginVerb::Run) => Ok(Invocation::Plugin {
             action: PluginAction::Run {
                 target: args[2].clone(),
                 args: args[3..].to_vec(),
             },
         }),
-        other => Err(AppError::Usage(format!(
-            "unknown plugin action: {other}. {USAGE}"
+        None => Err(AppError::Usage(format!(
+            "unknown plugin action: {}. {USAGE}",
+            action
         ))),
     }
 }
 
 /// `story store new <path> | backup [--label <text>]`.
 fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story store new <path> | story store backup [--label <text>]";
-    let action = match args.get(1).map(String::as_str) {
-        Some("new") => {
+    let usage = crate::cli::model::usage::U80;
+    let action = match args
+        .get(1)
+        .map(String::as_str)
+        .and_then(model::StoreVerb::find)
+    {
+        Some(model::StoreVerb::New) => {
             let action = match args.get(2) {
                 Some(path) if !path.is_empty() && !path.starts_with('-') => {
                     StoreAction::New { path: path.clone() }
@@ -4228,7 +4224,7 @@ fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
             }
             action
         }
-        Some("backup") => {
+        Some(model::StoreVerb::Backup) => {
             let mut label = None;
             let mut index = 2;
             while index < args.len() {
@@ -4258,13 +4254,12 @@ fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story daemon start [--port <PORT>] | restart | stop [--force] | status | \
-                 install [--this-binary] | uninstall | token | gc [--force] | logs [--follow] [--directory <PATH>]";
+    let usage = crate::cli::model::usage::U81;
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
-    let action = match args[1].as_str() {
-        "logs" => {
+    let action = match model::DaemonVerb::find(args[1].as_str()) {
+        Some(model::DaemonVerb::Logs) => {
             let mut follow = false;
             let mut directory = None;
             let mut rest = args[2..].iter();
@@ -4281,46 +4276,46 @@ fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
             }
             DaemonAction::Logs { follow, directory }
         }
-        "start" => DaemonAction::Start {
+        Some(model::DaemonVerb::Start) => DaemonAction::Start {
             port: parse_port_flag(&args[2..], usage)?,
         },
-        "restart" => {
+        Some(model::DaemonVerb::Restart) => {
             expect_no_more(&args[2..], usage)?;
             DaemonAction::Restart
         }
         // Spelled as a flag rather than a subcommand because it is not one a
         // user runs: it is what the spawner execs, and what a launchd agent
         // runs, and both of those are storyhook talking to itself.
-        "--serve" => {
+        Some(model::DaemonVerb::Serve) => {
             let (port, owner) = parse_serve_flags(&args[2..], usage)?;
             DaemonAction::Serve { port, owner }
         }
-        "stop" => DaemonAction::Stop {
+        Some(model::DaemonVerb::Stop) => DaemonAction::Stop {
             force: match &args[2..] {
                 [] => false,
                 [flag] if flag == "--force" => true,
                 _ => return Err(AppError::Usage(usage.to_string())),
             },
         },
-        "gc" => DaemonAction::Gc {
+        Some(model::DaemonVerb::Gc) => DaemonAction::Gc {
             force: match &args[2..] {
                 [] => false,
                 [flag] if flag == "--force" => true,
                 _ => return Err(AppError::Usage(usage.to_string())),
             },
         },
-        "status" => {
+        Some(model::DaemonVerb::Status) => {
             expect_no_more(&args[2..], usage)?;
             DaemonAction::Status
         }
-        "install" => {
+        Some(model::DaemonVerb::Install) => {
             let this_binary = matches!(&args[2..], [flag] if flag == "--this-binary");
             if !this_binary {
                 expect_no_more(&args[2..], usage)?;
             }
             DaemonAction::Install { this_binary }
         }
-        "uninstall" => {
+        Some(model::DaemonVerb::Uninstall) => {
             expect_no_more(&args[2..], usage)?;
             DaemonAction::Uninstall
         }
@@ -4328,11 +4323,11 @@ fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
         // `story token new|list|revoke`; anything written after `daemon token`
         // is reaching for one of those, and printing the master credential
         // instead is the worst available answer (SH-357).
-        "token" => {
+        Some(model::DaemonVerb::Token) => {
             expect_no_more(&args[2..], usage)?;
             DaemonAction::Token
         }
-        _ => return Err(AppError::Usage(usage.to_string())),
+        None => return Err(AppError::Usage(usage.to_string())),
     };
     Ok(Invocation::Daemon { action })
 }
@@ -4443,13 +4438,13 @@ fn parse_serve_flags(
 }
 
 fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story web start [--port <PORT>] | stop | status | open | address";
+    let usage = crate::cli::model::usage::U82;
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
 
-    match args[1].as_str() {
-        "start" => {
+    match model::WebVerb::find(args[1].as_str()) {
+        Some(model::WebVerb::Start) => {
             let port = parse_port_flag(&args[2..], usage)?;
             // Refused here and accepted on `--serve` below, which is not an
             // inconsistency: `--serve` is what the spawner execs, and "let the
@@ -4463,25 +4458,25 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
                 action: WebAction::Start { port },
             })
         }
-        "stop" => {
+        Some(model::WebVerb::Stop) => {
             expect_no_more(&args[2..], usage)?;
             Ok(Invocation::Web {
                 action: WebAction::Stop,
             })
         }
-        "status" => {
+        Some(model::WebVerb::Status) => {
             expect_no_more(&args[2..], usage)?;
             Ok(Invocation::Web {
                 action: WebAction::Status,
             })
         }
-        "open" => {
+        Some(model::WebVerb::Open) => {
             expect_no_more(&args[2..], usage)?;
             Ok(Invocation::Web {
                 action: WebAction::Open,
             })
         }
-        "address" => {
+        Some(model::WebVerb::Address) => {
             expect_no_more(&args[2..], usage)?;
             Ok(Invocation::Web {
                 action: WebAction::Address,
@@ -4492,19 +4487,19 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
         // no single command for "every token this daemon has issued" — naming
         // one deliberately, so revoking a token you did not mean to takes a
         // name, not a blast radius.
-        "revoke" => Err(AppError::Usage(
+        Some(model::WebVerb::Revoke) => Err(AppError::Usage(
             "`story web revoke` is retired: named tokens replaced the scoped dashboard \
              capability it used to end. Run `story token list` to see what is live, then \
              `story token revoke <name>` to end one."
                 .to_string(),
         )),
         // Internal: `story web --serve [--port N]`, what the spawner execs.
-        "--serve" => Ok(Invocation::Web {
+        Some(model::WebVerb::Serve) => Ok(Invocation::Web {
             action: WebAction::Serve {
                 port: parse_port_flag(&args[2..], usage)?,
             },
         }),
-        _ => Err(AppError::Usage(usage.to_string())),
+        None => Err(AppError::Usage(usage.to_string())),
     }
 }
 
@@ -4548,12 +4543,12 @@ fn validate_token_name(raw: &str) -> Result<&str, AppError> {
 
 /// `story token new <name> | list | revoke <name>` (SH-255).
 fn parse_token(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story token new <name> | story token list | story token revoke <name>";
+    let usage = crate::cli::model::usage::U83;
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
-    match args[1].as_str() {
-        "new" => {
+    match model::TokenVerb::find(args[1].as_str()) {
+        Some(model::TokenVerb::New) => {
             let Some(name) = args.get(2) else {
                 return Err(AppError::Usage(format!(
                     "{usage}\n\n`token new` names the token to mint."
@@ -4568,7 +4563,7 @@ fn parse_token(args: &[String]) -> Result<Invocation, AppError> {
                 },
             })
         }
-        "list" => {
+        Some(model::TokenVerb::List) => {
             if args.len() > 2 {
                 return Err(AppError::Usage(usage.to_string()));
             }
@@ -4576,7 +4571,7 @@ fn parse_token(args: &[String]) -> Result<Invocation, AppError> {
                 action: TokenAction::List,
             })
         }
-        "revoke" => {
+        Some(model::TokenVerb::Revoke) => {
             let Some(name) = args.get(2) else {
                 return Err(AppError::Usage(format!(
                     "{usage}\n\n`token revoke` names the token to end."
@@ -4591,15 +4586,16 @@ fn parse_token(args: &[String]) -> Result<Invocation, AppError> {
                 },
             })
         }
-        other => Err(AppError::Usage(format!(
-            "unknown token action: {other}. {usage}"
+        None => Err(AppError::Usage(format!(
+            "unknown token action: {}. {usage}",
+            args[1]
         ))),
     }
 }
 
 fn parse_show(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 2 {
-        return Err(AppError::Usage("usage: story show <id>".to_string()));
+        return Err(AppError::Usage(crate::cli::model::usage::U84.to_string()));
     }
     Ok(Invocation::Show {
         id: args[1].clone(),
@@ -4608,7 +4604,7 @@ fn parse_show(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_log(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 2 {
-        return Err(AppError::Usage("usage: story log <id>".to_string()));
+        return Err(AppError::Usage(crate::cli::model::usage::U85.to_string()));
     }
     Ok(Invocation::Log {
         id: args[1].clone(),
@@ -4617,9 +4613,7 @@ fn parse_log(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_comment(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() < 3 {
-        return Err(AppError::Usage(
-            "usage: story comment <id> \"<text>\"".to_string(),
-        ));
+        return Err(AppError::Usage(crate::cli::model::usage::U86.to_string()));
     }
     Ok(Invocation::Comment {
         id: args[1].clone(),
@@ -4628,8 +4622,7 @@ fn parse_comment(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
-    let usage =
-        "usage: story move <id> <state> [--if-state <expected>] [--reason <text>] [\"<comment>\"]";
+    let usage = crate::cli::model::usage::U87;
     if args.len() < 3 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -4715,7 +4708,7 @@ fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
 /// reason travels as the comment rather than as `--reason`, because
 /// `set_state` refuses an `awaiting` reason on a CLOSED target.
 fn parse_close(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story close <id> \"<reason>\"";
+    let usage = crate::cli::model::usage::U88;
     if args.len() < 3 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -4732,9 +4725,8 @@ fn parse_close(args: &[String]) -> Result<Invocation, AppError> {
     })
 }
 
-const BLOCK_USAGE: &str = "usage: story block <id> --on <blocker> [--on <blocker>]... \
-                          [\"<reason>\"] | story block <id> \"<reason>\"";
-const UNBLOCK_USAGE: &str = "usage: story unblock <id> [--on <blocker>]...";
+const BLOCK_USAGE: &str = crate::cli::model::usage::U89;
+const UNBLOCK_USAGE: &str = crate::cli::model::usage::U90;
 
 /// `story block <id> --on <blocker> [--on <blocker>]... ["<reason>"]`, or
 /// `story block <id> "<reason>"` (SH-398).
@@ -4794,9 +4786,7 @@ fn parse_unblock(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_prioritize(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 3 {
-        return Err(AppError::Usage(
-            "usage: story prioritize <id> <level>".to_string(),
-        ));
+        return Err(AppError::Usage(crate::cli::model::usage::U91.to_string()));
     }
     Ok(Invocation::SetPriority {
         id: args[1].clone(),
@@ -4806,9 +4796,7 @@ fn parse_prioritize(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_label(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 3 {
-        return Err(AppError::Usage(
-            "usage: story label <id> <labels-csv>".to_string(),
-        ));
+        return Err(AppError::Usage(crate::cli::model::usage::U92.to_string()));
     }
     let add = normalize_labels([&args[2]]);
     Ok(Invocation::SetLabels {
@@ -4820,9 +4808,7 @@ fn parse_label(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_unlabel(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 3 {
-        return Err(AppError::Usage(
-            "usage: story unlabel <id> <labels-csv>".to_string(),
-        ));
+        return Err(AppError::Usage(crate::cli::model::usage::U93.to_string()));
     }
     let remove = normalize_labels([&args[2]]);
     Ok(Invocation::SetLabels {
@@ -4835,8 +4821,8 @@ fn parse_unlabel(args: &[String]) -> Result<Invocation, AppError> {
 fn parse_reopen_verb(args: &[String]) -> Result<Invocation, AppError> {
     let id = args
         .get(1)
-        .ok_or_else(|| AppError::Usage("usage: story reopen <id>".to_string()))?;
-    expect_no_more(&args[2..], "usage: story reopen <id>")?;
+        .ok_or_else(|| AppError::Usage(crate::cli::model::usage::U94.to_string()))?;
+    expect_no_more(&args[2..], crate::cli::model::usage::U94)?;
     Ok(Invocation::Reopen { id: id.clone() })
 }
 
@@ -4852,7 +4838,7 @@ fn parse_purge_verb(_args: &[String]) -> Result<Invocation, AppError> {
 /// `story archive <id>` — the "Archive" action (SH-43).
 fn parse_hide(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 2 {
-        return Err(AppError::Usage("usage: story archive <id>".to_string()));
+        return Err(AppError::Usage(crate::cli::model::usage::U95.to_string()));
     }
     Ok(Invocation::Hide {
         id: args[1].clone(),
@@ -4862,7 +4848,7 @@ fn parse_hide(args: &[String]) -> Result<Invocation, AppError> {
 /// `story unarchive <id>` — the inverse of [`parse_hide`].
 fn parse_unhide(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 2 {
-        return Err(AppError::Usage("usage: story unarchive <id>".to_string()));
+        return Err(AppError::Usage(crate::cli::model::usage::U96.to_string()));
     }
     Ok(Invocation::Unhide {
         id: args[1].clone(),
@@ -4874,7 +4860,7 @@ fn parse_unhide(args: &[String]) -> Result<Invocation, AppError> {
 /// answers with what it would hide and writes
 /// nothing.
 fn parse_hide_state(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story archive-state <state> [--force]";
+    let usage = crate::cli::model::usage::U97;
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -4890,7 +4876,7 @@ fn parse_hide_state(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_delete_verb(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story delete <id> [--force]";
+    let usage = crate::cli::model::usage::U98;
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -4907,9 +4893,7 @@ fn parse_delete_verb(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_relate(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 4 {
-        return Err(AppError::Usage(
-            "usage: story relate <a> <relationship-type> <b>".to_string(),
-        ));
+        return Err(AppError::Usage(crate::cli::model::usage::U99.to_string()));
     }
     Ok(Invocation::Relate {
         a: args[1].clone(),
@@ -4921,9 +4905,7 @@ fn parse_relate(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_unrelate(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 4 {
-        return Err(AppError::Usage(
-            "usage: story unrelate <a> <relationship-type> <b>".to_string(),
-        ));
+        return Err(AppError::Usage(crate::cli::model::usage::U100.to_string()));
     }
     Ok(Invocation::Relate {
         a: args[1].clone(),
@@ -4935,9 +4917,7 @@ fn parse_unrelate(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() < 3 {
-        return Err(AppError::Usage(
-            "usage: story set <id> [--field value ...]".to_string(),
-        ));
+        return Err(AppError::Usage(crate::cli::model::usage::U101.to_string()));
     }
     let id = args[1].clone();
     let mut title = None;
@@ -4951,7 +4931,7 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
     let mut story_type = None;
     let mut description = None;
     let mut index = 2;
-    let usage = "usage: story set <id> [--title \"<title>\"] [--state <slug>] [--priority <level>] [--complexity low|medium|high] [--labels \"<csv>\"] [--blocked \"<reason>\"] [--unblocked] [--json \"<json>\"] [--type <slug>] [--description \"<text>\"]";
+    let usage = crate::cli::model::usage::U102;
 
     while index < args.len() {
         match args[index].as_str() {
