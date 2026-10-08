@@ -4877,3 +4877,91 @@ fn private_repair_admission_precedes_gate_and_fails_closed() {
         assert_eq!(args[11], "--json");
     }
 }
+
+#[test]
+fn sh842_durable_refusal_is_recoverable_without_repeating_the_merge() {
+    let (repo, head, tree) = certified_landing_fixture();
+    let script = repo.path().join("bin/gh");
+    let original = fs::read_to_string(&script).unwrap();
+    let insertion = r#"
+if [ "${1:-}" = pr ] && [ "${2:-}" = merge ]; then
+    printf '%s\n' 'HTTP 405: Required check missing (https://api.github.com/graphql)' >&2
+    exit 1
+fi
+"#;
+    fs::write(
+        &script,
+        original.replacen(
+            "if [ \"${1:-}\" != pr ]",
+            &format!("{insertion}\nif [ \"${{1:-}}\" != pr ]"),
+            1,
+        ),
+    )
+    .unwrap();
+    let first = public_payload(&repo.landing_phase("attempt", &head, &tree));
+    assert_eq!(first["result"], "refused", "{first}");
+    let recovered = public_payload(&repo.landing_phase("recover", &head, &tree));
+    assert_eq!(recovered["result"], "refused", "{recovered}");
+    let calls = fs::read_to_string(repo.path().join("fake-gh-state/argv")).unwrap();
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|line| line.starts_with("pr merge"))
+            .count(),
+        1
+    );
+    assert!(
+        calls
+            .lines()
+            .filter(|line| line.starts_with("pr merge"))
+            .all(|line| line.contains("--merge --match-head-commit") && !line.contains("--admin"))
+    );
+    let receipt = repo.path().join("landing.attempted.refused");
+    let valid = fs::read(&receipt).unwrap();
+    for data in [
+        b"{".to_vec(),
+        String::from_utf8(valid.clone())
+            .unwrap()
+            .replace(&head, &"a".repeat(40))
+            .into_bytes(),
+    ] {
+        fs::write(&receipt, data).unwrap();
+        let uncertain = public_payload(&repo.landing_phase("recover", &head, &tree));
+        assert_eq!(uncertain["result"], "uncertain", "{uncertain}");
+    }
+}
+
+#[test]
+fn sh842_transport_loss_does_not_become_a_definitive_refusal() {
+    let (repo, head, tree) = certified_landing_fixture();
+    let script = repo.path().join("bin/gh");
+    let original = fs::read_to_string(&script).unwrap();
+    let insertion = r#"
+if [ "${1:-}" = pr ] && [ "${2:-}" = merge ]; then
+    printf '%s\n' 'Post https://api.github.com/graphql: connection reset; HTTP 405 is only a quoted diagnostic' >&2
+    exit 1
+fi
+"#;
+    fs::write(
+        &script,
+        original.replacen(
+            "if [ \"${1:-}\" != pr ]",
+            &format!("{insertion}\nif [ \"${{1:-}}\" != pr ]"),
+            1,
+        ),
+    )
+    .unwrap();
+    for mode in ["attempt", "recover"] {
+        let result = public_payload(&repo.landing_phase(mode, &head, &tree));
+        assert_eq!(result["result"], "uncertain", "{result}");
+    }
+    assert!(!repo.path().join("landing.attempted.refused").exists());
+    let calls = fs::read_to_string(repo.path().join("fake-gh-state/argv")).unwrap();
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|line| line.starts_with("pr merge"))
+            .count(),
+        1
+    );
+}

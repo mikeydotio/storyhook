@@ -2818,6 +2818,8 @@ Examples:
             "verifier",
             r#"story verifier status
 story verifier evidence <story-id> [--json]
+story verifier landing show [--json]
+story verifier landing release <intent-id> --reason <reason> [--json]
 story verifier start
 story verifier stop
 story verifier drain
@@ -2828,6 +2830,16 @@ story verifier repair decide <recovery-id> --input <json-file>
 story verifier repair satisfy <recovery-id> --input <json-file>
 
 Inspect and control this project's centralized verifier.
+
+  landing show lists pending intents for this project, including batch bindings.
+  landing release is an operator-only recovery for an exact intent id. It refuses
+  while the project owns active verification, while another release is running,
+  or when GitHub is unavailable, reports MERGED, or reports a different head.
+  It reads the batch PR for a batch member and releases every remaining member
+  together. Every affected story records the reason and observed remote state.
+  Stories stay Verifying; no gate, completion, reset or remote mutation occurs.
+  OPEN is only an observation: an earlier remote request may still complete.
+  The reason records the operator's decision to release that uncertainty.
 
   evidence reads retained admission, execution and submission costs. It works
   without a live owner. Queue time is separate from the inclusive 900-second

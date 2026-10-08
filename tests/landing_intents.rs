@@ -64,51 +64,54 @@ fn transient_human_only_rejects_stale_landing_admission() {
     ));
 }
 
-#[test]
-fn external_landing_evidence_cannot_prevent_recording_the_outcome() {
-    struct EvidenceActuator(LandingOutcome);
-    impl VerificationActuator for EvidenceActuator {
-        fn submit(
-            &self,
-            _: &VerificationCandidate,
-        ) -> Result<
-            storyhook::domain::landing::SubmissionOutcome,
-            storyhook::daemon::verification::SubmissionFailure,
-        > {
-            panic!("linked fixture does not submit")
-        }
-        fn verify(&self, _: &VerificationCandidate, _: &PrLink) -> VerificationOutcome {
-            let certificate = certification();
-            VerificationOutcome::Certified {
-                head: certificate.head,
-                tree: certificate.tree,
-                gate: certificate.gate,
-                detail: "Don't utilize this gate output as authored prose.".into(),
-            }
-        }
-        fn land(&self, _: &VerificationCandidate, _: &LandingIntent) -> LandingOutcome {
-            self.0.clone()
-        }
-        fn recover_landing(&self, _: &VerificationCandidate, _: &LandingIntent) -> LandingOutcome {
-            self.0.clone()
-        }
-        fn notify(&self, _: &VerificationCandidate, _: &str) -> Result<NotifyDelivery, AppError> {
-            panic!("landing evidence must not return work to an agent")
-        }
-        fn redispatch(&self, _: &VerificationCandidate, _: &ResumePlan) -> Result<(), AppError> {
-            panic!("landing evidence must not redispatch work")
-        }
-        fn reap(&self, _: &VerificationCandidate) -> Result<(), AppError> {
-            Ok(())
+struct EvidenceActuator(LandingOutcome);
+impl VerificationActuator for EvidenceActuator {
+    fn submit(
+        &self,
+        _: &VerificationCandidate,
+    ) -> Result<
+        storyhook::domain::landing::SubmissionOutcome,
+        storyhook::daemon::verification::SubmissionFailure,
+    > {
+        panic!("linked fixture does not submit")
+    }
+    fn verify(&self, _: &VerificationCandidate, _: &PrLink) -> VerificationOutcome {
+        let certificate = certification();
+        VerificationOutcome::Certified {
+            head: certificate.head,
+            tree: certificate.tree,
+            gate: certificate.gate,
+            detail: "Don't utilize this gate output as authored prose.".into(),
         }
     }
+    fn land(&self, _: &VerificationCandidate, _: &LandingIntent) -> LandingOutcome {
+        self.0.clone()
+    }
+    fn recover_landing(&self, _: &VerificationCandidate, _: &LandingIntent) -> LandingOutcome {
+        self.0.clone()
+    }
+    fn notify(&self, _: &VerificationCandidate, _: &str) -> Result<NotifyDelivery, AppError> {
+        panic!("landing evidence must not return work to an agent")
+    }
+    fn redispatch(&self, _: &VerificationCandidate, _: &ResumePlan) -> Result<(), AppError> {
+        panic!("landing evidence must not redispatch work")
+    }
+    fn reap(&self, _: &VerificationCandidate) -> Result<(), AppError> {
+        Ok(())
+    }
+}
 
+#[test]
+fn external_landing_evidence_cannot_prevent_recording_the_outcome() {
     let evidence = "Don't utilize this diagnostic as authored prose.\n```raw\nIt's external.\n```";
     for outcome in [
         LandingOutcome::Merged {
             detail: evidence.into(),
         },
         LandingOutcome::NotAttempted {
+            detail: evidence.into(),
+        },
+        LandingOutcome::Refused {
             detail: evidence.into(),
         },
         LandingOutcome::Uncertain {
@@ -1031,5 +1034,212 @@ fn changed_origin_cannot_admit_a_previously_certified_submission() {
             .read(|tx| tx.landing_intents())
             .unwrap()
             .is_empty()
+    );
+}
+
+#[test]
+fn sh842_operator_release_requires_remote_nonmerge_and_records_reason() {
+    let f = ServiceFixture::new();
+    let id = submitted(&f);
+    let queue = VerificationQueue::new(f.store());
+    let candidate = queue.next().unwrap().unwrap();
+    let LandingAdmission::Admitted(intent) = queue
+        .begin_landing(&f.ctx(), &candidate, &certification())
+        .unwrap()
+    else {
+        panic!("admitted")
+    };
+    for (state, head) in [
+        ("MERGED", certification().head),
+        ("UNKNOWN", certification().head),
+        ("OPEN", "b".repeat(40)),
+    ] {
+        assert!(
+            queue
+                .release_landing_observed(
+                    &f.ctx(),
+                    &intent.id,
+                    "operator reviewed refusal",
+                    |_| Ok((state.into(), head))
+                )
+                .is_err()
+        );
+        assert_eq!(
+            f.store().read(|tx| tx.landing_intents()).unwrap(),
+            vec![intent.clone()]
+        );
+    }
+    assert!(
+        queue
+            .release_landing_observed(&f.ctx(), &intent.id, " ", |_| panic!(
+                "no read for blank reason"
+            ))
+            .is_err()
+    );
+    assert!(
+        queue
+            .release_landing_observed(
+                &f.ctx().agent_session(true),
+                &intent.id,
+                "reason",
+                |_| panic!("no agent read")
+            )
+            .is_err()
+    );
+    assert!(
+        queue
+            .release_landing_observed(&f.ctx(), "another-intent", "reason", |_| panic!(
+                "no stale read"
+            ))
+            .is_err()
+    );
+    let released = queue
+        .release_landing_observed(
+            &f.ctx(),
+            &intent.id,
+            "operator reviewed refusal",
+            |observed| {
+                assert_eq!(observed, &intent);
+                Ok(("OPEN".into(), certification().head))
+            },
+        )
+        .unwrap();
+    assert_eq!(released, vec![id.clone()]);
+    assert!(
+        f.store()
+            .read(|tx| tx.landing_intents())
+            .unwrap()
+            .is_empty()
+    );
+    let row = f
+        .store()
+        .read(|tx| tx.story(f.project(), intent.story))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "verifying");
+    assert!(
+        row.snapshot
+            .comments
+            .last()
+            .unwrap()
+            .text
+            .contains("operator reviewed refusal")
+    );
+    assert!(
+        row.snapshot
+            .comments
+            .last()
+            .unwrap()
+            .text
+            .contains(&intent.id)
+    );
+    assert!(
+        !queue
+            .complete_landing(&f.ctx(), &intent, "stale callback")
+            .unwrap()
+    );
+}
+
+#[test]
+fn sh842_operator_release_keeps_intent_when_remote_read_fails() {
+    let f = ServiceFixture::new();
+    submitted(&f);
+    let queue = VerificationQueue::new(f.store());
+    let candidate = queue.next().unwrap().unwrap();
+    let LandingAdmission::Admitted(intent) = queue
+        .begin_landing(&f.ctx(), &candidate, &certification())
+        .unwrap()
+    else {
+        panic!("admitted")
+    };
+    assert!(
+        queue
+            .release_landing_observed(&f.ctx(), &intent.id, "reason", |_| Err(
+                AppError::GithubApi("network timeout".into())
+            ))
+            .is_err()
+    );
+    assert_eq!(
+        f.store().read(|tx| tx.landing_intents()).unwrap(),
+        vec![intent]
+    );
+}
+
+#[test]
+fn sh842_recovery_releases_a_single_refused_intent_without_resending() {
+    let f = ServiceFixture::new();
+    submitted(&f);
+    let queue = VerificationQueue::new(f.store());
+    let candidate = queue.next().unwrap().unwrap();
+    let LandingAdmission::Admitted(intent) = queue
+        .begin_landing(&f.ctx(), &candidate, &certification())
+        .unwrap()
+    else {
+        panic!("admitted")
+    };
+    let actuator = EvidenceActuator(LandingOutcome::Refused {
+        detail: "persisted HTTP 405".into(),
+    });
+    assert_eq!(
+        tick_with(f.store(), f.env(), &actuator, f.project()).unwrap(),
+        TickResult::RetryLater
+    );
+    assert!(
+        f.store()
+            .read(|tx| tx.landing_intents())
+            .unwrap()
+            .is_empty()
+    );
+    let row = f
+        .store()
+        .read(|tx| tx.story(f.project(), intent.story))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "verifying");
+    assert!(
+        row.snapshot
+            .comments
+            .last()
+            .unwrap()
+            .text
+            .contains("persisted HTTP 405")
+    );
+}
+
+#[test]
+fn sh842_operator_release_refuses_an_intent_completed_during_observation() {
+    let f = ServiceFixture::new();
+    submitted(&f);
+    let queue = VerificationQueue::new(f.store());
+    let candidate = queue.next().unwrap().unwrap();
+    let LandingAdmission::Admitted(intent) = queue
+        .begin_landing(&f.ctx(), &candidate, &certification())
+        .unwrap()
+    else {
+        panic!("admitted")
+    };
+    assert!(
+        queue
+            .release_landing_observed(&f.ctx(), &intent.id, "stale decision", |row| {
+                assert!(
+                    queue
+                        .complete_landing(&f.ctx(), row, "concurrent merged proof")
+                        .unwrap()
+                );
+                Ok(("OPEN".into(), certification().head))
+            })
+            .is_err()
+    );
+    let row = f
+        .store()
+        .read(|tx| tx.story(f.project(), intent.story))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "done");
+    assert!(
+        !row.snapshot
+            .comments
+            .iter()
+            .any(|c| c.text.contains("OPERATOR LANDING RELEASE"))
     );
 }

@@ -188,6 +188,12 @@ pub(in crate::daemon::verification) fn land<S: Store, A: VerificationActuator>(
             }
             Ok(landed)
         }
+        LandingOutcome::Refused { detail } => {
+            queue.release_rejected_landing(ctx, &landing.intent.rows[0], &detail)?;
+            landing.summary.phase = Some(BatchPhase::Released);
+            landing.summary.detail = format!("GitHub refused the merge: {detail}");
+            Ok(Landed::Tick(TickResult::RetryLater))
+        }
         LandingOutcome::NotAttempted { detail } => {
             let released = queue.release_unattempted_batch_landing(
                 ctx,

@@ -1104,6 +1104,45 @@ fn dispatch_verifier<S: Store>(
     use crate::service::verification_control::{VerificationAcknowledgement, VerificationAction};
     let recovery = crate::service::project_recovery::ProjectRecoveryService::new(ctx);
     match &action {
+        VerifierAction::LandingShow => {
+            let intents = ctx.store().read(|tx| {
+                Ok(tx
+                    .landing_intents()?
+                    .into_iter()
+                    .filter(|row| row.project == ctx.project())
+                    .collect::<Vec<_>>())
+            })?;
+            return Ok(Response::RawJson(serde_json::to_string(&intents)?));
+        }
+        VerifierAction::LandingRelease { intent_id, reason } => {
+            let activity = ctx.verification_activity().ok_or_else(|| {
+                AppError::Validation("landing release requires the daemon runtime".into())
+            })?;
+            let _reservation = activity.reserve_landing_release(ctx.project())?;
+            let released = crate::service::VerificationQueue::new(ctx.store())
+                .release_landing_observed(ctx, intent_id, reason, |intent| {
+                    let repository = crate::github_access::Repository::resolve(&intent.checkout)?;
+                    let metadata = repository.gh(&[
+                        "pr".into(),
+                        "view".into(),
+                        intent.landing_pull_request().into(),
+                        "--json".into(),
+                        "state,headRefOid".into(),
+                    ])?;
+                    let value: serde_json::Value = serde_json::from_slice(&metadata)?;
+                    let state = value["state"]
+                        .as_str()
+                        .ok_or_else(|| AppError::Validation("missing PR state".into()))?;
+                    let head = value["headRefOid"]
+                        .as_str()
+                        .ok_or_else(|| AppError::Validation("missing PR head".into()))?;
+                    Ok((state.into(), head.into()))
+                })?;
+            return Ok(Response::RawJson(
+                serde_json::json!({"released": released, "intent_id": intent_id, "reason": reason})
+                    .to_string(),
+            ));
+        }
         VerifierAction::Evidence { story_id } => {
             let (attempts, attributions) = ctx.store().read(|tx| {
                 let project = tx.project(ctx.project())?.ok_or_else(|| {
@@ -1164,7 +1203,9 @@ fn dispatch_verifier<S: Store>(
             let answer = activity.admit_repair(ctx, &story_id, &attempt_id, generation, &input)?;
             return Ok(Response::RawJson(serde_json::to_string(&answer)?));
         }
-        VerifierAction::Evidence { .. }
+        VerifierAction::LandingShow
+        | VerifierAction::LandingRelease { .. }
+        | VerifierAction::Evidence { .. }
         | VerifierAction::RepairShow { .. }
         | VerifierAction::RepairDecide { .. }
         | VerifierAction::RepairSatisfy { .. } => {
