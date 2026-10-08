@@ -69,23 +69,33 @@ class Client:
         saved report as authority. Same-account namespace custody is the trust
         boundary, not cryptographic attestation of a Python program.
         """
+        return self._pressure_proof("restoration-proof", "host-pressure-restoration",
+                                    fault=fault, window=window, affected=affected, nonce=nonce)
+
+    def fault_proof(self, *, fault, window, affected, nonce):
+        """Fetch live causal enrollment evidence, never a restoration capability."""
+        return self._pressure_proof("fault-proof", "host-pressure-fault",
+                                    fault=fault, window=window, affected=affected, nonce=nonce)
+
+    def _pressure_proof(self, operation, kind, *, fault, window, affected, nonce):
+        """Both proof kinds use the same canonical native authenticated boundary."""
         from .activation import load_policy
         from . import native
         from .policy import label
-        label(nonce, "restoration nonce")
+        label(nonce, "pressure proof nonce")
         if self.root != Path(ROOT).resolve():
-            raise Refusal("restoration proof requires the canonical host endpoint")
+            raise Refusal("pressure proof requires the canonical host endpoint")
         host, boot = native.host_identity(), native.boot_identity()
         policy = load_policy(self.root, host)
         if not isinstance(fault, dict) or fault.get("host") != host or fault.get("boot") != boot or fault.get("policy") != policy.digest:
-            raise Refusal("restoration fault differs from native host, boot or measured policy")
+            raise Refusal("pressure fault differs from native host, boot or measured policy")
         directory(self.root)
         endpoint = self.root / "broker.sock"
         pinned = check_file(endpoint, socket=True)
-        payload = json.dumps(dict(version=1, operation="restoration-proof", nonce=nonce,
+        payload = json.dumps(dict(version=1, operation=operation, nonce=nonce,
                                   fault=fault, window=window, affected=affected)).encode() + b"\n"
         if len(payload) > MAX_MESSAGE:
-            raise Refusal("restoration request exceeds protocol size")
+            raise Refusal("pressure proof request exceeds protocol size")
         timeout = policy.value["stale_ms"] / 1000
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
             deadline = time.monotonic() + timeout
@@ -97,32 +107,44 @@ class Client:
             while b"\n" not in answer:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise Refusal("restoration broker deadline exceeded")
+                    raise Refusal("pressure proof broker deadline exceeded")
                 conn.settimeout(remaining)
                 data = conn.recv(65536)
                 if not data:
-                    raise Refusal("restoration broker disconnected")
+                    raise Refusal("pressure proof broker disconnected")
                 answer.extend(data)
                 if len(answer) > MAX_MESSAGE:
-                    raise Refusal("restoration response exceeds protocol size")
+                    raise Refusal("pressure proof response exceeds protocol size")
             if native.peer_identity(conn, boot) != peer:
-                raise Refusal("restoration broker incarnation changed")
+                raise Refusal("pressure proof broker incarnation changed")
             current = check_file(endpoint, socket=True)
             if (current.st_dev, current.st_ino) != (pinned.st_dev, pinned.st_ino):
-                raise Refusal("restoration endpoint changed")
+                raise Refusal("pressure proof endpoint changed")
         response = json.loads(answer)
         if (not isinstance(response, dict) or type(response.get("version")) is not int
                 or response.get("version") != 1 or response.get("error")):
-            raise Refusal("native restoration proof was refused")
+            raise Refusal("native pressure proof was refused")
         result = response.get("value")
         if (not isinstance(result, dict) or type(result.get("version")) is not int or result.get("version") != 1
-                or result.get("kind") != "host-pressure-restoration"
+                or result.get("kind") != kind
                 or result.get("nonce") != nonce or result.get("broker") != peer
                 or result.get("fault") != fault or result.get("window") != window
                 or result.get("affected") != affected):
-            raise Refusal("restoration reply does not match the live native request")
+            raise Refusal("pressure proof reply does not match the live native request")
         if native.boot_identity() != boot or load_policy(self.root, host).digest != policy.digest:
-            raise Refusal("restoration boot or measured policy changed during observation")
+            raise Refusal("pressure proof boot or measured policy changed during observation")
+        if operation == "fault-proof":
+            checked = result.get("checked_at")
+            now = time.monotonic_ns() // 1_000_000
+            if type(checked) is not int or not 0 <= checked <= now or now - checked > policy.value["stale_ms"]:
+                raise Refusal("native fault proof clock is stale or invalid at receipt")
+            timing = result.get("timing")
+            if (set(result) != {"version", "kind", "nonce", "broker", "fault", "window", "affected",
+                               "settled", "checked_at", "ledger_sequence", "timing"}
+                    or not isinstance(timing, dict) or set(timing) != {"stale_ms"}
+                    or type(timing["stale_ms"]) is not int or timing["stale_ms"] != policy.value["stale_ms"]):
+                raise Refusal("fault enrollment cannot include restoration evidence")
+            return result
         sample, checked = result.get("sample"), result.get("checked_at")
         if (not isinstance(sample, dict) or set(sample) != {"at", "available", "cpu", "memory", "runnable"}
                 or any(type(v) is not int or not 0 <= v <= 2**63 - 1 for v in sample.values())

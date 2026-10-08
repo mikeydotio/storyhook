@@ -120,14 +120,15 @@ class Broker:
             raise Refusal("unsupported host admission protocol")
         op = message.get("operation")
         a = self.authority
-        if op == "restoration-proof":
-            from .restoration import proof
+        if op in ("restoration-proof", "fault-proof"):
+            from .restoration import fault_proof, proof
             if (type(message["version"]) is not int
                     or set(message) != {"version", "operation", "nonce", "fault", "window", "affected"}):
-                raise Refusal("invalid restoration-proof fields")
+                raise Refusal("invalid native pressure proof fields")
             if native.observe(self.identity, self.boot) is not True:
                 raise Refusal("broker incarnation is unavailable")
-            return proof(a, {key: message[key] for key in ("nonce", "fault", "window", "affected")}, self.identity)
+            inspect = proof if op == "restoration-proof" else fault_proof
+            return inspect(a, {key: message[key] for key in ("nonce", "fault", "window", "affected")}, self.identity)
         if op == "status":
             return a.status()
         if op == "events":

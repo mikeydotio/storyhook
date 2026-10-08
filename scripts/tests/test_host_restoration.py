@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from host_admission import client, native
 from host_admission.broker import Broker
 from host_admission.policy import Refusal
-from host_admission.restoration import proof
+from host_admission.restoration import fault_proof, proof
 from test_host_admission import Fixture
 
 
@@ -275,8 +275,8 @@ class ReplySocket:
 
 
 class RestorationClientTests(RestorationFixture):
-    def transport(self, request, *, mutate=None, peers=None, inode_change=False, policy_change=False, receipt_delay=0, changed_boot=False):
-        result = proof(self.a, request, BROKER)
+    def transport(self, request, *, mutate=None, peers=None, inode_change=False, policy_change=False, receipt_delay=0, changed_boot=False, fault_only=False):
+        result = (fault_proof if fault_only else proof)(self.a, request, BROKER)
         if mutate: mutate(result)
         channel = ReplySocket(result)
         stats = [SimpleNamespace(st_dev=1, st_ino=2),
@@ -293,8 +293,9 @@ class RestorationClientTests(RestorationFixture):
             stack.enter_context(patch.object(client.time, "monotonic", return_value=self.now / 1000))
             stack.enter_context(patch.object(native, "peer_identity", side_effect=peers or [BROKER, BROKER]))
             stack.enter_context(patch("host_admission.activation.load_policy", side_effect=policies))
-            answer = client.Client(self.tmp.name).restoration_proof(**request)
-        self.assertEqual(channel.sent["operation"], "restoration-proof")
+            transport = client.Client(self.tmp.name)
+            answer = (transport.fault_proof if fault_only else transport.restoration_proof)(**request)
+        self.assertEqual(channel.sent["operation"], "fault-proof" if fault_only else "restoration-proof")
         return answer
 
     def test_live_client_accepts_only_matching_nonce_peer_and_measured_policy(self):
@@ -331,6 +332,139 @@ class RestorationClientTests(RestorationFixture):
         _, request = self.complete()
         with self.assertRaisesRegex(Refusal, "canonical host endpoint"):
             client.Client(self.tmp.name).restoration_proof(**request)
+
+
+class FaultProofTests(RestorationFixture):
+    transport = RestorationClientTests.transport
+
+    def fault_case(self):
+        fault = self.pressure()
+        row = self.bound(project="native-project", work="repair")
+        self.a.cancel(row["id"], row["token"])
+        return row, self.request_proof(fault, row["id"])
+
+    def test_fault_enrollment_under_pressure_is_read_only_and_not_restoration(self):
+        row, request = self.fault_case()
+        self.a.sample(None)  # Fault enrollment must not invent sensor recovery.
+        before = self.path.read_bytes()
+        result = fault_proof(self.a, request, BROKER)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(result["kind"], "host-pressure-fault")
+        self.assertNotIn("episode", result); self.assertNotIn("sample", result)
+        self.assertEqual(result["timing"], {"stale_ms": self.policy.value["stale_ms"]})
+        subject = result["settled"][0]
+        self.assertEqual((subject["project"], subject["work"]), ("native-project", "repair"))
+        self.assertEqual(subject["pressure_links"], [dict(sequence=row["pressure_links"][0], event="denial",
+            reason="wait for fresh healthy sensors and recovery hysteresis",
+            pressure_fault_sequence=request["fault"]["sequence"])])
+        self.assertNotIn(row["token"], json.dumps(result))
+        with self.assertRaisesRegex(Refusal, "has not recovered"):
+            proof(self.a, request, BROKER)
+
+    def test_overlap_only_can_restore_but_cannot_causally_enroll(self):
+        _, request = self.complete()
+        self.assertEqual(proof(self.a, request, BROKER)["settled"][0]["pressure_links"], [])
+        with self.assertRaisesRegex(Refusal, "native causal"):
+            fault_proof(self.a, request, BROKER)
+
+    def test_each_binding_needs_native_cause_while_companion_roots_are_retained(self):
+        companion = self.bound("companion")
+        other = self.request("other", binding=dict(BINDING, generation=8))
+        fault = self.pressure(); denied = self.bound("denied")
+        self.finish(companion); self.finish(other)
+        self.a.cancel(denied["id"], denied["token"])
+        result = fault_proof(self.a, self.request_proof(fault, "companion", "denied"), BROKER)
+        self.assertEqual(result["settled"][0]["pressure_links"], [])
+        self.assertTrue(result["settled"][1]["pressure_links"])
+        with self.assertRaisesRegex(Refusal, "every binding"):
+            fault_proof(self.a, self.request_proof(fault, "companion", "denied", "other"), BROKER)
+        other_denied = self.request("other-denied", binding=dict(BINDING, generation=8))
+        self.a.cancel(other_denied["id"], other_denied["token"])
+        result = fault_proof(self.a, self.request_proof(fault, "companion", "denied", "other", "other-denied"), BROKER)
+        self.assertEqual(len(result["settled"]), 4)
+
+    def test_forged_and_foreign_causal_links_are_not_native_enrollment(self):
+        fault = self.pressure(); row = self.bound()
+        foreign = self.request("foreign", binding=dict(BINDING, generation=8))
+        self.a.cancel(row["id"], row["token"]); self.a.cancel(foreign["id"], foreign["token"])
+        request = self.request_proof(fault, row["id"])
+        fault_proof(self.a, request, BROKER)
+        with self.assertRaisesRegex(Refusal, "request"):
+            fault_proof(self.a, dict(request, pressure_links=[dict(sequence=123)]), BROKER)
+        for sequence in [foreign["pressure_links"][0], row["admission_sequence"]]:
+            with self.a.transaction() as state:
+                state["leases"][row["id"]]["pressure_links"] = [sequence]
+            with self.subTest(sequence=sequence), self.assertRaisesRegex(Refusal, "native pressure link"):
+                fault_proof(self.a, request, BROKER)
+
+    def test_native_project_and_work_cannot_be_relabelled(self):
+        row, request = self.fault_case()
+        for field, replacement in [("project", "other-project"), ("work", "test")]:
+            with self.a.transaction() as state:
+                original = state["leases"][row["id"]][field]
+                state["leases"][row["id"]][field] = replacement
+            with self.subTest(field=field), self.assertRaisesRegex(Refusal, "foreign operation window"):
+                fault_proof(self.a, request, BROKER)
+            with self.a.transaction() as state:
+                state["leases"][row["id"]][field] = original
+
+    def test_fault_enrollment_keeps_native_subtree_and_epoch_custody(self):
+        row = self.bound(); child = self.a.subgrant(row["id"], row["token"], "child", dict(cpu=1, memory=100))
+        execution = dict(id="run", leader=self.owner, session=42, guard="fixture-guard")
+        self.a.attach(child["id"], child["token"], execution)
+        fault = self.pressure(); self.sample(cpu=960)  # Same episode, actual native severe cancellation.
+        candidate = dict(nonce="held", fault=fault, window=dict(start_sequence=1, end_sequence=999),
+                         affected=[dict(lease=row["id"], binding=BINDING)])
+        self.assertFalse(self.a.finish(row["id"], row["token"]))
+        with self.assertRaisesRegex(Refusal, "settled subject"):
+            fault_proof(self.a, candidate, BROKER)
+        self.a.settle(child["id"], child["token"], execution["id"], lambda _: True)
+        self.finish(child); self.finish(row)
+        request = self.request_proof(fault, row["id"])
+        result = fault_proof(self.a, request, BROKER)
+        self.assertEqual(result["settled"][0]["pressure_links"][0]["event"], "cancel")
+        self.assertEqual(len(result["settled"][0]["lifetimes"]), 2)
+        self.a = self.open("new-boot")
+        with self.assertRaisesRegex(Refusal, "changed"):
+            fault_proof(self.a, request, dict(BROKER, boot="new-boot"))
+
+    def test_unrelated_quarantine_does_not_prevent_fault_hold_but_blocks_restoration(self):
+        unrelated = self.request("unrelated", project="another", binding=dict(BINDING, generation=8))
+        row, request = self.fault_case()
+        self.a.quarantine(unrelated["id"], "native lifetime unknown")
+        fault_proof(self.a, request, BROKER)
+        self.recover()
+        with self.assertRaisesRegex(Refusal, "quarantined"):
+            proof(self.a, request, BROKER)
+
+    def test_fault_and_restoration_receipts_share_only_native_causal_links(self):
+        _, request = self.fault_case()
+        enrolled = fault_proof(self.a, request, BROKER)
+        self.recover()
+        restored = proof(self.a, request, BROKER)
+        self.assertEqual(enrolled["settled"], restored["settled"])
+        self.assertIn("episode", restored); self.assertNotIn("episode", enrolled)
+        broker = SimpleNamespace(authority=self.a, identity=BROKER, boot="boot")
+        with patch.object(native, "observe", return_value=True):
+            result = Broker.dispatch(broker, dict(version=1, operation="fault-proof", **request), self.owner)
+        self.assertEqual(result["kind"], "host-pressure-fault")
+
+    def test_fault_client_requires_its_own_kind_live_peer_policy_and_fresh_clock(self):
+        _, request = self.fault_case()
+        self.assertEqual(self.transport(request, fault_only=True)["kind"], "host-pressure-fault")
+        for mutation in [lambda r: r.update(kind="host-pressure-restoration"),
+                         lambda r: r.update(nonce="old"), lambda r: r.update(episode={}),
+                         lambda r: r.update(timing={"stale_ms": 999}),
+                         lambda r: r.update(checked_at=True)]:
+            with self.subTest(mutation=mutation), self.assertRaises(Refusal):
+                self.transport(request, fault_only=True, mutate=mutation)
+        for kwargs in [dict(peers=[BROKER, dict(BROKER, start="reused")]),
+                       dict(changed_boot=True), dict(policy_change=True), dict(inode_change=True),
+                       dict(receipt_delay=self.policy.value["stale_ms"] + 1)]:
+            with self.subTest(kwargs=kwargs), self.assertRaises(Refusal):
+                self.transport(request, fault_only=True, **kwargs)
+        with self.assertRaisesRegex(Refusal, "canonical host endpoint"):
+            client.Client(self.tmp.name).fault_proof(**request)
 
 
 if __name__ == "__main__":

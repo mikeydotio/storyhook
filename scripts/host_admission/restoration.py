@@ -70,7 +70,8 @@ def _terminal_window(authority, row, fault):
         raise Refusal("legacy lease lacks authoritative operation window")
     first, last = _event(authority, start), _event(authority, end)
     if any(not _same(event, fault) or event.get("lease") != row["id"]
-           or event.get("binding") != row["binding"] for event in (first, last)):
+           or event.get("binding") != row["binding"] or event.get("project") != row["project"]
+           or event.get("work") != row["work"] for event in (first, last)):
         raise Refusal("foreign operation window evidence")
     if first["event"] not in ("request", "subgrant") or last["event"] not in ("release", "cancel"):
         raise Refusal("invalid operation window boundaries")
@@ -102,15 +103,33 @@ def _lifetime(authority, row, fault):
     return dict(lease=row["id"], admission_sequence=start, settlement_sequence=end, executions=executions)
 
 
-def _linked(authority, row, fault, start, end):
+def _pressure_links(authority, row, fault, start, end):
+    """Copy only retained native denial/cancel links, never caller observations."""
+    links = []
+    seen = set()
     for sequence in row.get("pressure_links", []):
+        integer(sequence, "native pressure link sequence")
+        if sequence in seen:
+            raise Refusal("duplicate native pressure link")
+        seen.add(sequence)
         event = _event(authority, sequence)
-        if (start <= sequence <= end and _same(event, fault)
-                and event.get("lease") == row["id"] and event.get("binding") == row["binding"]
-                and event.get("event") in ("denial", "cancel")
-                and event.get("pressure_fault_sequence") == fault["sequence"]):
-            return True
-    return False
+        causal_kind = ((event.get("event") == "denial"
+                        and event.get("reason") == "wait for fresh healthy sensors and recovery hysteresis")
+                       or (event.get("event") == "cancel" and event.get("reason") == "severe pressure"))
+        if (not start <= sequence <= end or not _same(event, fault)
+                or event.get("lease") != row["id"] or event.get("binding") != row["binding"]
+                or event.get("project") != row["project"] or event.get("work") != row["work"]
+                or not causal_kind):
+            raise Refusal("foreign or invalid native pressure link")
+        linked = integer(event.get("pressure_fault_sequence"), "linked native fault sequence")
+        if linked == fault["sequence"]:
+            links.append({key: event[key] for key in
+                          ("sequence", "event", "reason", "pressure_fault_sequence")})
+    return sorted(links, key=lambda item: item["sequence"])
+
+
+def _linked(authority, row, fault, start, end):
+    return bool(_pressure_links(authority, row, fault, start, end))
 
 
 def _complete_roots(authority, state, affected, fault, latest):
@@ -137,7 +156,39 @@ def _complete_roots(authority, state, affected, fault, latest):
 
 
 def proof(authority, request, broker_identity):
-    """Read native episode/lease facts atomically; never change admission policy."""
+    """Read native restoration facts atomically; never change admission policy."""
+    return _proof(authority, request, broker_identity, restoring=True)
+
+
+def fault_proof(authority, request, broker_identity):
+    """Enroll a causal hold only: this evidence grants no restoration authority."""
+    return _proof(authority, request, broker_identity, restoring=False)
+
+
+def _restored(authority, state, fault, original):
+    episode = state.get("pressure_episode")
+    if (not isinstance(episode, dict) or episode.get("version") != 1
+            or episode.get("fault_sequence") != fault["sequence"] or episode.get("invalidated")
+            or episode.get("recovered_sequence") is None):
+        raise Refusal("exact native pressure episode has not recovered")
+    recovered = _event(authority, episode["recovered_sequence"])
+    if (not _same(recovered, fault) or recovered.get("event") != "pressure"
+            or recovered.get("reason") != "ready" or recovered.get("recovered_from") != fault["sequence"]
+            or recovered.get("healthy_since") != episode["healthy_since"]
+            or recovered.get("recover_ms") != authority.policy.value["recover_ms"]
+            or recovered["sequence"] <= original["sequence"]
+            or episode["healthy_since"] is None or episode["healthy_since"] < original["at"]
+            or recovered["at"] - episode["healthy_since"] < authority.policy.value["recover_ms"]):
+        raise Refusal("native recovery interval does not prove this fault")
+    if not ready(state, authority.policy):
+        raise Refusal("restoration requires current fresh healthy sensors")
+    for row in state["leases"].values():
+        if row["state"] == "quarantined" or (row["state"] in HELD and authority.observe(row["owner"]) is not True):
+            raise Refusal("host has quarantined or unproved ownership")
+    return episode
+
+
+def _proof(authority, request, broker_identity, *, restoring):
     _keys(request, ("nonce", "fault", "window", "affected"), "request")
     nonce, fault, window, affected = (request[key] for key in ("nonce", "fault", "window", "affected"))
     label(nonce, "restoration nonce")
@@ -160,29 +211,12 @@ def proof(authority, request, broker_identity):
     with authority.read_transaction() as state:
         if any(state[key] != fault[key] for key in IDENTITY) or broker_identity["boot"] != state["boot"]:
             raise Refusal("restoration authority, host, boot or policy changed")
-        episode = state.get("pressure_episode")
-        if (not isinstance(episode, dict) or episode.get("version") != 1
-                or episode.get("fault_sequence") != fault["sequence"] or episode.get("invalidated")
-                or episode.get("recovered_sequence") is None):
-            raise Refusal("exact native pressure episode has not recovered")
         original = _event(authority, fault["sequence"])
-        recovered = _event(authority, episode["recovered_sequence"])
         if (not _same(original, fault) or original.get("event") != "pressure"
-                or original.get("reason") != "pressure" or original.get("lease") is not None
-                or not _same(recovered, fault) or recovered.get("event") != "pressure"
-                or recovered.get("reason") != "ready" or recovered.get("recovered_from") != fault["sequence"]
-                or recovered.get("healthy_since") != episode["healthy_since"]
-                or recovered.get("recover_ms") != authority.policy.value["recover_ms"]
-                or recovered["sequence"] <= original["sequence"]
-                or episode["healthy_since"] is None
-                or episode["healthy_since"] < original["at"]
-                or recovered["at"] - episode["healthy_since"] < authority.policy.value["recover_ms"]):
-            raise Refusal("native recovery interval does not prove this fault")
-        if not ready(state, authority.policy):
-            raise Refusal("restoration requires current fresh healthy sensors")
-        for row in state["leases"].values():
-            if row["state"] == "quarantined" or (row["state"] in HELD and authority.observe(row["owner"]) is not True):
-                raise Refusal("host has quarantined or unproved ownership")
+                or original.get("reason") != "pressure" or original.get("lease") is not None):
+            # Initial ready and caller-supplied journal labels are not faults.
+            raise Refusal("exact native pressure episode has not recovered or is not a pressure fault")
+        episode = _restored(authority, state, fault, original) if restoring else None
         sequence = authority.db.execute("SELECT COALESCE(MAX(sequence),0) FROM events").fetchone()[0]
         _complete_roots(authority, state, affected, fault, sequence)
         starts, ends, settled = [], [], []
@@ -201,15 +235,26 @@ def proof(authority, request, broker_identity):
             start, end = row["admission_sequence"], row["settlement_sequence"]
             if not start <= fault["sequence"] <= end and not _linked(authority, row, fault, start, end):
                 raise Refusal("historical pressure is not causal for the affected operation")
+            links = _pressure_links(authority, row, fault, start, end)
             starts.append(start); ends.append(end)
             settled.append(dict(lease=row["id"], binding=copy.deepcopy(row["binding"]),
-                                state=row["state"], admission_sequence=start, settlement_sequence=end,
+                                state=row["state"], project=row["project"], work=row["work"],
+                                pressure_links=links, admission_sequence=start, settlement_sequence=end,
                                 lifetimes=sorted(lifetimes, key=lambda item: item["lease"])))
         actual_window = dict(start_sequence=min(starts), end_sequence=max(ends))
         if window != actual_window:
             raise Refusal("caller window differs from authoritative lease history")
-        return dict(version=1, kind="host-pressure-restoration", nonce=nonce,
-                    broker=copy.deepcopy(broker_identity), fault=copy.deepcopy(fault), window=actual_window,
-                    affected=copy.deepcopy(affected), settled=settled, checked_at=state["now"],
-                    ledger_sequence=sequence, episode=copy.deepcopy(episode), sample=copy.deepcopy(state["sample"]),
-                    timing={key: authority.policy.value[key] for key in ("recover_ms", "stale_ms", "sample_ms")})
+        if not restoring:
+            for subject in affected:
+                if not any(row["binding"] == subject["binding"] and row["pressure_links"] for row in settled):
+                    raise Refusal("fault enrollment requires a native causal denial or cancellation for every binding")
+        result = dict(version=1, kind="host-pressure-restoration" if restoring else "host-pressure-fault",
+                      nonce=nonce, broker=copy.deepcopy(broker_identity), fault=copy.deepcopy(fault),
+                      window=actual_window, affected=copy.deepcopy(affected), settled=settled,
+                      checked_at=state["now"], ledger_sequence=sequence)
+        if not restoring:
+            result["timing"] = {"stale_ms": authority.policy.value["stale_ms"]}
+        if restoring:
+            result.update(episode=copy.deepcopy(episode), sample=copy.deepcopy(state["sample"]),
+                          timing={key: authority.policy.value[key] for key in ("recover_ms", "stale_ms", "sample_ms")})
+        return result
