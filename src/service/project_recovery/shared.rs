@@ -1,4 +1,5 @@
 //! Native shared-fault ownership. Stored descriptions never mint this capability.
+pub(super) mod join;
 pub(super) mod readmit;
 use super::{
     AffectedSubmission, Assessment, AssessmentStatus, ProjectRecoveryService, RecoveryState,
@@ -335,10 +336,17 @@ pub(super) fn evidence_current(tx: &impl ReadOps, view: &RecoveryView) -> Result
         return Ok(true);
     }
     let records = tx.attributions(view.record.project)?;
-    for observation in &view.observations {
-        let evidence = validate_observation(&view.state, &view.record, observation)?;
-        if !records.contains(&evidence.attribution) || evidence.native.verify().is_err() {
-            return Ok(false);
+    let followers = if join::leader(&view.state).is_none() {
+        join::followers(tx, view)?
+    } else {
+        Vec::new()
+    };
+    for member in std::iter::once(view).chain(followers.iter()) {
+        for observation in &member.observations {
+            let evidence = validate_observation(&member.state, &member.record, observation)?;
+            if !records.contains(&evidence.attribution) || evidence.native.verify().is_err() {
+                return Ok(false);
+            }
         }
     }
     Ok(true)

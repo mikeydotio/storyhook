@@ -38,6 +38,7 @@ pub(crate) fn record_landing(
         event: event.global_seq,
         at: now.into(),
     };
+    let mut followers = super::shared::join::followers(tx, &view)?;
     if let Some(previous) = &view.state.landing {
         return if previous == &receipt {
             Ok(())
@@ -47,9 +48,17 @@ pub(crate) fn record_landing(
             ))
         };
     }
-    view.state.landing = Some(receipt);
+    let admitted = attempt.clone();
+    view.state.landing = Some(receipt.clone());
     view.record.active = false;
-    persistence::save(tx, &mut view, now)
+    persistence::save(tx, &mut view, now)?;
+    for follower in &mut followers {
+        follower.state.attempts.push(admitted.clone());
+        follower.state.landing = Some(receipt.clone());
+        follower.record.active = false;
+        persistence::save(tx, follower, now)?;
+    }
+    Ok(())
 }
 
 fn matches_intent(attempt: &RepairAttempt, intent: &LandingIntent) -> bool {

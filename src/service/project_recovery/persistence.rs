@@ -88,7 +88,8 @@ pub(super) fn read_view(
             || decision.input.dispatch_identity != state.assessment.dispatch_identity
             || decision.input.revision >= record.revision
             || !repair_consistent
-            || decision.repair_story.is_some() != decision.delivery_identity.is_some()
+            || (decision.repair_story.is_some() && decision.input.join_recovery.is_none())
+                != decision.delivery_identity.is_some()
             || decision
                 .owned_edges
                 .iter()
@@ -158,6 +159,7 @@ pub(super) fn read_view(
         ));
     }
     super::work::validate(&state)?;
+    super::shared::join::validate(tx, &record, &state)?;
     super::attempts_validation::validate(&state, record.project)?;
     super::landing::validate(tx, &state, record.project)?;
     super::prerequisite::validate(tx, &record, &state)?;

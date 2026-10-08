@@ -145,6 +145,12 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                 let Some(mut view) = owner(tx, candidate.project, story)? else {
                     return Ok(RepairAdmission::Proceed { recovery_id: None });
                 };
+                let followers = super::shared::join::followers(tx, &view)?;
+                if !super::shared::evidence_current(tx, &view)?
+                    || followers.iter().any(|follower| generation <= follower.state.assessment.generation)
+                {
+                    return Err(StoreError::Validation("coordinated repair requires intact evidence and a submission newer than every joined fault".into()));
+                }
                 let label_revision = authority::label_revision(tx, candidate.project, story)?;
                 if let Some(previous) = view
                     .state
@@ -208,6 +214,11 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                     // source head-tree receipt from the candidate merge tree.
                     unchanged |= input.head == shared.fault.base
                         || input.head_tree == shared.fault.control_tree;
+                }
+                for follower in &followers {
+                    if let Some(shared) = &follower.state.shared {
+                        unchanged |= input.head == shared.fault.base || input.head_tree == shared.fault.control_tree;
+                    }
                 }
                 for observation in view
                     .observations
@@ -407,6 +418,9 @@ pub(super) fn owner(
     {
         let view = persistence::read_view(tx, record)?;
         if view.state.decision.as_ref().and_then(|d| d.repair_story) == Some(story) {
+            if super::shared::join::leader(&view.state).is_some() {
+                continue;
+            }
             if owner.is_some() {
                 return Err(StoreError::Corrupt(
                     "repair story belongs to multiple active recovery lineages".into(),

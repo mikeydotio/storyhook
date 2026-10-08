@@ -40,7 +40,7 @@ pub use attempts::{
     RepairRefusalRecord,
 };
 pub(crate) use coordination::{observed_generations, owns_coordination};
-pub use decision::{DecisionInput, DecisionReceipt, RepairScope, RepairSpec};
+pub use decision::{DecisionInput, DecisionReceipt, JoinRepair, RepairScope, RepairSpec};
 pub use judgment::RepairJudgment;
 pub use landing::RepairLanding;
 pub(crate) use landing::record_landing;

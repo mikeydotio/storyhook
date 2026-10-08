@@ -146,12 +146,20 @@ pub(crate) fn snapshot(
             repair_link,
             phase: phase.into(),
             next_action,
-            completed_attempts: view
-                .state
-                .attempts
-                .iter()
-                .filter(|a| a.completion.is_some())
-                .count(),
+            completed_attempts: if let Some(owner) = super::shared::join::leader(&view.state) {
+                persistence::find(tx, project, owner)?
+                    .state
+                    .attempts
+                    .iter()
+                    .filter(|a| a.completion.is_some())
+                    .count()
+            } else {
+                view.state
+                    .attempts
+                    .iter()
+                    .filter(|a| a.completion.is_some())
+                    .count()
+            },
             attempt_limit: 3,
         });
     }

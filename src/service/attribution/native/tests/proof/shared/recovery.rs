@@ -2,6 +2,7 @@
 use super::*;
 use crate::service::{PrLinkService, project_recovery::*};
 use crate::store::StoryNo;
+mod joins;
 
 fn fixture(mixed: bool) -> (Fixture, Evidence, SharedRecoveryEvidence) {
     let mut f = Fixture::new(false);
@@ -47,6 +48,7 @@ fn context(evidence: &Evidence) -> Ctx<'_, SqliteStore> {
 
 fn decision(view: &RecoveryView, scope: RepairScope) -> DecisionInput {
     DecisionInput {
+        join_recovery: None,
         version: 1,
         revision: view.record.revision,
         project: view.record.project,

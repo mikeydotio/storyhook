@@ -34,11 +34,21 @@ pub struct RepairSpec {
     pub acceptance: String,
 }
 
+/// Explicit semantic coordination with an existing shared repair owner.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JoinRepair {
+    /// Exact project recovery whose existing repair will address both faults.
+    pub recovery: String,
+    /// Revision inspected when making this scope decision.
+    pub revision: i64,
+}
+
 /// Strict, versioned request shared by CLI and RPC decision doors.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DecisionInput {
-    /// Request schema version, currently one.
+    /// Version one is unchanged; version two permits explicit shared repair joins.
     pub version: u8,
     /// Exact recovery revision inspected by the assessor.
     pub revision: i64,
@@ -64,6 +74,9 @@ pub struct DecisionInput {
     pub repair: Option<RepairSpec>,
     /// Actual unmet prerequisite, present exactly for external scope.
     pub prerequisite: Option<String>,
+    /// Version-two alternative to creating a separate repair; never inferred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join_recovery: Option<JoinRepair>,
 }
 
 /// Durable result retained for exact replay and subsequent managed delivery.
@@ -112,16 +125,18 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                 }
                 let repair_story = match input.scope {
                     RepairScope::SameStory => Some(view.state.assessment.story),
-                    RepairScope::SeparateStory => Some(super::decision_effects::create_repair(
-                        tx, self.ctx, &view, input, &now,
-                    )?),
+                    RepairScope::SeparateStory => Some(if input.join_recovery.is_some() {
+                        super::shared::join::admit(tx, &view, input)?
+                    } else {
+                        super::decision_effects::create_repair(tx, self.ctx, &view, input, &now)?
+                    }),
                     RepairScope::External => None,
                 };
                 let mut receipt = DecisionReceipt {
                     input: input.clone(),
                     accepted_at: now.clone(),
                     repair_story,
-                    delivery_identity: repair_story.map(|_| uuid::Uuid::new_v4().to_string()),
+                    delivery_identity: repair_story.filter(|_| input.join_recovery.is_none()).map(|_| uuid::Uuid::new_v4().to_string()),
                     owned_edges: Vec::new(),
                     dependency_holds: Vec::new(),
                     skipped_subjects: Vec::new(),
@@ -153,15 +168,22 @@ impl DecisionInput {
             RepairScope::SameStory => self.repair.is_none() && self.prerequisite.is_none(),
             RepairScope::SeparateStory => {
                 self.prerequisite.is_none()
-                    && self.repair.as_ref().is_some_and(|r| {
+                    && (self.repair.as_ref().is_some_and(|r| {
                         nonblank(&r.title) && nonblank(&r.description) && nonblank(&r.acceptance)
-                    })
+                    }) != self.join_recovery.is_some())
             }
             RepairScope::External => {
                 self.repair.is_none() && self.prerequisite.as_deref().is_some_and(nonblank)
             }
         };
-        if self.version != 1
+        if !matches!(self.version, 1 | 2)
+            || self.join_recovery.as_ref().is_some_and(|join| {
+                self.version != 2
+                    || self.scope != RepairScope::SeparateStory
+                    || self.repair.is_some()
+                    || join.revision < 0
+                    || !nonblank(&join.recovery)
+            })
             || self.revision < 0
             || !scope_valid
             || [
@@ -176,7 +198,7 @@ impl DecisionInput {
             || self.evidence.is_empty()
             || self.evidence.iter().any(|s| !nonblank(s))
         {
-            return Err(AppError::Validation("invalid recovery decision: require version 1, exact authority, nonempty Context/Question/Decision/Rationale and evidence, and scope-consistent repair or prerequisite fields".into()));
+            return Err(AppError::Validation("invalid recovery decision: require version 1 or 2, exact authority, nonempty Context/Question/Decision/Rationale and evidence, and scope-consistent repair, explicit join or prerequisite fields".into()));
         }
         Ok(())
     }

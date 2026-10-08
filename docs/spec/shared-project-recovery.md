@@ -22,6 +22,24 @@ prerequisite; the unrelated author submission cannot be selected as the repair.
 Existing durable delivery epochs preserve uncertain calls without replaying them.
 A raw fault encountered by that repair remains in its original lineage.
 
+Different fault keys remain distinct. A claimed assessor may use a version-two
+separate-story decision with `join_recovery: { recovery, revision }` instead of
+`repair` to assign a second fault to the existing repair. This is a semantic
+decision, not symptom-based deduplication. The target must be an active native
+shared owner in the same project, with no unsettled delivery, live attempt,
+certification, landing, or resource ambiguity. Followers cannot own other
+followers, dispatch another agent, or spend a separate attempt budget. Ordinary
+dependency-cycle checks still apply. Both faults must authorize that repair
+before queue selection, work delivery, or gate admission can proceed.
+
+The canonical owner retains the aggregate three-input budget across restart.
+Every joined fault's native archives are rechecked at effect and gate admission.
+The repair submission must be newer than all enrolled fault generations. A
+certified landing writes matching release receipts to all joined records in the
+same transaction; each retained submission still clears only its own exact hold
+and must undergo fresh verification. Status exposes the canonical attempt count
+on each participating fault. A stale or cyclic coordination pointer fails closed.
+
 Only a certified repair landing or the existing operator prerequisite attestation
 can release the owner. A single atomic transaction rechecks the exact original
 state, generation, labels, PR identity, operator policy, reset/landing holds,
@@ -49,9 +67,9 @@ holds. The existing batch-only smoothing allowlist does not authorize a differen
 scope. No credentials, host deletion commands or arbitrary shell repair hooks are
 introduced. Those remaining acceptance items need a separately reviewed concrete
 adapter and policy boundary before the whole story can be considered complete.
-Different active faults keep separate owners. A repair for one cannot bypass
-another fault's admission hold; choosing an owner authorized to resolve multiple
-distinct faults remains an explicit cross-fault coordination gap in this slice.
+Different active faults remain held until their explicit decisions authorize a
+common repair. Competing live repair owners require ownership reconciliation;
+the coordinator does not silently revoke their work or adopt their effects.
 
 All tests authored for this slice are unrun until the coordinator schedules the
 validation lane. Native fixture tests use their existing bounded broker and tiny
