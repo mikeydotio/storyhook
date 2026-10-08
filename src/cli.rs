@@ -2107,6 +2107,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         flags: &[value("input")],
     },
     VerbFlags {
+        verb: "verifier",
+        subcommand: Some("landing"),
+        flags: &[value("reason")],
+    },
+    VerbFlags {
         verb: "resources",
         subcommand: None,
         flags: &[
@@ -7212,28 +7217,65 @@ mod landing_release_tests {
     use super::*;
     #[test]
     fn sh842_landing_release_cli_requires_exact_id_and_reason() {
-        let parse =
-            |s: &[&str]| parse_verifier(&s.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        // Exercise the public flag gate as well as the landing parser. Calling
+        // parse_verifier directly hid an undeclared --reason from this detector.
+        let parse = |s: &[&str]| {
+            let args = s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            let (_, args) = split_global_flags(&args)?;
+            parse_invocation(&args)
+        };
+        const INTENT: &str = "a2cb702b-12e8-46c4-831b-c78bf57e944b";
         assert!(matches!(
             parse(&["verifier", "landing", "show"]).unwrap(),
             Invocation::Verifier {
                 action: VerifierAction::LandingShow
             }
         ));
-        assert!(
-            matches!(parse(&["verifier", "landing", "release", "intent-1", "--reason", "checked rejection"]).unwrap(), Invocation::Verifier { action: VerifierAction::LandingRelease { intent_id, reason } } if intent_id == "intent-1" && reason == "checked rejection")
-        );
+        for json in [false, true] {
+            let mut args = vec![
+                "verifier",
+                "landing",
+                "release",
+                INTENT,
+                "--reason",
+                "checked rejection",
+            ];
+            if json {
+                args.push("--json");
+            }
+            assert!(
+                matches!(parse(&args).unwrap(), Invocation::Verifier { action: VerifierAction::LandingRelease { intent_id, reason } } if intent_id == INTENT && reason == "checked rejection")
+            );
+        }
         for args in [
-            vec!["verifier", "landing", "release", "intent-1"],
+            vec!["verifier", "landing", "release"],
+            vec!["verifier", "landing", "release", INTENT],
+            vec!["verifier", "landing", "release", INTENT, "--reason"],
+            vec!["verifier", "landing", "release", INTENT, "--reason", " "],
             vec![
-                "verifier", "landing", "release", "intent-1", "--reason", " ",
-            ],
-            vec![
-                "verifier", "landing", "release", "intent-1", "--reason", "reason", "--force",
+                "verifier", "landing", "release", INTENT, "--reason", "reason", "--force",
             ],
             vec!["verifier", "landing", "show", "extra"],
+            vec!["verifier", "landing", "show", "--reason", "reason"],
         ] {
             assert!(parse(&args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn landing_reason_flag_is_scoped_and_other_flags_still_refuse() {
+        for args in [
+            vec!["verifier", "status", "--reason", "reason"],
+            vec!["verifier", "start", "--reason", "reason"],
+            vec!["verifier", "stop", "--reason", "reason"],
+            vec!["verifier", "drain", "--reason", "reason"],
+            vec!["verifier", "ack", "incident-1", "--reason", "reason"],
+            vec!["verifier", "repair", "show", "--reason", "reason"],
+            vec!["verifier", "landing", "show", "--force"],
+        ] {
+            let args = args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            let error = parse_invocation(&args).unwrap_err().to_string();
+            assert!(error.contains("unknown flag"), "{args:?}: {error}");
         }
     }
 }
