@@ -42,7 +42,8 @@
 # source branch is deleted only after that verification.
 #
 # EXIT CODES
-#   0   the PR merged, the landed tree matched, and the remote branch is gone
+#   0   the PR merged and tree matched; ordinary source branches are deleted,
+#       managed integration branches are retained for owned reconciliation
 #   1   validation, certification, merge, verification, or cleanup failed
 #   2   merge-preflight found a textual conflict
 #   3   the pull request targets a branch other than the one it must land on
@@ -81,6 +82,22 @@ script="$script_dir/land-pr.sh"
 require_merge_lock() {
     bash "$script_dir/machine-lock.sh" --held merge \
         || die "the private landing phase must run under machine-lock.sh merge"
+}
+
+# This private protocol changes cleanup custody only. The native controller
+# owns admission; the normal lock, certification and protected merge still run.
+# Arguments, not an ambient environment flag, select managed retention.
+validate_managed_intent() {
+    local owner="$1" attempt="$2" head="$3" tree="$4"
+    local marker="${STORYHOOK_LANDING_ATTEMPT_MARKER:-}"
+    local uuid_pattern='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    [[ "$owner" =~ $uuid_pattern ]] && [[ "$attempt" =~ $uuid_pattern ]] \
+        || die "invalid managed owner or landing attempt identity"
+    [[ "$head" =~ ^[0-9a-f]{40}$ ]] && [[ "$tree" =~ ^[0-9a-f]{40}$ ]] \
+        || die "invalid managed landing head or tree"
+    [ "$head" = "${STORYHOOK_LANDING_HEAD:-}" ] && [ "$tree" = "${STORYHOOK_LANDING_TREE:-}" ] \
+        && [ "${marker##*/}" = "landing-$attempt.attempted" ] \
+        || die "managed landing arguments differ from durable authority"
 }
 
 # Confirms the refreshed refs describe one PR head before anything is merged.
@@ -245,8 +262,17 @@ fi
 # Live GitHub mutation. This mode is reachable only from --locked, through the
 # certified-command path above, with both the lock proof and exact tree in its
 # environment.
-if [ "${1:-}" = "--merge" ] || [ "${1:-}" = "--merge-prepared" ]; then
+if [ "${1:-}" = "--merge" ] || [ "${1:-}" = "--merge-prepared" ] || [ "${1:-}" = --merge-managed ]; then
     require_merge_lock
+    managed_owner="" managed_attempt=""
+    if [ "$1" = --merge-managed ]; then
+        [ "$#" -eq 8 ] || die "invalid private managed merge arguments"
+        managed_owner="$2" managed_attempt="$3"
+        validate_managed_intent "$managed_owner" "$managed_attempt" "$7" "${STORYHOOK_CERTIFIED_MERGE_TREE:-}"
+        [ "$6" = "storyhook/integration/$managed_owner" ] || die "managed source branch differs from owner"
+        shift 3
+        set -- --merge "$@"
+    fi
     [ "$#" -eq 6 ] \
         || die "private usage: land-pr.sh --merge <number> <base-ref> <head-ref> <head-sha> <base-remote-ref>"
     if [ "$1" = --merge-prepared ]; then
@@ -318,6 +344,11 @@ if [ "${1:-}" = "--merge" ] || [ "${1:-}" = "--merge-prepared" ]; then
 
     note "verified PR #$number merged at $merged_at as $merge_oid with admitted tree $actual_tree"
 
+    if [ -n "$managed_owner" ]; then
+        note "retained managed source branch $head_ref for exact owned reconciliation"
+        exit 0
+    fi
+
     remaining="$(github_git ls-remote --heads origin "refs/heads/$head_ref" 2>&1)" \
         || die "PR #$number merged and verified, but reading remote branch $head_ref failed: $remaining"
     if [ -n "$remaining" ]; then
@@ -337,14 +368,27 @@ fi
 # Everything from metadata resolution through verification stays under the
 # lock. The freshly fetched target ref defines the certification base. A head
 # disagreement is refused because GitHub can enforce that same head at merge.
+if [ "${1:-}" = --managed-intent ]; then
+    [ "$#" -eq 6 ] || die "private managed landing requires owner, attempt, head, tree and PR"
+    validate_managed_intent "$2" "$3" "$4" "$5"
+    case "$6" in ''|-*) die "invalid managed pull request" ;; esac
+    exec bash "$script_dir/machine-lock.sh" merge -- bash "$script" --locked-managed "$2" "$3" "$4" "$5" "$6"
+fi
 if [ "${1:-}" = --stopped-intent ]; then
     [ "$#" -eq 5 ] || die "private stopped landing requires attempt, head, tree and PR"
     exec bash "$script_dir/machine-lock.sh" merge -- bash "$script" --locked-stopped "$2" "$3" "$4" "$5"
 fi
-if [ "${1:-}" = "--locked" ] || [ "${1:-}" = --locked-stopped ]; then
+if [ "${1:-}" = "--locked" ] || [ "${1:-}" = --locked-stopped ] || [ "${1:-}" = --locked-managed ]; then
     require_merge_lock
     stopped_attempt=""
-    if [ "$1" = --locked-stopped ]; then
+    managed_owner="" managed_attempt=""
+    if [ "$1" = --locked-managed ]; then
+        [ "$#" -eq 6 ] || die "invalid private managed landing arguments"
+        managed_owner="$2" managed_attempt="$3"
+        validate_managed_intent "$managed_owner" "$managed_attempt" "$4" "$5"
+        case "$6" in ''|-*) die "invalid managed pull request" ;; esac
+        shift 4
+    elif [ "$1" = --locked-stopped ]; then
         [ "$#" -eq 5 ] || die "invalid private stopped landing arguments"
         stopped_attempt="$2"
         [ "$3" = "${STORYHOOK_LANDING_HEAD:-}" ] && [ "$4" = "${STORYHOOK_LANDING_TREE:-}" ] \
@@ -372,6 +416,9 @@ if [ "${1:-}" = "--locked" ] || [ "${1:-}" = --locked-stopped ]; then
         || die "PR #$number returned no base branch"
     initial_head_ref="$(printf '%s\n' "$initial" | jq -er '.headRefName')" \
         || die "PR #$number returned no head branch"
+    if [ -n "$managed_owner" ]; then
+        [ "$initial_head_ref" = "storyhook/integration/$managed_owner" ] || die "managed source branch differs from owner"
+    fi
     # Before any fetch: the branch this PR must land on, and whether it does.
     expected="$(expected_base "$stated_base")" || exit 1
     validate_base "$number" "$expected" "$initial"
@@ -402,6 +449,10 @@ if [ "${1:-}" = "--locked" ] || [ "${1:-}" = --locked-stopped ]; then
     if [ -n "$stopped_attempt" ]; then
         exec bash "$script" --prepared-run "$fetched_base" "$head_sha" "$STORYHOOK_LANDING_TREE" "$stopped_attempt" -- \
             bash "$script" --merge-prepared "$number" "$base_ref" "$head_ref" "$head_sha" "$base_remote_ref"
+    fi
+    if [ -n "$managed_owner" ]; then
+        exec bash "$script" --certified-run "$fetched_base" "$head_sha" -- \
+            bash "$script" --merge-managed "$managed_owner" "$managed_attempt" "$number" "$base_ref" "$head_ref" "$head_sha" "$base_remote_ref"
     fi
     exec bash "$script" --certified-run "$fetched_base" "$head_sha" -- \
         bash "$script" --merge "$number" "$base_ref" "$head_ref" "$head_sha" "$base_remote_ref"
