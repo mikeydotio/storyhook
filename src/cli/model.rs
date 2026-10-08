@@ -16,6 +16,8 @@ pub enum FamilyHandler {
     Github,
     /// Terminal UI after global option parsing.
     Tui,
+    /// Pure offline command discovery.
+    Describe,
 }
 
 /// Closed set of handlers that run before global option parsing.
@@ -25,23 +27,32 @@ pub enum BeforeGlobals {
 /// Closed set of handlers that run after globals and before invocation parsing.
 pub enum BeforeInvocation {
     Tui,
+    /// Pure offline command discovery.
+    Describe,
 }
 
 /// No project, store, daemon, environment or helper is consulted for routing.
 pub fn before_globals(args: &[String]) -> Option<BeforeGlobals> {
     match CommandId::find(args.first()?)?.handler() {
         FamilyHandler::Github => Some(BeforeGlobals::Github),
-        FamilyHandler::Parsed | FamilyHandler::Tui => None,
+        FamilyHandler::Parsed | FamilyHandler::Tui | FamilyHandler::Describe => None,
     }
 }
 
 /// Preserve the existing terminal help precedence, including legacy terminators.
 pub fn before_invocation(args: &[String]) -> Option<BeforeInvocation> {
+    let handler = CommandId::find(args.first()?)?.handler();
+    // Discovery owns its path words, including the registered --help spelling.
+    // Existing commands retain their legacy help precedence.
+    if handler == FamilyHandler::Describe {
+        return Some(BeforeInvocation::Describe);
+    }
     if super::is_help_request(args) {
         return None;
     }
-    match CommandId::find(args.first()?)?.handler() {
+    match handler {
         FamilyHandler::Tui => Some(BeforeInvocation::Tui),
+        FamilyHandler::Describe => Some(BeforeInvocation::Describe),
         FamilyHandler::Parsed | FamilyHandler::Github => None,
     }
 }
@@ -88,6 +99,7 @@ fn unknown(name: &str) -> Result<Invocation, AppError> {
 commands! {
     HelpFlag ["-h", "--help"] Parsed Grammar::new("[<ignored>...]", "", FormKind::Command); (args) => Ok(Invocation::Help),
     VersionFlag ["-V", "--version"] Parsed Grammar::new("[<ignored>...]", "", FormKind::Command); (args) => Ok(Invocation::Version),
+    Describe ["describe"] Describe Grammar::new("[<command-path>...] [--audience <audience:audiences>]", "", FormKind::Early); (args) => unknown(&args[0]),
     Help ["help"] Parsed Grammar::new("[<topic:help-topics>] [--all | --compact]", "", FormKind::Command); (args) => parse_help(args),
     Mcp ["mcp"] Parsed Grammar::new("", "", FormKind::Retired); (args) => Err(AppError::Usage(
             "`story mcp` is retired. Use CLI commands with --json instead. \
@@ -286,6 +298,11 @@ pub struct FlagPath {
 /// Two verbs cannot be checked against their own help text, because their help
 /// names no flags at all — see `UNDISCOVERABLE` in `tests/unknown_flag_sweep.rs`.
 pub static FLAG_PATHS: &[FlagPath] = &[
+    FlagPath {
+        command: CommandId::Describe,
+        subcommand: None,
+        flags: &[value("audience")],
+    },
     FlagPath {
         command: CommandId::Continuation,
         subcommand: None,
@@ -972,6 +989,8 @@ help_syntax! {
 "#,
     Scaffold => r#"  story scaffold agents-md|claude-md|cursor-rules
 "#,
+    Describe => r#"  story describe [command path] --json [--audience task|operator|internal|all]
+"#,
     Help => r#"  story help [<command>] [--compact] [--all]
 "#,
     Plugin => r#"  story plugin install|uninstall <claude|codex>
@@ -1017,7 +1036,7 @@ help_syntax! {
     Set => r#"  story set <id> [--title "<title>"] [--state <slug>] [--priority <level>]
                  [--complexity low|medium|high]
                   [--labels "<csv>"] [--blocked "<reason>"]
-                  [--unblocked] [--json "<json>"] [--type <slug>]
+                  [--unblocked] [--input-json "<object>" | --json "<object>"] [--type <slug>]
                   [--description "<text>"]
 "#,
     Relate => r#"  story relate <a> <relationship-type> <b>

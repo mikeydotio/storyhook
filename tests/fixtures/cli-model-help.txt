@@ -105,6 +105,7 @@ Usage:
   story attachment save <id> <n> <path>
   story pr-check [<id>]                             (requires the github-pr feature)
   story scaffold agents-md|claude-md|cursor-rules
+  story describe [command path] --json [--audience task|operator|internal|all]
   story help [<command>] [--compact] [--all]
   story plugin install|uninstall <claude|codex>
   story plugin reinstall                            (every provider that has it registered, from this binary)

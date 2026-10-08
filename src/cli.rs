@@ -1,3 +1,5 @@
+/// Offline command discovery.
+pub mod discovery;
 /// Automatic dispatch policy commands.
 pub mod dispatch_policy;
 /// Shared command registration and grammar.

@@ -42,6 +42,7 @@ pub fn domain(name: &str) -> Result<Domain, String> {
             .iter()
             .map(SuperState::as_str)
             .collect(),
+        "audiences" => vec!["task", "operator", "internal", "all"],
         "providers" => vec!["codex", "claude"],
         "speed" => vec!["standard", "fast"],
         "context-format" => vec!["markdown", "json"],

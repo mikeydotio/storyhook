@@ -18,6 +18,7 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> = std::
             "complexity-rubric",
             include_str!("help/complexity-rubric.txt"),
         );
+        m.insert("describe", include_str!("help/command-discovery.txt"));
         m.insert("dispatch-policy", include_str!("help/dispatch-policy.txt"));
         m.insert("ste", include_str!("help/ste.txt"));
         m.insert("continuation", r#"story continuation capabilities --json
