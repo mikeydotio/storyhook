@@ -74,6 +74,9 @@ not errors; raw export, discovery and delegated helpers keep their respective
 contracts. Follow readers must accept complete newline-delimited records; a
 partial final line is not yet a record. Log-reading failures still use ordinary
 error output rather than promising that all failure bytes are JSONL.
+Ordinary errors use `result: "error"`; guarded state conflicts instead use
+`result: "conflict"` with expected/actual state and process status 9. `set`
+returns a message envelope; read `show` to obtain the updated story.
 
 The stable plugin launcher supports Codex. It forwards both helper streams and
 its exit status, including nonzero status, even with JSON/quiet globals. GitHub
@@ -94,7 +97,10 @@ explicit complexity/policy resolution. It includes later atomic `new
 --blocked-by`, `project settings automations.enabled`, Reset previews, and
 private recovery protocols. Discovery names dynamic settings rather than
 fetching configured values; unassessed medium remains different from explicitly
-assessed medium. Nothing here restores assignment or changes dispatch policy.
+assessed medium. `final_surface_keeps_assignment_retired_and_later_capabilities_reachable`
+checks the retired interface, actual assessed complexity, dependency readiness,
+project setting access and discovery of the later protocol paths. Nothing here
+restores assignment or changes dispatch policy.
 
 Legacy `new -- --help` still returns help instead of creating literal text.
 Legacy `next --count 1` returns a single-story envelope when available; a

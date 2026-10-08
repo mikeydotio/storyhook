@@ -75,9 +75,13 @@ fn input_migration_and_legacy_next_shapes_work_for_real_consumers() {
             r#"{"title":"migrated","complexity":"medium"}"#,
         ],
     );
-    assert_eq!(explicit["story"]["story"]["title"], "migrated");
+    assert_eq!(explicit["result"], "ok");
+    assert!(explicit["message"].is_string());
+    assert_eq!(show(&env, dir, &id)["story"]["story"]["title"], "migrated");
     let legacy = value(&env, dir, &["set", &id, "--json", r#"{"title":"legacy"}"#]);
-    assert_eq!(legacy["story"]["story"]["title"], "legacy");
+    assert_eq!(legacy["result"], "ok");
+    assert!(legacy["message"].is_string());
+    assert_eq!(show(&env, dir, &id)["story"]["story"]["title"], "legacy");
     let before = show(&env, dir, &id);
     let rejected = run(
         &env,
@@ -108,7 +112,7 @@ fn raw_export_round_trip_preserves_story_data_without_an_envelope() {
     ok(&env, &restore, &["import-project", input.to_str().unwrap()]);
     let after = show(&env, &restore, &id);
     assert_eq!(after["story"]["story"], before["story"]["story"]);
-    assert_eq!(after["story"]["labels"], before["story"]["labels"]);
+    assert_eq!(after["story"]["story"]["labels"], json!(["audit"]));
     assert_eq!(ok(&env, &restore, &["export"]), export);
 }
 
@@ -138,7 +142,14 @@ fn quiet_errors_guarded_conflicts_and_unsupported_preview_leave_data_unchanged()
             String::from_utf8_lossy(&out.stdout)
         );
         let error: Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(error["result"], "error");
+        if code == 9 {
+            assert_eq!(error["result"], "conflict");
+            assert_eq!(error["expected"], "in-progress");
+            assert_eq!(error["actual"], "todo");
+        } else {
+            assert_eq!(error["result"], "error");
+            assert_eq!(error["exit_code"], code);
+        }
         assert_eq!(error["exit_code"], code);
         assert!(out.stderr.is_empty());
         assert_eq!(
@@ -171,6 +182,16 @@ fn lifecycle_verbs_and_real_previews_have_distinct_observable_effects() {
     assert_eq!(show(&env, dir, &id)["story"]["story"]["state"], "todo");
     ok(&env, dir, &["close", &id, "superseded in fixture"]);
     assert_eq!(show(&env, dir, &id)["story"]["story"]["state"], "dropped");
+    assert!(
+        show(&env, dir, &id)["story"]["story"]["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["text"]
+                .as_str()
+                .unwrap()
+                .contains("superseded in fixture"))
+    );
     ok(&env, dir, &["archive", &id]);
     assert_eq!(show(&env, dir, &id)["story"]["story"]["title"], "lifecycle");
     assert_eq!(
@@ -200,13 +221,26 @@ fn aliases_and_legacy_help_termination_remain_compatible() {
     let two = project.new_story("two");
     ok(&env, dir, &["link", &one, "blocks", &two]);
     let linked = show(&env, dir, &one);
+    assert_eq!(
+        linked["story"]["story"]["relationships"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     ok(&env, dir, &["unrelate", &one, "blocks", &two]);
     ok(&env, dir, &["relate", &one, "blocks", &two]);
     assert_eq!(
-        show(&env, dir, &one)["story"]["relationships"],
-        linked["story"]["relationships"]
+        show(&env, dir, &one)["story"]["story"]["relationships"],
+        linked["story"]["story"]["relationships"]
     );
     ok(&env, dir, &["unlink", &one, "blocks", &two]);
+    assert!(
+        show(&env, dir, &one)["story"]["story"]["relationships"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     let before = ok(&env, dir, &["export"]);
     assert_eq!(
         ok(&env, dir, &["new", "--", "--help"]),
@@ -363,4 +397,62 @@ fn terminal_questionnaire_can_cancel_without_creating_a_project() {
     assert!(
         String::from_utf8_lossy(&ok(&env, &dir, &["project", "list"])).contains("No projects yet")
     );
+}
+
+#[test]
+fn final_surface_keeps_assignment_retired_and_later_capabilities_reachable() {
+    let env = TestEnv::isolated();
+    let project = env.project().build();
+    let dir = project.path();
+    let document = value(&env, dir, &["describe", "--audience", "all"]);
+    let commands = document["commands"].as_array().unwrap();
+    for path in [json!(["assign"]), json!(["member"])] {
+        assert!(!commands.iter().any(|d| d["path"] == path));
+    }
+    for args in [
+        vec!["assign", "SH-1", "anyone"],
+        vec!["new", "removed assignment", "--assignee", "anyone"],
+    ] {
+        assert_eq!(run(&env, dir, &args).status.code(), Some(2));
+    }
+    for path in [
+        json!(["dispatch-policy", "resolve"]),
+        json!(["project", "settings", "set"]),
+        json!(["verifier", "repair-admit"]),
+        json!(["engine", "reset-check"]),
+    ] {
+        assert!(commands.iter().any(|d| d["path"] == path), "missing {path}");
+    }
+    let blocker = project.new_story("blocker");
+    assert_eq!(
+        show(&env, dir, &blocker)["story"]["story"]["complexity_assessed"],
+        false
+    );
+    let dependent = value(
+        &env,
+        dir,
+        &[
+            "new",
+            "dependent",
+            "--blocked-by",
+            &blocker,
+            "--complexity",
+            "medium",
+        ],
+    );
+    assert_eq!(dependent["story"]["story"]["complexity_assessed"], true);
+    let ready = value(&env, dir, &["next", "--count", "2"]);
+    assert_eq!(ready["stories"].as_array().unwrap().len(), 1);
+    assert_eq!(ready["stories"][0]["story"]["id"], blocker);
+    ok(
+        &env,
+        dir,
+        &["project", "settings", "set", "automations.enabled", "false"],
+    );
+    let setting = value(
+        &env,
+        dir,
+        &["project", "settings", "get", "automations.enabled"],
+    );
+    assert_eq!(setting["settings"][0]["value"], "false");
 }
