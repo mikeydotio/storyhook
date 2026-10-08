@@ -1,10 +1,9 @@
 //! Startup budgets are shared deadlines, including adopted-lane subprobes.
 //!
-//! Each test declares how it reads the tmux bound (SH-836): proof where the
-//! production value itself is the claim, patience where a fixture must
-//! answer. A patience test derives its shared deadline and its fixture delays
-//! from the one bound its `Environment` grants, so the ratios it proves hold
-//! at any contention.
+//! Budget arithmetic uses the production probe path with a logical clock and
+//! scripted external observations (SH-855); it never depends on fork/exec
+//! winning a race against the deadline. Real-shell identity/liveness tests
+//! retain fixture patience, while production-value assertions declare proof.
 
 use super::*;
 
@@ -113,64 +112,284 @@ fn restart_probe_allowance_is_remaining_time_capped_at_tmux_timeout() {
     );
 }
 
+/// One logical clock shared by distinct dispatchers and nested probes. The
+/// runner times out exactly when the requested external work cannot fit, so
+/// renewing a timeout changes both the recorded allowance and the verdict.
+struct ScriptedProbe {
+    now: std::cell::Cell<Instant>,
+    discovery_time: Duration,
+    steps: std::cell::RefCell<std::collections::VecDeque<(String, Duration, String)>>,
+    calls: std::cell::RefCell<Vec<(String, Duration)>>,
+}
+
+impl ScriptedProbe {
+    fn new(now: Instant, discovery_time: Duration, steps: Vec<(&str, Duration, String)>) -> Self {
+        Self {
+            now: std::cell::Cell::new(now),
+            discovery_time,
+            steps: std::cell::RefCell::new(
+                steps
+                    .into_iter()
+                    .map(|(verb, elapsed, output)| (verb.into(), elapsed, output))
+                    .collect(),
+            ),
+            calls: Default::default(),
+        }
+    }
+
+    fn assert_finished(&self, expected: &[(&str, Duration)]) {
+        assert!(
+            self.steps.borrow().is_empty(),
+            "every planned subprobe must run"
+        );
+        let expected: Vec<_> = expected
+            .iter()
+            .map(|(verb, bound)| (verb.to_string(), *bound))
+            .collect();
+        assert_eq!(*self.calls.borrow(), expected);
+    }
+}
+
+impl ProbeRuntime for ScriptedProbe {
+    fn now(&self) -> Instant {
+        self.now.get()
+    }
+
+    fn inspect(
+        &self,
+        _env: &Environment,
+        socket: Option<&Path>,
+        deadline: Instant,
+    ) -> Result<super::super::tmux_target::Target, AppError> {
+        let remaining = self.remaining(deadline)?;
+        self.calls.borrow_mut().push(("inspect".into(), remaining));
+        self.now
+            .set(self.now.get() + self.discovery_time.min(remaining));
+        self.remaining(deadline)?;
+        let socket = socket.unwrap_or_else(|| Path::new("unused-scripted-socket"));
+        Ok(serde_json::from_value(serde_json::json!({
+            "protected": false,
+            "socket": socket,
+            "endpoint": socket,
+            "requested_socket": socket,
+        }))
+        .unwrap())
+    }
+
+    fn capture(&self, command: Command, timeout: Duration) -> Result<Captured, CaptureError> {
+        use std::os::unix::process::ExitStatusExt;
+        let (verb, elapsed, output) = self
+            .steps
+            .borrow_mut()
+            .pop_front()
+            .expect("an exhausted deadline must not start another subprocess");
+        assert!(
+            command.get_args().any(|arg| arg == verb.as_str()),
+            "unexpected probe command: {command:?}"
+        );
+        self.calls.borrow_mut().push((verb, timeout));
+        self.now.set(self.now.get() + elapsed.min(timeout));
+        if elapsed >= timeout {
+            return Err(CaptureError::Timeout(
+                crate::process::TimeoutTermination::Killed,
+            ));
+        }
+        Ok(Captured {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: output.into_bytes(),
+            stderr: Vec::new(),
+            stdout_truncated: false,
+        })
+    }
+}
+
+fn logical_dispatcher(root: &Path, deadline: Instant) -> ShellDispatcher {
+    // No shell file is needed: only the external boundary is scripted.
+    ShellDispatcher::new(root.join("unused-story.sh"), proven(root)).with_probe_deadline(deadline)
+}
+
+fn logical_adopted_row(root: &Path) -> String {
+    adopted_row(root, 0)
+        .replace("\\t", "\t")
+        .replace("\\n", "\n")
+        .replace("%%", "%")
+}
+
 #[test]
 fn a_timed_out_restart_probe_exhausts_the_next_dispatchers_budget() {
     let root = storyhook_test_support::scratch_dir();
-    let env = patient(root.path());
-    let bound = env.subprocess_bound(TMUX_TIMEOUT);
-    let marker = root.path().join("calls");
-    // The fixture records its call, then outlasts the whole shared budget.
-    let body = format!(
-        "echo probe >> '{}'\nsleep {}",
-        marker.display(),
-        (bound * 2).as_secs_f64()
+    let now = Instant::now();
+    let deadline = now + TMUX_TIMEOUT;
+    let runtime = ScriptedProbe::new(
+        now,
+        Duration::ZERO,
+        vec![("display-message", TMUX_TIMEOUT * 2, String::new())],
     );
-    let deadline = Instant::now() + bound;
-    let first = observer(root.path(), &body, env.clone()).with_probe_deadline(deadline);
-    let second = observer(root.path(), &body, env).with_probe_deadline(deadline);
+    let first = logical_dispatcher(root.path(), deadline);
+    let second = logical_dispatcher(root.path(), deadline);
     assert!(matches!(
-        first.probe_window("%1"),
+        first.probe_window_at_with("%1", None, &runtime),
         WindowProbe::Unanswered { .. }
     ));
     assert!(
-        matches!(second.probe_window("%2"), WindowProbe::Unanswered { detail }
+        matches!(second.probe_window_at_with("%2", None, &runtime), WindowProbe::Unanswered { detail }
         if detail.contains("startup probe budget exhausted"))
     );
-    assert_eq!(std::fs::read_to_string(marker).unwrap().lines().count(), 1);
+    runtime.assert_finished(&[("inspect", TMUX_TIMEOUT), ("display-message", TMUX_TIMEOUT)]);
 }
 
 #[test]
 fn adopted_activity_query_uses_the_identity_queries_remaining_budget() {
     let root = storyhook_test_support::scratch_dir();
-    let env = patient(root.path());
-    let bound = env.subprocess_bound(TMUX_TIMEOUT);
-    let marker = root.path().join("calls");
-    // Each answer fits a per-call bound; their sum exceeds the shared
-    // restart budget of one bound, so a renewed activity timeout would
-    // incorrectly answer Alive. The identity answer is the quick one: its
-    // three quarters of the budget are the spawn slack this test must not
-    // lose under load, and the activity answer (seven eighths) then outlasts
-    // whatever remains.
-    let identity = (bound / 4).as_secs_f64();
-    let activity = (bound * 7 / 8).as_secs_f64();
-    let body = format!(
-        "echo \"$4\" >> '{}'\nif [ \"$4\" = list-panes ]; then\n\
-         sleep {identity}\nprintf '{}'\n\
-         else sleep {activity}\nprintf '1789066115\\n'; fi",
-        marker.display(),
-        adopted_row(root.path(), 0),
+    let now = Instant::now();
+    let runtime = ScriptedProbe::new(
+        now,
+        Duration::ZERO,
+        vec![
+            (
+                "list-panes",
+                TMUX_TIMEOUT / 4,
+                logical_adopted_row(root.path()),
+            ),
+            (
+                "display-message",
+                TMUX_TIMEOUT * 7 / 8,
+                "1789066115\n".into(),
+            ),
+        ],
     );
-    let dispatcher = observer(root.path(), &body, env).with_probe_deadline(Instant::now() + bound);
-    let answer = dispatcher.probe_lane(&adopted_lane(root.path()), "%1");
+    let dispatcher = logical_dispatcher(root.path(), now + TMUX_TIMEOUT);
+    let answer = adoption::probe_with(
+        &adopted_lane(root.path()),
+        dispatcher.probe_budget(),
+        &dispatcher.tmux_program,
+        &dispatcher.env,
+        &runtime,
+    );
     assert!(
         matches!(answer, WindowProbe::Unanswered { .. }),
         "{answer:?}"
     );
-    let calls = std::fs::read_to_string(marker).unwrap();
-    assert_eq!(
-        calls, "list-panes\ndisplay-message\n",
-        "both production subprobes must be exercised; the probe answered {answer:?}"
+    runtime.assert_finished(&[
+        ("inspect", TMUX_TIMEOUT),
+        ("list-panes", TMUX_TIMEOUT),
+        ("display-message", TMUX_TIMEOUT * 3 / 4),
+    ]);
+}
+
+#[test]
+fn restart_discovery_time_reduces_regular_and_adopted_capture_allowance() {
+    let root = storyhook_test_support::scratch_dir();
+    for adopted in [false, true] {
+        let now = Instant::now();
+        let runtime = ScriptedProbe::new(
+            now,
+            TMUX_TIMEOUT / 4,
+            vec![(
+                if adopted {
+                    "list-panes"
+                } else {
+                    "display-message"
+                },
+                TMUX_TIMEOUT,
+                String::new(),
+            )],
+        );
+        let dispatcher = logical_dispatcher(root.path(), now + TMUX_TIMEOUT);
+        let answer = if adopted {
+            adoption::probe_with(
+                &adopted_lane(root.path()),
+                dispatcher.probe_budget(),
+                &dispatcher.tmux_program,
+                &dispatcher.env,
+                &runtime,
+            )
+        } else {
+            dispatcher.probe_window_at_with("%1", None, &runtime)
+        };
+        assert!(
+            matches!(answer, WindowProbe::Unanswered { .. }),
+            "{answer:?}"
+        );
+        runtime.assert_finished(&[
+            ("inspect", TMUX_TIMEOUT),
+            (
+                if adopted {
+                    "list-panes"
+                } else {
+                    "display-message"
+                },
+                TMUX_TIMEOUT * 3 / 4,
+            ),
+        ]);
+    }
+}
+
+#[test]
+fn adopted_activity_answers_inside_the_shared_remaining_budget() {
+    let root = storyhook_test_support::scratch_dir();
+    let now = Instant::now();
+    let runtime = ScriptedProbe::new(
+        now,
+        TMUX_TIMEOUT / 4,
+        vec![
+            (
+                "list-panes",
+                TMUX_TIMEOUT / 4,
+                logical_adopted_row(root.path()),
+            ),
+            ("display-message", TMUX_TIMEOUT / 4, "1789066115\n".into()),
+        ],
     );
+    let dispatcher = logical_dispatcher(root.path(), now + TMUX_TIMEOUT);
+    let answer = adoption::probe_with(
+        &adopted_lane(root.path()),
+        dispatcher.probe_budget(),
+        &dispatcher.tmux_program,
+        &dispatcher.env,
+        &runtime,
+    );
+    assert!(
+        matches!(
+            answer,
+            WindowProbe::Alive {
+                last_output_at: Some(1789066115)
+            }
+        ),
+        "{answer:?}"
+    );
+    runtime.assert_finished(&[
+        ("inspect", TMUX_TIMEOUT),
+        ("list-panes", TMUX_TIMEOUT * 3 / 4),
+        ("display-message", TMUX_TIMEOUT / 2),
+    ]);
+}
+
+#[test]
+fn adopted_identity_change_never_spends_budget_on_activity() {
+    let root = storyhook_test_support::scratch_dir();
+    let now = Instant::now();
+    let runtime = ScriptedProbe::new(
+        now,
+        Duration::ZERO,
+        vec![(
+            "list-panes",
+            TMUX_TIMEOUT / 4,
+            logical_adopted_row(root.path()),
+        )],
+    );
+    let dispatcher = logical_dispatcher(root.path(), now + TMUX_TIMEOUT);
+    let mut lane = adopted_lane(root.path());
+    lane.adopted_identity.as_mut().unwrap().window_id = "@different".into();
+    let answer = adoption::probe_with(
+        &lane,
+        dispatcher.probe_budget(),
+        &dispatcher.tmux_program,
+        &dispatcher.env,
+        &runtime,
+    );
+    assert!(matches!(answer, WindowProbe::Gone { detail } if detail.contains("identity changed")));
+    runtime.assert_finished(&[("inspect", TMUX_TIMEOUT), ("list-panes", TMUX_TIMEOUT)]);
 }
 
 #[test]
