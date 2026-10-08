@@ -271,6 +271,7 @@ fn sh890_accepted_origin_survives_reopen_before_any_lane_reservation() {
 #[test]
 fn sh890_legacy_stop_intent_never_adopts_background_caller_authority() {
     let w = Workspace::new(true);
+    std::fs::write(w.worktree.join("keep"), "retained dirty work").unwrap();
     let run = setup(&w);
     // Model a pre-upgrade accepted intent: its durable run has no origin.
     // Background reconciliation must not invent authority from its own cwd.
@@ -290,6 +291,15 @@ fn sh890_legacy_stop_intent_never_adopts_background_caller_authority() {
     assert!(w.worktree.exists());
     assert!(w.branch_exists("worktree-SH-1"));
     assert!(w.story().awaiting.is_some());
+    assert_eq!(
+        std::fs::read_to_string(w.worktree.join("keep")).unwrap(),
+        "retained dirty work"
+    );
+    assert!(
+        w.last_comment()
+            .contains("Recorded before reset: 0 changed and 1 untracked paths")
+    );
+    assert!(!w.last_comment().contains("Discarded"));
     let result = receipt(&w, &run);
     assert!(result["cleanup"]["origin"].is_null());
     assert!(

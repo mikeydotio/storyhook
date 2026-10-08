@@ -113,11 +113,18 @@ pub(super) fn completion_to(reset: &StoryReset, target: &str) -> String {
     }
     match (recovery.dirty, recovery.untracked) {
         (Some(0), Some(0)) | (None, None) => {}
-        (dirty, untracked) => text.push_str(&format!(
-            " Discarded {} changed and {} untracked paths.",
-            dirty.unwrap_or(0),
-            untracked.unwrap_or(0)
-        )),
+        (dirty, untracked) => {
+            let label = if removed.worktree.is_some() {
+                "Discarded"
+            } else {
+                "Recorded before reset:"
+            };
+            text.push_str(&format!(
+                " {label} {} changed and {} untracked paths.",
+                dirty.unwrap_or(0),
+                untracked.unwrap_or(0)
+            ));
+        }
     }
     if let Some(awaiting) = &recovery.cleared_awaiting {
         text.push_str(&format!(" Cleared the awaiting reason: {awaiting}"));

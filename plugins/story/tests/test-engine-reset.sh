@@ -147,7 +147,7 @@ assert_contains "$(tmux -S "$socket" list-windows -a -F '#{window_name}')" "$bad
 [ -d "$bad_wt" ] || fail_test 'mismatched worktree removed'
 git -C "$repo" show-ref --verify --quiet "refs/heads/worktree-$bad" || fail_test 'mismatched branch removed'
 assert_eq "$(cd "$repo" && story show "$bad" --json | jq -r '.story.story.state')" todo 'uncertain reset restores prior state'
-assert_contains "$(cd "$repo" && story show "$bad" --json | jq -r '.story.story.awaiting')" 'marker' 'retained identity blocks redispatch'
+assert_contains "$(cd "$repo" && story show "$bad" --json | jq -r '.story.story.awaiting')" 'left resources' 'retained identity blocks redispatch'
 
 # Installed artifacts are retained and reported by the same native teardown.
 installed=$(new_story "$repo" 'preserve installed artifacts')
@@ -161,7 +161,7 @@ assert_eq "$(jqf "$out" .run.state)" finished 'installed resource lane settles w
 assert_contains "$out" 'installed' 'leased reset records installed-resource protection'
 [ -d "$installed_wt" ] || fail_test 'installed-resource worktree removed'
 git -C "$repo" show-ref --verify --quiet "refs/heads/worktree-$installed" || fail_test 'installed-resource branch removed'
-assert_contains "$(cd "$repo" && story show "$installed" --json | jq -r '.story.story.awaiting')" 'installed' 'retained installed resources block redispatch'
+assert_contains "$(cd "$repo" && story show "$installed" --json | jq -r '.story.story.awaiting')" 'left resources' 'retained installed resources block redispatch'
 rm "$STORYHOOK_DATA_DIR/managed-paths"
 
 # A partial prior cleanup may leave only its exact window and local branch.
