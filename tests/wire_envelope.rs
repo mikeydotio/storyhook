@@ -2409,7 +2409,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        74,
+        75,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }
