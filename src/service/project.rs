@@ -347,6 +347,10 @@ pub struct ProjectPointer {
     /// User-authored; storyhook never writes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub batch: Option<toml::Value>,
+    /// Independent single-submission integration recovery policy, disabled when
+    /// absent. Batch smoothing never grants this capability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration: Option<toml::Value>,
 }
 
 impl ProjectPointer {
@@ -363,6 +367,7 @@ impl ProjectPointer {
             github: None,
             verify: None,
             batch: None,
+            integration: None,
         }
     }
 }

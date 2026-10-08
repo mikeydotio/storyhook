@@ -58,6 +58,7 @@ pub mod github;
 pub(crate) mod github_repository;
 pub mod grouping;
 pub mod history;
+pub mod integration_recovery;
 pub mod integrity;
 mod isolated_merge;
 pub mod landing;

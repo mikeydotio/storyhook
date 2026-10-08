@@ -145,6 +145,29 @@ pub struct PrivateTrialMerger {
 }
 
 impl PrivateTrialMerger {
+    /// Opens a private trial under one caller deadline, including Git setup.
+    pub(crate) fn open_controlled(
+        checkout: &Path,
+        deadline: Instant,
+        cancellation: Cancellation,
+    ) -> Result<Self, AppError> {
+        Ok(Self {
+            objects: PrivateObjects::open_controlled(
+                checkout,
+                LABEL,
+                "storyhook-trial-merge-",
+                Some(deadline),
+                &|| cancellation.is_cancelled(),
+            )?,
+            deadline: Some(deadline),
+            cancellation: Some(cancellation),
+        })
+    }
+
+    /// Explicit cleanup receipt for native diagnostic/integration ownership.
+    pub(crate) fn close(self) -> Result<(), AppError> {
+        self.objects.close()
+    }
     /// Opens private object storage for the repository that holds `checkout`.
     pub fn open(checkout: &Path) -> Result<Self, AppError> {
         Ok(Self {
