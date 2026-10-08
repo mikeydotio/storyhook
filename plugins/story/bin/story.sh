@@ -2886,6 +2886,14 @@ cmd_dispatch() {
       "[story] $id → the agent window opened, but dispatch could not record its exact cleanup identity. Nothing was typed into that pane; $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE"
   fi
 
+  # Only a newly-created dispatch may opt into managed product custody. Reused
+  # lanes retain unknown ownership. Failure keeps products and ordinary dispatch.
+  local product_charter=''
+  if [ "$worktree_created" = true ]; then
+    product_charter=$(python3 "$STORY_PLUGIN_ROOT/lib/product_enrollment.py" "$worktree_path" true) || product_charter=''
+    [ -z "$product_charter" ] || prompt="$prompt $product_charter"
+  fi
+
   # Step 11: the charter needs both process identity and provider readiness.
   # Codex first sends a task-free initialization turn to trigger its deferred
   # hook. Capture failure evidence before terminating this attempt's process

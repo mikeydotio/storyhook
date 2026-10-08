@@ -59,23 +59,70 @@ is a generic Rust default, and a shared, external or symlinked target is never
 eligible for deletion. Retired verifier directories require independent owner
 evidence; directory names and modification times do not authorize a sweep.
 
-## Remaining SH-835 integration
+## Guarded detachment and configured foreground purge
 
-This custody increment does not delete products, install a reclaim hook, enroll
-providers, or complete SH-835. Project automations remain off. The integration
-must reconcile two existing contracts before destructive behavior is added:
+Atomic detachment followed by deletion is the approved strategy. Reset retains
+its existing 60-second workspace-lock fallback. The short native store write
+checks the exact Verifying event generation captured by `story move`, its
+adjacent cleanup lease, the automation generation fence, and fresh dispatch
+product enrollment. It checks exclusive whole-build custody and anchors both
+rename parents with directory descriptors. The rename itself occurs under the
+store write guard; no shell, subprocess, recursive traversal, or deletion does.
+Reset and repair can proceed while the later purge runs. New products created at
+the original path are outside the purge authority.
 
-* SH-835's proposed reservation retains the exact Verifying generation through
-  hook descendant settlement and rejects a concurrent return for repair.
-* Card Reset is a final recovery lever. `src/service/story_reset.rs` proceeds
-  after 60 seconds even if workspace exclusion cannot be acquired.
+Reclamation is opt-in. This repository does **not** enable it in its pointer
+file in this change. An operator can configure a cooperating project with:
 
-The pending decision is whether to detach validated products atomically during a
-short generation-guarded operation and purge only detached files afterward, or
-extend Reset's waiting contract through reclaim settlement. A long-running hook
-must not execute under a store write transaction. A state snapshot followed by
-unreserved deletion is not an acceptable implementation of either choice.
+```toml
+[build_products]
+enabled = false
+path = "target"
+managed_entry = "scripts/managed-cargo.sh"
+hook = ["bash", "scripts/purge-detached-products.sh"]
+timeout_seconds = 120
+```
 
-After that decision, acceptance still requires configured-hook validation,
-generation/repair/reset race fixtures, provider enrollment and legacy deferral,
-cancellation/crash retention, exact-path refusal, and a returned-story rebuild.
+The generic service has no default product path. The path is one directory
+component inside the enrolled linked worktree. Absolute, nested, dot-prefixed,
+tracked, symlinked, shared/external and cross-filesystem roots are refused. The
+configured hook is trusted project code, invoked as argv without a shell unless
+explicitly configured; its sole appended argument is a detached journal, never
+an original path. It must implement this detached-only protocol and stay in the
+foreground. The supplied hook selects the supported Python runtime, owns its
+job lock, validates journal and inode identity, and walks open descriptors without
+following symlinks. Concurrent callers cannot purge the same job. Hook failure or
+cancellation preserves the journal and any remaining detached products.
+
+Fresh dispatch enrollment occurs only when the plugin just created the worktree,
+the configured target does not exist (even an empty directory refuses), and the
+provider is given the managed-entry charter before its story task. Enrollment is
+exclusive and fsynced in private Git administration. Reused/restored/manual lanes
+are not retroactively enrolled. A config or cleanup identity change defers cleanup.
+The cooperating provider must route every product-generating command through the
+managed entry; arbitrary bare Cargo, escaped descriptors, or hostile same-user
+processes are outside this contract. This software does not enroll any live lane.
+
+`story move ... verifying` captures the exact event identity in its commit.
+Delayed callbacks cannot adopt a later stay, including after disable/re-enable.
+`--no-hooks` and disabled project automations suppress reclamation. Alternative
+state-edit paths that do not record a cleanup lease retain products. A live owner,
+held lock, crashed supervisor or ambiguous custody record also retains products;
+a later explicit submission can retry with its own fresh generation. There is no
+age-based sweep or verifier-directory name heuristic.
+
+Before rename a durable job records the original product inode and planned
+quarantine identity. Crash before rename leaves the original untouched. Crash
+after rename can be recovered solely from the detached inode, even when the
+journal still says `prepared`. To retry an interrupted detached purge, run the
+configured hook with that **one exact** private Git journal path. The recovery
+hook never reads or deletes the original path. Missing products are success only
+with a durable `purging` or `purged` record; missing unproved detachment is a
+refusal. Records remain for audit after successful removal. Retired verifier
+worktrees without equivalent exact enrollment and custody remain untouched.
+
+A returned story runs the same managed Cargo entry: Cargo creates its absent
+output directory normally. Reclamation does not delete sources, Git state,
+provider/session evidence, global caches, or shared verifier caches, and does not
+enable host admission, project automation, provider enrollment on existing lanes,
+or production rollout. Those are separate operator actions.
