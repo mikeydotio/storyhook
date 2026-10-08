@@ -226,6 +226,13 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
         "\"tmux\"",
         Kind::Waited,
     ),
+    // SH-890 retry fixtures respawn a pane through file-backed capture at the
+    // Environment-adjusted tmux bound; the respawned pane owns no capture pipe.
+    (
+        "src/service/story_reset/cleanup_retry_tests.rs",
+        "\"tmux\"",
+        Kind::Waited,
+    ),
     ("src/service/engine.rs", "&self.tmux_program", Kind::Waited),
     // Adoption injects the tmux executable (SH-809). Capture still uses files
     // and kills the whole process group at the per-call tmux bound
