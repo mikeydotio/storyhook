@@ -57,7 +57,7 @@ pub enum DispatcherCall {
     Dispatch(DispatchRequest),
     Unclaim(UnclaimRequest),
     /// An exact durable reset request.
-    Reset(storyhook::store::EngineReset),
+    Reset(Box<storyhook::store::EngineReset>),
     WindowAlive(String),
     KillWindow(String),
 }
@@ -148,7 +148,7 @@ impl Dispatcher for FakeDispatcher {
         _workspace: std::os::fd::BorrowedFd<'_>,
         _native: &mut dyn FnMut() -> Result<DispatchOutcome, AppError>,
     ) -> Result<DispatchOutcome, AppError> {
-        match self.next(DispatcherCall::Reset(request.clone())) {
+        match self.next(DispatcherCall::Reset(Box::new(request.clone()))) {
             DispatcherStep::Reset => Ok(DispatchOutcome::from_payload(serde_json::json!({
                 "ok": true, "token": request.token, "lease": request.lease,
                 "postconditions": {"tmux_story_windows_absent":true, "worktree_registration_absent":true,
