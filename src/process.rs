@@ -432,6 +432,45 @@ pub(crate) fn run_captured_query(
     .map_err(|failure| failure.error)
 }
 
+/// A private query whose owned process group must settle before success.
+/// The absolute caller deadline includes setup and descendant drain; it is
+/// never renewed when the leader exits. This is process-group custody, not
+/// proof about a descendant that deliberately escapes into another session.
+pub(crate) fn run_captured_query_quiescent(
+    command: Command,
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+    answer_limit: u64,
+    answers: &'static [i32],
+) -> Result<Captured, CaptureError> {
+    if cancelled() {
+        return Err(CaptureError::Cancelled);
+    }
+    if Instant::now() >= deadline {
+        return Err(CaptureError::Wait(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "query deadline expired before starting a child",
+        )));
+    }
+    run_captured_until(
+        command,
+        TerminationPolicy::Kill,
+        None,
+        CaptureWait {
+            quiescent: true,
+            private_output: true,
+            failures_only: true,
+            stdout_limit: Some(answer_limit),
+            answers,
+            ..CaptureWait::default()
+        },
+        Some(cancelled),
+        |_| Ok(()),
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    )
+    .map_err(|failure| failure.error)
+}
+
 /// Runs a bounded subprocess with staged, file-backed standard input.
 pub(crate) fn run_captured_with_input(
     command: Command,

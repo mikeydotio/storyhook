@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
     error::AppError,
-    process::{Cancellation, Captured, run_captured_query},
+    process::{Cancellation, Captured, run_captured_query_quiescent},
     service::trial_merge::{
         BlobSource, TrialMerge, answer_oid, entry_answer, entry_spec, merge_answer,
     },
@@ -211,6 +211,7 @@ impl PinnedDirectory {
 }
 
 struct Custody {
+    repository: PathBuf,
     directories: Vec<PinnedDirectory>,
     stamp: PathBuf,
     stamp_file: File,
@@ -222,6 +223,34 @@ impl Custody {
         for directory in &self.directories {
             directory.validate()?;
         }
+        // A bare repository must not acquire discovery/common-directory or
+        // external-object redirects between effects, even with the same root.
+        for relative in [
+            ".git",
+            "commondir",
+            "gitdir",
+            "shallow",
+            "objects/info/alternates",
+        ] {
+            match fs::symlink_metadata(self.repository.join(relative)) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(storage(error)),
+                Ok(_) => return Err(refuse("private Git namespace acquired a redirect")),
+            }
+        }
+        for relative in ["config", "HEAD", "assembly.index"] {
+            match fs::symlink_metadata(self.repository.join(relative)) {
+                Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(storage(error)),
+                Ok(_) => {
+                    return Err(refuse(
+                        "private Git administration acquired a nonregular path",
+                    ));
+                }
+            }
+        }
+        reject_object_symlinks(&self.repository.join("objects"))?;
         let file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -245,6 +274,55 @@ impl Custody {
         }
         Ok(())
     }
+}
+
+/// Git may create loose-object and pack subdirectories. None may redirect a
+/// later write outside the owned object directory. Inspection refuses observed
+/// symlinks; it supplements, rather than replaces, exclusive worker custody.
+fn reject_object_symlinks(objects: &Path) -> Result<(), AppError> {
+    match fs::symlink_metadata(objects) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(storage(error)),
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Err(refuse("private object directory acquired a redirect")),
+    }
+    let mut pending = vec![objects.to_owned()];
+    let mut inspected = 0;
+    while let Some(directory) = pending.pop() {
+        match fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(storage(error)),
+            Ok(_) => return Err(refuse("private object namespace changed during inspection")),
+        }
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            // Git can remove its own temporary directories while capture polls.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(storage(error)),
+        };
+        for entry in entries {
+            let entry = entry.map_err(storage)?;
+            inspected += 1;
+            if inspected > 65_536 {
+                return Err(refuse(
+                    "private object namespace exceeds the custody inspection bound",
+                ));
+            }
+            let kind = match entry.file_type() {
+                Ok(kind) => kind,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(storage(error)),
+            };
+            if kind.is_symlink() {
+                return Err(refuse("private object namespace acquired a symlink"));
+            }
+            if kind.is_dir() {
+                pending.push(entry.path());
+            }
+        }
+    }
+    Ok(())
 }
 
 struct Operation<'a> {
@@ -282,14 +360,9 @@ impl Operation<'_> {
         // The caller owns the total deadline; no per-child renewal or hidden
         // fixed timeout can shorten a patient fixture's explicit allowance.
         let cancelled = || self.check().is_err();
-        let result = run_captured_query(
-            command,
-            self.deadline.saturating_duration_since(Instant::now()),
-            &cancelled,
-            ANSWER_LIMIT,
-            answers,
-        )
-        .map_err(|error| refuse(&format!("Git child failed: {}", error.detail())))?;
+        let result =
+            run_captured_query_quiescent(command, self.deadline, &cancelled, ANSWER_LIMIT, answers)
+                .map_err(|error| refuse(&format!("Git child failed: {}", error.detail())))?;
         self.check()?;
         if result.stdout_truncated
             || (!result.status.success()
@@ -313,9 +386,30 @@ impl Operation<'_> {
         env: &[(&str, &str)],
         answers: &'static [i32],
     ) -> Result<Captured, AppError> {
+        let custody = self
+            .custody
+            .as_ref()
+            .ok_or_else(|| refuse("private Git has no native custody"))?;
+        if root != custody.repository {
+            return Err(refuse("private Git repository differs from its owner"));
+        }
         let mut command = clean_git(root);
-        command.args(args).envs(env.iter().copied());
+        command.arg("--bare").args(args).envs(env.iter().copied());
+        // cwd is not Git authority: .git discovery, commondir and inherited
+        // object/index selectors cannot redirect these private effects.
+        command
+            .env("GIT_DIR", root)
+            .env("GIT_COMMON_DIR", root)
+            .env("GIT_OBJECT_DIRECTORY", root.join("objects"))
+            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", "")
+            .env("GIT_INDEX_FILE", root.join("assembly.index"));
         self.capture(command, answers)
+    }
+
+    fn source_git(&self, args: &[&str]) -> Result<Captured, AppError> {
+        let mut command = clean_git(&self.source.identity.path);
+        command.args(args);
+        self.capture(command, &[])
     }
 
     fn create(&self, path: &Path, bytes: &[u8]) -> Result<File, AppError> {
@@ -424,20 +518,15 @@ fn assemble(
         custody: None,
     };
     let format = text(
-        &op.git(source, &["rev-parse", "--show-object-format"], &[], &[])?
+        &op.source_git(&["rev-parse", "--show-object-format"])?
             .stdout,
     )?;
     if !matches!(format.as_str(), "sha1" | "sha256") {
         return Err(refuse("unsupported Git object format"));
     }
     let common = text(
-        &op.git(
-            source,
-            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-            &[],
-            &[],
-        )?
-        .stdout,
+        &op.source_git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?
+            .stdout,
     )?;
     let common = Path::new(&common).canonicalize().map_err(storage)?;
     if inputs.workspace.starts_with(&common) {
@@ -485,6 +574,7 @@ fn assemble(
     let stamp = inputs.workspace.join(STAMP);
     let stamp_file = op.create(&stamp, &stamp_bytes)?;
     op.custody = Some(Custody {
+        repository: inputs.workspace.into(),
         directories: std::mem::take(&mut op.preparing),
         stamp,
         stamp_file,
@@ -617,6 +707,7 @@ fn assemble(
         .ok_or_else(|| refuse("index path is not UTF-8"))?;
     let env = [("GIT_INDEX_FILE", index)];
     op.git(root, &["read-tree", &fresh.conflicted_tree], &env, &[])?;
+    let mut approved_blobs = Vec::with_capacity(files.len());
     for (number, file) in files.iter().enumerate() {
         let name = format!("resolved-{number}.blob");
         op.create(&root.join(&name), file.resolved.as_bytes())?;
@@ -631,6 +722,15 @@ fn assemble(
             LABEL,
             "resolved blob",
         )?;
+        let bytes = op.git(root, &["cat-file", "blob", &oid], &[], &[])?.stdout;
+        if bytes != file.resolved.as_bytes()
+            || digest(&bytes) != fresh.files[number].resolved_sha256
+        {
+            return Err(refuse(
+                "staged resolution bytes differ from the native proposal",
+            ));
+        }
+        approved_blobs.push(oid.clone());
         op.git(
             root,
             &[
@@ -675,6 +775,37 @@ fn assemble(
         return Err(refuse(
             "resolution changed paths outside the exact insertion proposal",
         ));
+    }
+    for ((file, expected_oid), evidence) in files.iter().zip(&approved_blobs).zip(&fresh.files) {
+        let entry = op
+            .git(
+                root,
+                &[
+                    "--literal-pathspecs",
+                    "ls-tree",
+                    "-z",
+                    &tree,
+                    "--",
+                    &file.path,
+                ],
+                &[],
+                &[],
+            )?
+            .stdout;
+        let expected_entry = format!("100644 blob {expected_oid}\t{}\0", file.path);
+        if entry != expected_entry.as_bytes() {
+            return Err(refuse(
+                "final resolution tree changed an approved blob, type or mode",
+            ));
+        }
+        let bytes = op
+            .git(root, &["cat-file", "blob", expected_oid], &[], &[])?
+            .stdout;
+        if bytes != file.resolved.as_bytes() || digest(&bytes) != evidence.resolved_sha256 {
+            return Err(refuse(
+                "final resolution tree bytes differ from the native proposal",
+            ));
+        }
     }
     let identity_env = [
         ("GIT_AUTHOR_NAME", author_parts.0),

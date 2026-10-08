@@ -1,5 +1,6 @@
 //! Private native Git fixtures; no daemon, provider, remote or live-store action.
 use super::*;
+use crate::process::run_captured_query;
 use crate::service::integration_recovery::{Inspection, inspect};
 use std::{cell::Cell, collections::BTreeMap, os::unix::fs::symlink, time::Duration};
 
@@ -463,4 +464,218 @@ fn sh871_native_assembly_refuses_workspace_inside_author_checkout_or_common_git(
         assert!(!fixture.workspace.exists());
         assert_eq!(snapshot(&original), before);
     }
+}
+
+#[test]
+fn sh871_native_assembly_refuses_git_namespace_redirects_without_foreign_writes() {
+    for redirect in [
+        ".git",
+        "commondir",
+        "objects/info/alternates",
+        "objects/pack",
+    ] {
+        let fixture = Fixture::new();
+        let foreign = fixture.source.with_file_name("foreign.git");
+        fs::create_dir(&foreign).unwrap();
+        git(&foreign, &["init", "--bare", "--quiet", "."]);
+        let before = snapshot(&foreign);
+        let injected = Cell::new(false);
+        let permit = || {
+            if fixture.workspace.join("HEAD").exists()
+                && fixture.workspace.join("objects/info").is_dir()
+                && !injected.replace(true)
+            {
+                let target = if redirect == "objects/info/alternates" {
+                    foreign.join("objects")
+                } else {
+                    foreign.clone()
+                };
+                let content = if redirect == ".git" {
+                    format!("gitdir: {}\n", target.display())
+                } else {
+                    format!("{}\n", target.display())
+                };
+                if redirect == "objects/pack" {
+                    fs::rename(
+                        fixture.workspace.join(redirect),
+                        fixture.workspace.join("original-pack"),
+                    )
+                    .unwrap();
+                    symlink(
+                        foreign.join("objects/pack"),
+                        fixture.workspace.join(redirect),
+                    )
+                    .unwrap();
+                } else {
+                    fs::write(fixture.workspace.join(redirect), content).unwrap();
+                }
+            }
+            Ok(())
+        };
+        assert!(
+            assemble(
+                fixture.inputs(),
+                &permit,
+                deadline(),
+                &Cancellation::default()
+            )
+            .is_err(),
+            "accepted {redirect}"
+        );
+        assert!(injected.get(), "did not reach private init for {redirect}");
+        assert_eq!(
+            snapshot(&foreign),
+            before,
+            "private Git wrote through {redirect}"
+        );
+        assert!(fixture.workspace.join(STAMP).exists());
+    }
+}
+
+#[test]
+fn sh871_native_assembly_rejects_substituted_staged_resolution_bytes() {
+    let fixture = Fixture::new();
+    let before = snapshot(&fixture.source);
+    let injected = Cell::new(false);
+    let permit = || {
+        let staged = fixture.workspace.join("resolved-0.blob");
+        if staged.exists() && !injected.replace(true) {
+            fs::write(staged, "start\nsubstituted bytes\nend\n").unwrap();
+        }
+        Ok(())
+    };
+    assert!(
+        assemble(
+            fixture.inputs(),
+            &permit,
+            deadline(),
+            &Cancellation::default()
+        )
+        .is_err()
+    );
+    assert!(injected.get());
+    assert!(fixture.workspace.join(STAMP).exists());
+    assert_eq!(snapshot(&fixture.source), before);
+}
+
+#[test]
+fn sh871_native_assembly_rejects_substituted_final_index_blob_and_mode() {
+    for mode_change in [false, true] {
+        let fixture = Fixture::new();
+        let expected_file = fixture.source.with_file_name("expected-resolution");
+        fs::write(
+            &expected_file,
+            "start\nbase addition\nauthor addition\nend\n",
+        )
+        .unwrap();
+        // Hash without -w: this setup must not add an object to the author.
+        let expected_oid = git(
+            &fixture.source,
+            &[
+                "hash-object",
+                "--no-filters",
+                expected_file.to_str().unwrap(),
+            ],
+        );
+        let raw_oid: Vec<u8> = expected_oid
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        let before = snapshot(&fixture.source);
+        let injected = Cell::new(false);
+        let permit = || {
+            let index = fixture.workspace.join("assembly.index");
+            if !fixture.workspace.join("assembly.index.lock").exists()
+                && fs::read(&index).is_ok_and(|bytes| {
+                    bytes
+                        .windows(raw_oid.len())
+                        .any(|window| window == raw_oid.as_slice())
+                })
+                && !injected.replace(true)
+            {
+                let (mode, oid) = if mode_change {
+                    ("100755", expected_oid.as_str())
+                } else {
+                    ("100644", fixture.plan.files[0].theirs.as_str())
+                };
+                let mut command = crate::env::git_env::command(&fixture.workspace);
+                command.env("GIT_INDEX_FILE", &index).args([
+                    "update-index",
+                    "--cacheinfo",
+                    &format!("{mode},{oid},docs/guide.md"),
+                ]);
+                let changed =
+                    run_captured_query_quiescent(command, deadline(), &|| false, ANSWER_LIMIT, &[])
+                        .unwrap_or_else(|error| {
+                            panic!("fixture index injection: {}", error.detail())
+                        });
+                assert!(
+                    changed.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&changed.stderr)
+                );
+            }
+            Ok(())
+        };
+        assert!(
+            assemble(
+                fixture.inputs(),
+                &permit,
+                deadline(),
+                &Cancellation::default()
+            )
+            .is_err(),
+            "accepted changed mode={mode_change}"
+        );
+        assert!(injected.get(), "did not reach approved private index");
+        assert!(fixture.workspace.join(STAMP).exists());
+        assert_eq!(snapshot(&fixture.source), before);
+    }
+}
+
+#[test]
+fn sh871_native_assembly_never_accepts_leader_success_with_a_live_writer() {
+    let fixture = Fixture::new();
+    let root = fixture.source.parent().unwrap();
+    let ready = root.join("writer-ready");
+    let release = root.join("writer-release");
+    let finished = root.join("writer-finished");
+    let allowance = storyhook_test_support::load_grace::graced_now(Duration::from_secs(5));
+    let cancellation = Cancellation::default();
+    let op = Operation {
+        permitted: &|| Ok(()),
+        deadline: Instant::now() + allowance,
+        cancellation: &cancellation,
+        source: PinnedDirectory::open(&fixture.source).unwrap(),
+        preparing: vec![],
+        custody: None,
+    };
+    let mut command = std::process::Command::new("sh");
+    command.args(["-c",
+        "(printf ready > \"$1\"; n=0; while [ ! -e \"$2\" ] && [ \"$n\" -lt \"$4\" ]; do sleep 0.02; n=$((n+1)); done; printf late > \"$3\") & while [ ! -e \"$1\" ]; do sleep 0.01; done; printf leader; exit 0",
+        "assembly-writer-fixture"])
+        .arg(&ready).arg(&release).arg(&finished)
+        .arg((allowance.as_millis()/10+100).to_string());
+    let result = op.capture(command, &[]);
+    // A negative control using leader-only capture returns Ok. Release the
+    // fixture's finite, sentinel-controlled writer before asserting failure;
+    // do not signal a reaped PID/group or leave it writing into a removed root.
+    if result.is_ok() {
+        fs::write(&release, "release").unwrap();
+        storyhook_test_support::load_grace::wait_for(
+            storyhook_test_support::load_grace::Patience::new(Duration::from_secs(10)),
+            Duration::from_millis(10),
+            || "late fixture writer did not finish".into(),
+            || finished.exists().then_some(()),
+        );
+    }
+    assert!(
+        ready.exists(),
+        "fixture never established its writer before the deadline"
+    );
+    assert!(
+        result.is_err(),
+        "leader success was accepted while its writer remained live"
+    );
 }
