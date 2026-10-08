@@ -345,6 +345,12 @@ fn shared_test_output_parser_handles_verbose_commands_and_refuses_unknown_target
     let input = concat!(
         "     Running tests/alpha.rs (target/debug/deps/alpha-0123456789abcdef)\n",
         "test normal ... ok\n",
+        "     Running checks/path with spaces/custom source.rs (target/debug/deps/custom_source-0123456789abcdef)\n",
+        "test source_spaces ... ok\n",
+        "     Running \"checks/path (nested)/quoted source.rs\" (target/debug/deps/quoted_source-0123456789abcdef)\n",
+        "test quoted_source ... ok\n",
+        "     Running unittests 'custom source/lib.rs' (target/debug/deps/library-0123456789abcdef)\n",
+        "test quoted_library ... ok\n",
         "     Running `'/tmp/path with spaces/target/debug/deps/alpha-0123456789abcdef' --test-threads=1`\n",
         "test verbose ... FAILED\n",
         "     Running `/checkout/scripts/host-admit.py --entry cargo-test-binary -- /tmp/target/debug/deps/beta-fedcba9876543210 --exact named`\n",
@@ -377,6 +383,12 @@ fn shared_test_output_parser_handles_verbose_commands_and_refuses_unknown_target
         "     Running tests/previous.rs (target/previous)\n",
         "     Running unknown command\n",
         "test unknown_header ... ok\n",
+        "     Running tests/previous.rs (target/previous)\n",
+        "     Running unknown command (opaque detail)\n",
+        "test parenthesized_unknown ... ok\n",
+        "     Running tests/previous.rs (target/previous)\n",
+        "     Running `/checkout/scripts/rustc-slot.py /tmp/target/debug/deps/stray-0123456789abcdef`\n",
+        "test wrong_compiler_wrapper ... ok\n",
         // The compiler collector contract runs a nested failing cargo check
         // before libtest reports each selected parent case.
         "     Running `/tmp/target/debug/deps/first-0123456789abcdef --exact selected`\n",
@@ -385,6 +397,9 @@ fn shared_test_output_parser_handles_verbose_commands_and_refuses_unknown_target
         "test selected ... ok\n",
         "     Running `/tmp/target/debug/deps/second-fedcba9876543210 --exact selected`\n",
         "     Running `/checkout/scripts/rustc-slot.py /toolchain/bin/rustc --crate-name nested src/lib.rs --out-dir /tmp/nested/target/debug/deps`\n",
+        "test selected ... ok\n",
+        "     Running tests/wrapped_build.rs (target/wrapped_build)\n",
+        "     Running `CARGO_MANIFEST_DIR='/tmp/nested crate' /checkout/scripts/host-admit.py --entry rustc -- /toolchain/bin/rustc --crate-name nested src/lib.rs`\n",
         "test selected ... ok\n",
         "     Running tests/omega.rs (target/debug/deps/omega-0123456789abcdef)\n",
         "  Executable `/tmp/target/debug/deps/not_running-fedcba9876543210`\n",
@@ -408,12 +423,12 @@ fn shared_test_output_parser_handles_verbose_commands_and_refuses_unknown_target
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         concat!(
-            "alpha\tnormal\tPASS\nalpha\tverbose\tFAIL\nbeta\twrapped\tPASS\n",
+            "alpha\tnormal\tPASS\ncustom source\tsource_spaces\tPASS\nquoted source\tquoted_source\tPASS\nlib\tquoted_library\tPASS\nalpha\tverbose\tFAIL\nbeta\twrapped\tPASS\n",
             "hyphen-name\tenvironment\tPASS\nlib\tnormal_library\tPASS\nstoryhook\tverbose_library\tPASS\n",
             "storyhook\tcompiler_chatter\tPASS\nprevious\tbuild_chatter\tPASS\n",
             "(unknown)\tinvalid_hash\tPASS\n(unknown)\tunterminated\tPASS\n",
             "(unknown)\tinvalid_quoting\tPASS\n(unknown)\twrong_runner\tPASS\n",
-            "(unknown)\tunknown_header\tPASS\nfirst\tselected\tPASS\nsecond\tselected\tPASS\nomega\tresumed\tPASS\n",
+            "(unknown)\tunknown_header\tPASS\n(unknown)\tparenthesized_unknown\tPASS\n(unknown)\twrong_compiler_wrapper\tPASS\nfirst\tselected\tPASS\nsecond\tselected\tPASS\nwrapped_build\tselected\tPASS\nomega\tresumed\tPASS\n",
         )
     );
 }

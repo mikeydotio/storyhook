@@ -6,7 +6,7 @@ import shlex
 import sys
 
 
-RUNNING = re.compile(r"^     Running (.+?) \(.+\)$")
+RUNNING = re.compile(r'''^     Running ((?:unittests )?(?:.+?\.rs|".+?\.rs"|'.+?\.rs')) \(.+\)$''')
 CASE = re.compile(r"^test (.+) \.\.\. (ok|FAILED)$")
 BUILD = re.compile(r"^\s*(Compiling|Checking|Finished) (.+)$")
 ARTIFACT = re.compile(r"^(.+)-[0-9a-f]{16}(?:\.exe)?$")
@@ -63,8 +63,22 @@ def running_target(line):
     if not running:
         return None
     source = running.group(1)
-    name = source.rsplit("/", 1)[-1]
-    return source, name[:-3] if name.endswith(".rs") else name
+    path = source.removeprefix("unittests ")
+    if path.startswith(("'", '"')):
+        try:
+            quoted = shlex.split(path)
+        except ValueError:
+            return None
+        if len(quoted) != 1:
+            return None
+        path = quoted[0]
+    # Parenthesized prose is not a Cargo Rust source header. Keep normal
+    # source identity, including custom paths and spaces, rather than trying
+    # to infer it from the executable in parentheses.
+    if not path.endswith(".rs"):
+        return None
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    return source, name[:-3]
 
 
 class TestOutputParser:
