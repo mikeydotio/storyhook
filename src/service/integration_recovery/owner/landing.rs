@@ -277,3 +277,127 @@ pub(crate) fn validate_intent(tx: &impl ReadOps, intent: &LandingIntent) -> Resu
     }
     validate_state(&state, &record)
 }
+
+/// A fresh read-only query of an exact retained merge. It deliberately owns no
+/// old assembly file descriptors and cannot authorize mutation, retry or cleanup.
+/// Native observation must fetch and prove actual remote objects in a new private
+/// namespace; historical assembly JSON is only the expected immutable identity.
+///
+/// ```compile_fail
+/// use storyhook::service::integration_recovery::IntegrationLandingObservation;
+/// let _: IntegrationLandingObservation = serde_json::from_str("{}").unwrap();
+/// ```
+pub struct IntegrationLandingObservation {
+    record: IntegrationRecovery,
+    owner: IntegrationOwner,
+    deadline: Instant,
+    cancellation: Cancellation,
+}
+impl IntegrationLandingObservation {
+    /// Original retained coordinator.
+    pub fn id(&self) -> &str {
+        &self.record.id
+    }
+    /// Original author submission, never rewritten to the managed PR.
+    pub fn candidate(&self) -> &VerificationCandidate {
+        &self.owner.candidate
+    }
+    /// Exact managed merge intent and request marker.
+    pub fn intent(&self) -> &LandingIntent {
+        self.owner
+            .landing
+            .as_ref()
+            .expect("observation constructor")
+    }
+    /// Historical expected Git identities only, not permission to use this path.
+    pub fn assembly(&self) -> &AssemblyEvidence {
+        self.owner
+            .assembly
+            .as_ref()
+            .expect("observation constructor")
+    }
+    /// Managed and original PR identities to prove from the actual origin.
+    pub fn publication(&self) -> &PublicationEvidence {
+        self.owner
+            .publication
+            .as_ref()
+            .expect("observation constructor")
+    }
+    /// The retained exact central certificate to compare with actual landed Git.
+    pub fn certification(&self) -> &gate::IntegrationCertificationEvidence {
+        self.owner.gate.as_ref().expect("observation constructor")
+    }
+    /// A new bounded read-only observation, never renewal of the old merge call.
+    pub fn validate_lifetime(&self) -> Result<(), AppError> {
+        observation_live(self.deadline, &self.cancellation)
+    }
+}
+impl<'a, S: Store> IntegrationOwnerService<'a, S> {
+    /// Reopen only an observation boundary after crash/expiry. Persisted native
+    /// receipts never recreate the original mutation or filesystem capability.
+    pub(crate) fn observe_landing(
+        &self,
+        id: &str,
+        deadline: Instant,
+        cancellation: &Cancellation,
+    ) -> Result<IntegrationLandingObservation, AppError> {
+        observation_live(deadline, cancellation)?;
+        let (record, owner) = self.ctx.store().read(|tx| {
+            observation_live(deadline, cancellation).map_err(StoreError::from)?;
+            let (record, owner) = find(tx, self.ctx.project(), id)?;
+            let intent = owner
+                .landing
+                .as_ref()
+                .ok_or_else(|| invalid("no managed landing to observe"))?;
+            crate::store::landing::validate_intent(tx, intent)?;
+            if !tx.landing_intents()?.contains(intent) {
+                return Err(invalid(
+                    "managed landing observation lost exact pending intent",
+                ));
+            }
+            observation_live(deadline, cancellation).map_err(StoreError::from)?;
+            Ok((record, owner))
+        })?;
+        Ok(IntegrationLandingObservation {
+            record,
+            owner,
+            deadline,
+            cancellation: cancellation.clone(),
+        })
+    }
+    /// Observations remain available after an operator stop. This confers no
+    /// new effect or completion: the latter must recheck its own human/resource
+    /// fences against native proven landing in the final transaction.
+    pub(crate) fn landing_observation_permitted(
+        &self,
+        query: &IntegrationLandingObservation,
+    ) -> Result<bool, AppError> {
+        query.validate_lifetime()?;
+        self.ctx
+            .store()
+            .read(|tx| {
+                query.validate_lifetime().map_err(StoreError::from)?;
+                if query.record.project != self.ctx.project() {
+                    return Ok(false);
+                }
+                let (record, state) = find(tx, self.ctx.project(), query.id())?;
+                if record != query.record || state != query.owner {
+                    return Ok(false);
+                }
+                crate::store::landing::validate_intent(tx, query.intent())?;
+                if !tx.landing_intents()?.contains(query.intent()) {
+                    return Ok(false);
+                }
+                query.validate_lifetime().map_err(StoreError::from)?;
+                Ok(true)
+            })
+            .map_err(Into::into)
+    }
+}
+fn observation_live(deadline: Instant, cancellation: &Cancellation) -> Result<(), AppError> {
+    if cancellation.is_cancelled() || Instant::now() >= deadline {
+        Err(invalid("managed landing observation expired or cancelled").into())
+    } else {
+        Ok(())
+    }
+}

@@ -32,8 +32,8 @@ pub use owner::IntegrationRecoveryStatus;
 pub use owner::gate::{
     CertifiedIntegration, IntegrationCertificationEvidence, IntegrationGateClaim,
 };
-pub use owner::landing::IntegrationLandingClaim;
 pub(crate) use owner::landing::validate_intent as validate_landing_intent;
+pub use owner::landing::{IntegrationLandingClaim, IntegrationLandingObservation};
 pub use owner::publication::{
     AssembledIntegration, PublicationClaim, PublicationEffect, PublishedIntegration,
 };

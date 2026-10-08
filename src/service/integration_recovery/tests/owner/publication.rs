@@ -931,3 +931,46 @@ fn managed_landing_stop_revokes_new_effect_but_preserves_pending_merge_fence() {
     );
     proof.settle().unwrap();
 }
+
+#[test]
+fn managed_landing_restart_mints_only_fresh_read_only_observation() {
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let ready = certified(&f, &proof);
+    let ctx = f.ctx();
+    let service = IntegrationOwnerService::new(&ctx);
+    let mut claim = service.claim_landing(ready, &proof).unwrap().unwrap();
+    assert!(service.claim_landing_effect(&mut claim).unwrap());
+    let id = claim.id().to_string();
+    let before = service.show(&id).unwrap();
+    proof.cancellation.cancel();
+    f.store
+        .write(|tx| tx.put_verification_enabled(f.candidate.project, false))
+        .unwrap();
+    assert!(service.landing_permitted(&claim).is_err());
+    let reopened = SqliteStore::open(f.store.path()).unwrap();
+    let reopened_ctx = Ctx::new(
+        &reopened,
+        f.candidate.project,
+        f.candidate.checkout.clone(),
+        ctx.env().clone(),
+    )
+    .no_hooks(true);
+    let restarted = IntegrationOwnerService::new(&reopened_ctx);
+    let fresh = Cancellation::default();
+    let query = restarted
+        .observe_landing(&id, proof.deadline, &fresh)
+        .unwrap();
+    assert!(restarted.landing_observation_permitted(&query).unwrap());
+    assert_eq!(query.intent(), claim.intent());
+    assert_eq!(query.assembly(), claim.assembly());
+    assert_eq!(
+        restarted.show(&id).unwrap(),
+        before,
+        "observation changed durable merge authority"
+    );
+    fresh.cancel();
+    assert!(restarted.landing_observation_permitted(&query).is_err());
+    assert_eq!(restarted.show(&id).unwrap(), before);
+    proof.settle().unwrap();
+}
