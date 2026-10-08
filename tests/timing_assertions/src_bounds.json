@@ -44,6 +44,11 @@
       "count": 2,
       "kind": "delegated",
       "reason": "The actuator's configured gate idle bound (VERIFICATION_IDLE_TIMEOUT, 1776 s, in production); tests that need another value set the field."
+    },
+    "production run_captured_owned_quiescent_until(owner.deadline()": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Managed merge control retains the original opaque operation deadline, exact central cancellation and process registration through group settlement; ordinary gate progress supervision remains unchanged."
     }
   },
   "src/daemon/verification/recovery_transport.rs": {
@@ -82,15 +87,15 @@
     }
   },
   "src/github_access/transport.rs": {
-    "production run_captured_private(self.bounds.operation": {
+    "production run_captured_private(bound": {
       "count": 1,
       "kind": "delegated",
-      "reason": "Repository carries separate 30s read and 120s operation allowances resolved from its owning Environment or production defaults. Each authority check and the single transport operation use that carried policy."
+      "reason": "Existing fixed-duration Git transport reads/operations still pass their owning Repository read/operation bound through the unchanged capture branch."
     },
-    "production run_captured_private(self.bounds.read": {
+    "production run_captured_query_quiescent(self.deadline": {
       "count": 1,
       "kind": "delegated",
-      "reason": "Repository carries separate 30s read and 120s operation allowances resolved from its owning Environment or production defaults. Each authority check and the single transport operation use that carried policy."
+      "reason": "The distinct publication control shares the original absolute deadline across origin reads, protected transport and full owned process-group drain. No step renews it."
     }
   },
   "src/lane_budget.rs": {
@@ -137,6 +142,11 @@
       "count": 1,
       "kind": "proof",
       "reason": "A zero bound times out at once so the test can prove TERM-then-KILL cleanup."
+    },
+    "test run_captured_owned_quiescent_until(Instant::now()": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Expired native-effect boundary must refuse before spawn or registration; the nonexistent executable cannot run."
     }
   },
   "src/process/activity_tests.rs": {
@@ -249,6 +259,27 @@
       "reason": "The restoration proof consumes the remaining caller-owned tmux deadline. It shares that budget with target selection and never renews it for the helper."
     }
   },
+  "src/service/integration_recovery/assembly.rs": {
+    "production run_captured_query_quiescent(self.deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Each native assembly command and its process-group settlement share the original owner deadline and cancellation; no per-command allowance is renewed."
+    }
+  },
+  "src/service/integration_recovery/assembly/tests.rs": {
+    "test run_captured_query_quiescent(deadline()": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The private index substitution fixture obtains its deadline from the test-local deadline helper, which applies load_grace to a 60-second progress allowance."
+    }
+  },
+  "src/service/integration_recovery/publication.rs": {
+    "production run_captured_query_quiescent(deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Private native object/source observations spend the original publication deadline and observe its cancellation; successful leader exit alone is not settlement."
+    }
+  },
   "src/service/isolated_merge.rs": {
     "production run_captured_query(timeout": {
       "count": 1,
@@ -309,6 +340,41 @@
       "count": 1,
       "kind": "delegated",
       "reason": "Environment-owned service paths pass their 30s allowance through git_with_bound/acquire_with_bound. Remaining crate-private default wrappers compile only for lib fixtures and grace their setup/observation allowance. Ownership remains nonblocking; this helper does not retry effects."
+    }
+  },
+  "src/service/integration_recovery/publication/tests.rs": {
+    "test run_captured_query_quiescent(deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The local publication fixture derives one absolute command deadline from load_grace::graced_now(30 seconds), retaining that deadline through owned process-group settlement. Only remote replies are modeled; local Git uses the normal bounded capture."
+    }
+  },
+  "src/service/integration_recovery/tests/owner/workflow.rs": {
+    "test run_captured_query_quiescent(deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The new managed-worker fixture uses one load-graced 30-second scratch-process allowance. Production gate supervision remains unchanged; cancellation is the actual central owner token and quiescent capture settles the owned group."
+    }
+  },
+  "src/service/private_objects/native.rs": {
+    "production run_captured_query_quiescent(deadline": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "Controlled native namespace setup and each later query spend the original caller absolute deadline and cancellation, with owned-group quiescence. The capture path may shorten but never renew that deadline."
+    }
+  },
+  "src/service/private_objects/native/tests.rs": {
+    "test run_captured_query_quiescent(Instant::now()+allowance()": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Scratch bare-repository initialization uses allowance(), a load-graced 30-second fixture allowance; production ownership deadlines are unchanged."
+    }
+  },
+  "src/service/integration_recovery/submission/clean/tests.rs": {
+    "test run_captured_query_quiescent(deadline()": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Native clean inspection Git fixture setup uses deadline(), which derives a load-graced 120-second fixture progress allowance. It does not alter production caller deadlines."
     }
   }
 }

@@ -309,7 +309,7 @@ impl SrcCorpus {
 }
 
 /// Where each `run_captured*` function in `process.rs` takes its bound: the
-/// index of its `timeout: Duration` parameter, read from the signatures so a
+/// index of its `timeout: Duration` or `deadline: Instant` parameter, read from the signatures so a
 /// new variant is covered without editing this scan.
 fn bound_positions(process: &str) -> BTreeMap<String, usize> {
     let code = code_only(process);
@@ -320,10 +320,14 @@ fn bound_positions(process: &str) -> BTreeMap<String, usize> {
         let open = found.get(0).unwrap().end() - 1;
         let close = past_closing(code.as_bytes(), open) - 1;
         let parameters = top_level_arguments(&code[open + 1..close]);
-        if let Some(index) = parameters
-            .iter()
-            .position(|parameter| parameter.starts_with("timeout:"))
-        {
+        if let Some(index) = parameters.iter().position(|parameter| {
+            let compact: String = parameter.split_whitespace().collect();
+            compact == "timeout:Duration"
+                || matches!(
+                    compact.as_str(),
+                    "deadline:Instant" | "deadline:std::time::Instant"
+                )
+        }) {
             positions.insert(found[1].to_string(), index);
         }
     }
@@ -641,6 +645,34 @@ fn capture_bounds_find_calls_not_definitions_across_lines() {
     assert!(governed(
         "run_captured(load_grace::graced_by(BASE, reading)"
     ));
+}
+
+#[test]
+fn sh871_absolute_deadline_capture_boundaries_are_not_invisible() {
+    let signatures = "pub(crate) fn run_captured_absolute(cmd: Command, deadline: Instant) {}\n\
+        pub(crate) fn run_captured_input(cmd: Command, input: File, deadline: std::time::Instant) {}\n\
+        pub(crate) fn run_captured_callback(cmd: Command, deadline: impl Fn() -> D) {}";
+    let positions = bound_positions(signatures);
+    assert_eq!(positions.get("run_captured_absolute"), Some(&1));
+    assert_eq!(positions.get("run_captured_input"), Some(&2));
+    assert!(!positions.contains_key("run_captured_callback"));
+    let calls = "run_captured_absolute(cmd, owner.deadline);\n\
+        run_captured_input(cmd, file, Instant::now() + Duration::from_secs(30));";
+    let keys: Vec<_> = capture_bounds(calls, &positions)
+        .into_iter()
+        .map(|(_, key)| key)
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "run_captured_absolute(owner.deadline",
+            "run_captured_input(Instant::now()+Duration::from_secs(30)"
+        ]
+    );
+    assert!(
+        keys.iter().all(|key| !governed(key)),
+        "renewed absolute deadlines must require explicit census review"
+    );
 }
 
 #[test]

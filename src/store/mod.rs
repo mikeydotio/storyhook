@@ -62,9 +62,13 @@ pub mod block_delivery;
 mod dispatch_policy;
 pub use dispatch_policy::DispatchPolicyOverride;
 pub mod continuation;
+pub mod host_recovery;
+pub mod integration_recovery;
 pub mod project_recovery;
 pub use block_delivery::{BlockAction, BlockDelivery, DeliveryStatus};
 pub use continuation::{Continuation, ContinuationPhase, ContinuationStatus};
+pub use host_recovery::{HostRecovery, HostRecoveryPending};
+pub use integration_recovery::{IntegrationPending, IntegrationReadmission, IntegrationRecovery};
 pub use project_recovery::{ProjectRecovery, ProjectRecoveryObservation};
 pub mod conformance;
 mod dropped_cleanup;
@@ -312,6 +316,28 @@ pub struct WriteWithSnapshot<T> {
 /// project slug stored on the run; machine-wide operational reads support
 /// reconciliation and lane-budget accounting.
 pub trait ReadOps {
+    /// All native host fault owners, shared across projects in this store.
+    fn host_recoveries(&self) -> Result<Vec<HostRecovery>, StoreError>;
+    /// Original gate custody awaiting live native host proof, without host authority.
+    fn host_recovery_pending(
+        &self,
+        project: ProjectId,
+    ) -> Result<Vec<HostRecoveryPending>, StoreError>;
+    /// Distinct single-submission integration owners, including retained history.
+    fn integration_recoveries(
+        &self,
+        project: ProjectId,
+    ) -> Result<Vec<IntegrationRecovery>, StoreError>;
+    /// Immutable original integration holds, without publication authority.
+    fn integration_pending(
+        &self,
+        project: ProjectId,
+    ) -> Result<Vec<IntegrationPending>, StoreError>;
+    /// Immutable native clean-input releases, retaining head and control fences.
+    fn integration_readmissions(
+        &self,
+        project: ProjectId,
+    ) -> Result<Vec<IntegrationReadmission>, StoreError>;
     /// Project-fault coordinators in creation order, including retained history.
     fn project_recoveries(&self, project: ProjectId) -> Result<Vec<ProjectRecovery>, StoreError>;
     /// Immutable observations belonging to this project and recovery identity.
@@ -673,6 +699,38 @@ pub trait WriteOps: ReadOps {
     fn derives_block_edges(&self) -> bool;
     /// Acquire a new active fault identity; false means an active owner already exists.
     fn insert_project_recovery(&mut self, record: &ProjectRecovery) -> Result<bool, StoreError>;
+    /// Reserve one new native host fault owner, or report an existing exact key.
+    fn insert_host_recovery(&mut self, record: &HostRecovery) -> Result<bool, StoreError>;
+    /// Retain immutable pending native custody; identical replay is idempotent.
+    fn insert_host_recovery_pending(
+        &mut self,
+        record: &HostRecoveryPending,
+    ) -> Result<(), StoreError>;
+    /// Advance exactly one host recovery revision without changing its identity.
+    fn update_host_recovery(
+        &mut self,
+        record: &HostRecovery,
+        expected: i64,
+    ) -> Result<bool, StoreError>;
+    /// Acquire the original story's sole live integration owner.
+    fn insert_integration_recovery(
+        &mut self,
+        record: &IntegrationRecovery,
+    ) -> Result<bool, StoreError>;
+    /// Record immutable conflict custody; exact replay is idempotent.
+    fn insert_integration_pending(&mut self, record: &IntegrationPending)
+    -> Result<(), StoreError>;
+    /// Persist one exact clean-input receipt; replacement is forbidden.
+    fn insert_integration_readmission(
+        &mut self,
+        record: &IntegrationReadmission,
+    ) -> Result<(), StoreError>;
+    /// Advance state once, preserving project, story and original generation.
+    fn update_integration_recovery(
+        &mut self,
+        record: &IntegrationRecovery,
+        expected: i64,
+    ) -> Result<bool, StoreError>;
     /// Advance coordination state once without changing immutable identity.
     fn update_project_recovery(
         &mut self,

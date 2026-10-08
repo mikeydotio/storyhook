@@ -7,6 +7,36 @@ use std::process::Command;
 use std::time::Duration;
 
 impl Repository {
+    /// Publication uses quiescent origin reads and effect capture under one
+    /// original absolute deadline. No failed or ambiguous call is replayed.
+    pub(crate) fn gh_publication(
+        &self,
+        arguments: &[String],
+        deadline: std::time::Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, AppError> {
+        let control = super::transport::PublicationControl {
+            deadline,
+            cancelled,
+        };
+        if Self::resolve_reading(&self.checkout, self.bounds, |path, args| {
+            control.read(path, args)
+        })?
+        .identity
+            != self.identity
+        {
+            return Err(AppError::Validation("publication origin changed".into()));
+        }
+        let command = routed_command(&self.identity, &self.checkout, arguments)?;
+        let output = control.capture(command).map_err(|e| {
+            AppError::GithubApi(format!(
+                "publication gh: {}; operation was not retried",
+                e.detail()
+            ))
+        })?;
+        answer(&self.identity, output)
+    }
+
     /// Executes gh only against this repository, after revalidating its origin.
     pub fn gh(&self, arguments: &[String]) -> Result<Vec<u8>, AppError> {
         let current = Self::resolve_with_bounds(&self.checkout, self.bounds)?;
@@ -41,6 +71,13 @@ fn execute_with_bound(
     arguments: &[String],
 ) -> Result<Vec<u8>, AppError> {
     let output = capture(bound, identity, checkout, arguments)?;
+    answer(identity, output)
+}
+
+fn answer(
+    identity: &crate::domain::github_remote::GithubRepo,
+    output: crate::process::Captured,
+) -> Result<Vec<u8>, AppError> {
     if !output.status.success() {
         let mut detail = String::from_utf8_lossy(&output.stderr).into_owned();
         for name in crate::env::spawn_env::GITHUB_CREDENTIAL_MAY_SEE {
@@ -177,6 +214,26 @@ pub(super) fn capture(
     checkout: &std::path::Path,
     arguments: &[String],
 ) -> Result<crate::process::Captured, AppError> {
+    let command = routed_command(identity, checkout, arguments)?;
+    run_captured_private(command, bound).map_err(|error| {
+        let detail = match error {
+            CaptureError::Spawn(ref source) if source.kind() == std::io::ErrorKind::NotFound => {
+                "install gh and make it available on the StoryHook process PATH".to_owned()
+            }
+            _ => error.detail(),
+        };
+        AppError::GithubApi(format!(
+            "gh for {}: {detail}; the operation was not retried",
+            qualified(identity)
+        ))
+    })
+}
+
+fn routed_command(
+    identity: &crate::domain::github_remote::GithubRepo,
+    checkout: &std::path::Path,
+    arguments: &[String],
+) -> Result<Command, AppError> {
     let arguments = routed_arguments(identity, arguments)?;
     let mut command = Command::new("gh");
     crate::env::spawn_env::apply_verification_allowlist(&mut command);
@@ -190,16 +247,5 @@ pub(super) fn capture(
         .env("GH_NO_UPDATE_NOTIFIER", "1")
         .env("GH_NO_EXTENSION_UPDATE_NOTIFIER", "1")
         .env("GIT_TERMINAL_PROMPT", "0");
-    run_captured_private(command, bound).map_err(|error| {
-        let detail = match error {
-            CaptureError::Spawn(ref source) if source.kind() == std::io::ErrorKind::NotFound => {
-                "install gh and make it available on the StoryHook process PATH".to_owned()
-            }
-            _ => error.detail(),
-        };
-        AppError::GithubApi(format!(
-            "gh for {}: {detail}; the operation was not retried",
-            qualified(identity)
-        ))
-    })
+    Ok(command)
 }

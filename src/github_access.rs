@@ -13,6 +13,7 @@ mod local;
 mod merge;
 mod observation;
 pub use observation::OriginObservation;
+pub(crate) mod private_fetch;
 mod release;
 mod transport;
 pub use local::run_local;
@@ -77,13 +78,23 @@ impl Repository {
     }
 
     fn resolve_with_bounds(checkout: &Path, bounds: Bounds) -> Result<Self, AppError> {
+        Self::resolve_reading(checkout, bounds, |path, arguments| {
+            git_read_with_bound(bounds.read, path, arguments)
+        })
+    }
+
+    fn resolve_reading(
+        checkout: &Path,
+        bounds: Bounds,
+        mut read: impl FnMut(&Path, &[&str]) -> Result<String, AppError>,
+    ) -> Result<Self, AppError> {
         let checkout = checkout.canonicalize().map_err(|error| {
             AppError::Validation(format!(
                 "GitHub checkout {} is unavailable: {error}",
                 checkout.display()
             ))
         })?;
-        let root = git_read_with_bound(bounds.read, &checkout, &["rev-parse", "--show-toplevel"])?;
+        let root = read(&checkout, &["rev-parse", "--show-toplevel"])?;
         let root = Path::new(root.trim()).canonicalize().map_err(|error| {
             AppError::Validation(format!("cannot resolve GitHub checkout root: {error}"))
         })?;
@@ -94,11 +105,7 @@ impl Repository {
                 root.display()
             )));
         }
-        let origins = git_read_with_bound(
-            bounds.read,
-            &checkout,
-            &["config", "--get-all", "remote.origin.url"],
-        )?;
+        let origins = read(&checkout, &["config", "--get-all", "remote.origin.url"])?;
         let origins: Vec<_> = origins.lines().collect();
         if origins.len() != 1 {
             return Err(AppError::Validation(format!(

@@ -167,7 +167,7 @@ fn clean_command(directory: &Path) -> Command {
 }
 
 /// Git parses alternates as a colon-separated, C-quoted list, not one path.
-fn quote_alternate(path: &Path) -> String {
+pub(super) fn quote_alternate(path: &Path) -> String {
     let mut result = String::from("\"");
     for byte in path.as_os_str().as_encoded_bytes() {
         match byte {
@@ -179,4 +179,35 @@ fn quote_alternate(path: &Path) -> String {
     }
     result.push('"');
     result
+}
+
+/// A controlled caller supplies its already initialized private administration
+/// and quiescent capture. No extra TempDir or unchecked cleanup is introduced.
+pub(super) fn merge_native(
+    command: impl Fn() -> Command,
+    parents: [&str; 2],
+    nul: bool,
+    label: &str,
+    capture: impl Fn(Command, &'static [i32]) -> Result<Captured, AppError>,
+) -> Result<Captured, AppError> {
+    for parent in parents {
+        super::trial_merge::require_pinned(parent, label)?;
+    }
+    let mut empty = command();
+    empty.args(["hash-object", "-t", "tree", "-w", "--stdin"]);
+    let empty = capture(empty, &[])?;
+    let empty = super::trial_merge::answer_oid(&empty.stdout, label, "empty attribute tree")?;
+    let mut merge = command();
+    merge.args([
+        &format!("--attr-source={empty}"),
+        "-c",
+        "merge.conflictStyle=diff3",
+        "merge-tree",
+        "--write-tree",
+    ]);
+    if nul {
+        merge.arg("-z");
+    }
+    merge.args(parents);
+    capture(merge, &[1])
 }

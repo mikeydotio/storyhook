@@ -138,7 +138,7 @@ impl VerificationGuard {
         }
         if let RustDiagnosisResult::Held { evidence, detail } = &result {
             StoryService::new(ctx).comment(&candidate.story_id, &format!(
-                "CENTRAL VERIFICATION ATTRIBUTION HELD — evidence {evidence}, attempt {}. No repair is assigned. Inspect `story verifier evidence {} --json`.\n\n{}",
+                "CENTRAL VERIFICATION ATTRIBUTION HELD — evidence {evidence}, attempt {}. No implementer repair is assigned by this held result. Inspect `story verifier evidence {} --json`.\n\n{}",
                 self.active.attempt_id, candidate.story_id, crate::text_lint::quote_evidence(detail)))?;
         }
         pending.retire();

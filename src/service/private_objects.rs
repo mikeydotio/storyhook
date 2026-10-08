@@ -2,7 +2,9 @@
 //!
 //! Git reads every object of the repository, whose object directory is an
 //! alternate, and every object Git writes lands in a temporary directory that
-//! is removed with the [`PrivateObjects`] value. No checkout, index, ref or
+//! is removed with ordinary [`PrivateObjects`] values. Controlled native
+//! inspections require explicit checked cleanup and retain uncertain residue.
+//! No checkout, index, ref or
 //! repository object changes. Gate inspection introduced the pattern (it
 //! rebuilds the proposed merge to read committed configuration); verification
 //! batching's trial merges (SH-830) share it.
@@ -11,6 +13,21 @@ use crate::error::AppError;
 use crate::process::{Captured, TerminationPolicy, run_captured_answer, run_captured_query};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+mod native;
+
+enum ObjectStorage {
+    Ordinary(tempfile::TempDir),
+    Native(Box<native::NativeObjects>),
+}
+impl ObjectStorage {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Ordinary(directory) => directory.path(),
+            Self::Native(objects) => objects.object_path(),
+        }
+    }
+}
 
 /// Bound on one Git command; its whole process group is killed at the deadline.
 const GIT_DEADLINE: Duration = Duration::from_secs(30);
@@ -23,7 +40,7 @@ const GIT_ANSWER_LIMIT: u64 = 8 * 1024 * 1024;
 /// A repository opened with a private object directory.
 pub(crate) struct PrivateObjects {
     checkout: PathBuf,
-    objects: tempfile::TempDir,
+    objects: ObjectStorage,
     source: PathBuf,
     label: &'static str,
 }
@@ -31,9 +48,29 @@ pub(crate) struct PrivateObjects {
 impl PrivateObjects {
     /// Explicitly settle private objects when cleanup is part of a diagnostic result.
     pub(crate) fn close(self) -> Result<(), AppError> {
-        self.objects
-            .close()
-            .map_err(|e| AppError::Storage(format!("{} private object cleanup: {e}", self.label)))
+        match self.objects {
+            ObjectStorage::Native(objects) => objects.close(),
+            ObjectStorage::Ordinary(objects) => objects.close().map_err(|e| {
+                AppError::Storage(format!("{} private object cleanup: {e}", self.label))
+            }),
+        }
+    }
+
+    /// Strong native inspection route; ordinary object users keep their APIs.
+    pub(crate) fn open_native(
+        checkout: &Path,
+        label: &'static str,
+        prefix: &str,
+        deadline: Instant,
+        cancellation: crate::process::Cancellation,
+    ) -> Result<Self, AppError> {
+        let objects = native::NativeObjects::open(checkout, label, prefix, deadline, cancellation)?;
+        Ok(Self {
+            checkout: checkout.into(),
+            source: objects.source().into(),
+            label,
+            objects: ObjectStorage::Native(Box::new(objects)),
+        })
     }
 
     /// Computes a merge without borrowing attributes or configuration from
@@ -45,6 +82,9 @@ impl PrivateObjects {
         deadline: Option<Instant>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Captured, AppError> {
+        if let ObjectStorage::Native(objects) = &self.objects {
+            return objects.merge(parents, nul, deadline, cancelled);
+        }
         super::isolated_merge::merge(
             &self.checkout,
             Some((self.objects.path(), &self.source)),
@@ -108,7 +148,7 @@ impl PrivateObjects {
             })?;
         Ok(Self {
             checkout: checkout.to_path_buf(),
-            objects,
+            objects: ObjectStorage::Ordinary(objects),
             source: common.join("objects"),
             label,
         })
@@ -127,6 +167,9 @@ impl PrivateObjects {
         deadline: Option<Instant>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Captured, AppError> {
+        if let ObjectStorage::Native(objects) = &self.objects {
+            return objects.query(args, env, answers, deadline, cancelled);
+        }
         let timeout = deadline.map_or(GIT_DEADLINE, |deadline| {
             GIT_DEADLINE.min(deadline.saturating_duration_since(Instant::now()))
         });
@@ -146,6 +189,13 @@ impl PrivateObjects {
 
     /// Runs Git with the private object directory; a nonzero exit is an error.
     pub(crate) fn git(&self, args: &[&str]) -> Result<Vec<u8>, AppError> {
+        if let ObjectStorage::Native(objects) = &self.objects {
+            return answer(
+                objects.query(args, &[], &[], None, &|| false)?,
+                self.label,
+                args,
+            );
+        }
         answer(
             capture(
                 &self.checkout,

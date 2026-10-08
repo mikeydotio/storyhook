@@ -34,6 +34,52 @@ pub struct SettledRustComparison {
 /// let proof = CausalReturnEvidence {};
 /// ```
 pub struct CausalReturnEvidence {
+    finding: NativeFinding,
+}
+
+/// Native proof of a fault also present in the pinned base. This authorizes
+/// enrollment in managed shared recovery, never an implementer return or a gate.
+///
+/// It cannot be reconstructed from assessor-provided JSON:
+/// ```compile_fail
+/// use storyhook::service::attribution::SharedRecoveryEvidence;
+/// let _: SharedRecoveryEvidence = serde_json::from_str("{}").unwrap();
+/// ```
+/// Nor can a caller fabricate it from public observation fields:
+/// ```compile_fail
+/// use storyhook::service::attribution::SharedRecoveryEvidence;
+/// let proof = SharedRecoveryEvidence {};
+/// ```
+pub struct SharedRecoveryEvidence {
+    finding: NativeFinding,
+}
+
+/// Retained digest receipt for an already-enrolled native finding. This is
+/// evidence to recheck after restart, not a capability that can enroll work.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::service) struct RetainedNativeEvidence {
+    original: Archive,
+    probes: Vec<Archive>,
+}
+
+impl RetainedNativeEvidence {
+    pub(in crate::service) fn verify(&self) -> Result<(), StoreError> {
+        if self.probes.is_empty() {
+            return Err(refused("retained native evidence has no probe archives"));
+        }
+        self.original.verify()?;
+        for archive in &self.probes {
+            archive.verify()?;
+        }
+        Ok(())
+    }
+}
+
+/// Both capabilities retain the same native custody, cleanup and revocation
+/// proof. The private expected cause keeps their effect authorities distinct.
+struct NativeFinding {
+    cause: FailureCause,
     candidate: VerificationCandidate,
     record: AttributionRecord,
     history: Vec<AttributionRecord>,
@@ -97,6 +143,43 @@ impl SettledRustComparison {
         attribution: &str,
         original_execution: &str,
     ) -> Result<CausalReturnEvidence, StoreError> {
+        self.prove_finding(
+            tx,
+            candidate,
+            attribution,
+            original_execution,
+            FailureCause::CandidateCaused,
+        )
+        .map(|finding| CausalReturnEvidence { finding })
+    }
+
+    /// Authorize shared recovery only after the same native custody checks as
+    /// a causal return, with matching failures on candidate and pinned control.
+    pub fn prove_shared(
+        &self,
+        tx: &impl ReadOps,
+        candidate: &VerificationCandidate,
+        attribution: &str,
+        original_execution: &str,
+    ) -> Result<SharedRecoveryEvidence, StoreError> {
+        self.prove_finding(
+            tx,
+            candidate,
+            attribution,
+            original_execution,
+            FailureCause::SharedProject,
+        )
+        .map(|finding| SharedRecoveryEvidence { finding })
+    }
+
+    fn prove_finding(
+        &self,
+        tx: &impl ReadOps,
+        candidate: &VerificationCandidate,
+        attribution: &str,
+        original_execution: &str,
+        cause: FailureCause,
+    ) -> Result<NativeFinding, StoreError> {
         let records = tx.attributions(candidate.project)?;
         let record = records
             .iter()
@@ -156,7 +239,7 @@ impl SettledRustComparison {
         if record.plans[index] != plan
             || probes.len() != 4
             || component.check != retained::check(&self.case)
-            || classify(record, component) != FailureCause::CandidateCaused
+            || classify(record, component) != cause
             || probes.iter().zip(&self.observations).any(|(p, (side, r))| {
                 p.side != *side || p.completed.as_ref() != Some(r) || !self.requests.contains(&p.id)
             })
@@ -169,7 +252,8 @@ impl SettledRustComparison {
         retained::executions(attempt, record, index)?;
         let original =
             retained::original(attempt, original_execution, record, component, &self.case)?;
-        let proof = CausalReturnEvidence {
+        let proof = NativeFinding {
+            cause,
             candidate: candidate.clone(),
             plan: index,
             record: record.clone(),
@@ -196,15 +280,20 @@ impl SettledRustComparison {
 impl CausalReturnEvidence {
     /// Submitted source head established by this native proof.
     pub fn submitted_head(&self) -> &str {
-        self.record.inputs.head.as_deref().expect("proved head")
+        self.finding
+            .record
+            .inputs
+            .head
+            .as_deref()
+            .expect("proved head")
     }
     /// Admission whose failed gate and diagnosis establish this proof.
     pub(in crate::service) fn attempt(&self) -> &str {
-        &self.record.attempt
+        &self.finding.record.attempt
     }
     /// Original failed merge tree established by this native proof.
     pub(in crate::service) fn failed_tree(&self) -> &str {
-        &self.record.plans[self.plan].candidate_tree
+        &self.finding.record.plans[self.finding.plan].candidate_tree
     }
 
     /// Reuse the same authority fence while the owner's own attribution hold is active.
@@ -227,23 +316,23 @@ impl CausalReturnEvidence {
                 "authority was cancelled or diagnosis allowance expired before commit",
             ));
         }
-        let mut next = self.record.clone();
+        let mut next = self.finding.record.clone();
         next.revision += 1;
-        next.diagnosis_ms = next.diagnosis_ms.max(elapsed(self.started));
+        next.diagnosis_ms = next.diagnosis_ms.max(elapsed(self.finding.started));
         next.assessments.push(AttributionAssessment {
-            component: next.plans[self.plan].component.clone(),
-            evidence_revision: self.record.revision,
+            component: next.plans[self.finding.plan].component.clone(),
+            evidence_revision: self.finding.record.revision,
             cause: FailureCause::CandidateCaused,
             probes: next
                 .probes
                 .iter()
-                .filter(|p| p.plan == self.plan)
+                .filter(|p| p.plan == self.finding.plan)
                 .map(|p| p.id.clone())
                 .collect(),
             detail: format!(
                 "Native causal return; original sha256 {}; retained probe digests: {}",
-                self.original.digest,
-                serde_json::to_string(&self.archives)
+                self.finding.original.digest,
+                serde_json::to_string(&self.finding.archives)
                     .map_err(|e| refused(&format!("encode retained digests: {e}")))?
             ),
         });
@@ -251,13 +340,94 @@ impl CausalReturnEvidence {
             next.held = false;
             next.retired = Some("proved component returned for repair".into());
         }
-        if !tx.update_attribution(&next, self.record.revision)? {
+        if !tx.update_attribution(&next, self.finding.record.revision)? {
             return Err(refused("attribution changed before return"));
         }
         Ok(())
     }
 
     /// Recheck the full snapshot in the transaction that applies the repair return.
+    pub fn validate(
+        &self,
+        tx: &impl ReadOps,
+        candidate: &VerificationCandidate,
+    ) -> Result<bool, StoreError> {
+        self.finding.validate(tx, candidate)
+    }
+
+    fn live_budget(&self) -> bool {
+        self.finding.live_budget()
+    }
+
+    /// Evidence-based instructions for only the proved component, excluding other failures.
+    pub fn diagnosis(&self) -> String {
+        let plan = &self.finding.record.plans[self.finding.plan];
+        let component = self
+            .finding
+            .record
+            .components
+            .iter()
+            .find(|c| c.id == plan.component)
+            .expect("proved component");
+        format!(
+            "CENTRAL VERIFICATION CAUSAL RETURN — {}. Repair only {}. Candidate tree {}; pinned base {}; control tree {}. Two native candidate failures match the original assertion and two control executions pass under equivalent supported conditions. Evidence {} revision {}; original {} (sha256 {}). Exact reproduction arguments: {:?}. Probe outputs: {}. Other held components are not assigned for repair. {IMPLEMENTER_TEST_SCOPE} {FAILED_GATE_RERUN_SCOPE} Commit, then move {} back to verifying. {}. The central verifier owns certification.",
+            self.finding.candidate.story_id,
+            component.check,
+            plan.candidate_tree,
+            plan.base,
+            plan.control_tree,
+            self.finding.record.id,
+            self.finding.record.revision,
+            component.log,
+            self.finding.original.digest,
+            plan.argv,
+            self.finding
+                .record
+                .probes
+                .iter()
+                .filter(|p| p.plan == self.finding.plan)
+                .filter_map(|p| p.completed.as_ref().map(|r| r.log.as_str()))
+                .collect::<Vec<_>>()
+                .join(", "),
+            self.finding.candidate.story_id,
+            crate::service::verification::push_promise(
+                self.finding.candidate.cleanup_lease.is_some(),
+                true
+            )
+        )
+    }
+}
+
+impl SharedRecoveryEvidence {
+    /// The recovery enrollment transaction must recheck this live capability.
+    pub fn validate(
+        &self,
+        tx: &impl ReadOps,
+        candidate: &VerificationCandidate,
+    ) -> Result<bool, StoreError> {
+        self.finding.validate(tx, candidate)
+    }
+
+    /// Digest-only restart evidence; it cannot construct an enrollment capability.
+    pub(in crate::service) fn retained(&self) -> RetainedNativeEvidence {
+        RetainedNativeEvidence {
+            original: self.finding.original.clone(),
+            probes: self.finding.archives.clone(),
+        }
+    }
+
+    /// Immutable provenance retained by the managed recovery enrollment.
+    pub(in crate::service) fn record(&self) -> &AttributionRecord {
+        &self.finding.record
+    }
+
+    pub(in crate::service) fn plan(&self) -> &ContrastPlan {
+        &self.finding.record.plans[self.finding.plan]
+    }
+}
+
+impl NativeFinding {
+    /// Recheck native custody and the precise expected classification at application.
     pub fn validate(
         &self,
         tx: &impl ReadOps,
@@ -285,7 +455,8 @@ impl CausalReturnEvidence {
             .iter()
             .find(|c| c.id == self.record.plans[self.plan].component)
             .expect("proved component");
-        if history != self.history
+        if classify(&self.record, component) != self.cause
+            || history != self.history
             || attempt.executions != self.executions
             || retained::history(&history, &self.record, component, elapsed(self.started)).is_err()
         {
@@ -312,42 +483,6 @@ impl CausalReturnEvidence {
                 elapsed(self.started),
             )
             .is_ok()
-    }
-
-    /// Evidence-based instructions for only the proved component, excluding other failures.
-    pub fn diagnosis(&self) -> String {
-        let plan = &self.record.plans[self.plan];
-        let component = self
-            .record
-            .components
-            .iter()
-            .find(|c| c.id == plan.component)
-            .expect("proved component");
-        format!(
-            "CENTRAL VERIFICATION CAUSAL RETURN — {}. Repair only {}. Candidate tree {}; pinned base {}; control tree {}. Two native candidate failures match the original assertion and two control executions pass under equivalent supported conditions. Evidence {} revision {}; original {} (sha256 {}). Exact reproduction arguments: {:?}. Probe outputs: {}. Other held components are not assigned for repair. {IMPLEMENTER_TEST_SCOPE} {FAILED_GATE_RERUN_SCOPE} Commit, then move {} back to verifying. {}. The central verifier owns certification.",
-            self.candidate.story_id,
-            component.check,
-            plan.candidate_tree,
-            plan.base,
-            plan.control_tree,
-            self.record.id,
-            self.record.revision,
-            component.log,
-            self.original.digest,
-            plan.argv,
-            self.record
-                .probes
-                .iter()
-                .filter(|p| p.plan == self.plan)
-                .filter_map(|p| p.completed.as_ref().map(|r| r.log.as_str()))
-                .collect::<Vec<_>>()
-                .join(", "),
-            self.candidate.story_id,
-            crate::service::verification::push_promise(
-                self.candidate.cleanup_lease.is_some(),
-                true
-            )
-        )
     }
 }
 

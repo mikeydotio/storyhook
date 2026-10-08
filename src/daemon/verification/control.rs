@@ -221,6 +221,15 @@ impl VerificationActivity {
     ) -> Result<Option<VerificationGuard>, AppError> {
         // Admission and operator release use the same order: release registry,
         // active registry, store. No subprocess runs while a mutex is held.
+        let managed = matches!(
+            reservation,
+            Some(ReservationReason::Integration | ReservationReason::IntegrationObservation)
+        );
+        // Managed entry points may be invoked directly by observation/recovery.
+        // Refuse before the filesystem lock and recheck under the slot lock.
+        if managed && self.active_for(candidate.project).is_some() {
+            return Ok(None);
+        }
         if self
             .landing_releases
             .lock()
@@ -255,6 +264,12 @@ impl VerificationActivity {
             return Ok(None);
         }
         let mut slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        if slots
+            .get(&candidate.project)
+            .is_some_and(|slot| managed || slot.local_effect_unsettled)
+        {
+            return Ok(None);
+        }
         let origin = Instant::now();
         let attempt_id = uuid::Uuid::new_v4().to_string();
         let (record, request_id, retry_origin) = store.write(|tx| {
@@ -265,7 +280,19 @@ impl VerificationActivity {
                 .prefix;
             let no = crate::store::StoryNo::parse_id(&prefix, &candidate.story_id)
                 .map_err(|_| crate::store::StoreError::NotFound(candidate.story_id.clone()))?;
-            let allowed = crate::service::verification::human::permits(tx, candidate)?
+            let settling_owned_effect = reservation == Some(ReservationReason::Cleanup)
+                || tx
+                    .landing_intents()?
+                    .iter()
+                    .any(|intent| intent.project == candidate.project && intent.story == no);
+            let managed_current = reservation != Some(ReservationReason::Integration)
+                || crate::service::integration_recovery::candidate_permitted(tx, candidate)?;
+            let allowed = !crate::service::integration_recovery::local_effect_unsettled(
+                tx,
+                candidate.project,
+            )? && managed_current
+                && (settling_owned_effect || !crate::service::host_recovery::blocks_admission(tx)?)
+                && crate::service::verification::human::permits(tx, candidate)?
                 && !tx.story_resets(candidate.project)?.contains_key(&no)
                 && tx.engine_reset(candidate.project, no)?.is_none()
                 && !tx
@@ -305,7 +332,19 @@ impl VerificationActivity {
                 tx.put_verification_recovery(candidate.project, &recovery)?;
             }
             let record = allowed
-                .then(|| super::cost::admission(tx, env, candidate, &attempt_id, &started_at))
+                .then(|| {
+                    if reservation == Some(ReservationReason::IntegrationObservation) {
+                        super::cost::integration_observation_admission(
+                            tx,
+                            env,
+                            candidate,
+                            &attempt_id,
+                            &started_at,
+                        )
+                    } else {
+                        super::cost::admission(tx, env, candidate, &attempt_id, &started_at)
+                    }
+                })
                 .transpose()?;
             Ok((record, request_id, retry_origin))
         })?;

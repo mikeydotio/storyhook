@@ -72,6 +72,64 @@ pub enum LandingAuthority {
     Certified(VerifiedSubmission),
     /// An admitted stopped-mode attempt prepared the tree without testing it.
     Skipped(SkippedSubmission),
+    /// A managed integration has its own controller and merge target.
+    Integration(IntegrationAuthority),
+}
+
+/// Strict envelope: older certified/skipped readers must reject this shape.
+/// This persisted evidence does not itself mint a native effect capability.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntegrationAuthority {
+    /// Versioned managed landing binding.
+    pub integration: IntegrationLanding,
+}
+
+/// Original submission identity and separately certified managed merge target.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntegrationLanding {
+    /// Supported envelope version, currently one.
+    pub version: u8,
+    /// Durable integration owner UUID.
+    pub owner: String,
+    /// Claimed effect ordinal.
+    pub epoch: u32,
+    /// Distinct managed merge attempt UUID.
+    pub attempt: String,
+    /// Managed pull request, never the original story link.
+    pub pull_request: String,
+    /// Immutable original submitted commit.
+    pub original_head: String,
+    /// Original base parent preserved by assembly.
+    pub pinned_base: String,
+    /// Current base commit used for certification.
+    pub base: String,
+    /// Actual central certificate for the managed head and resolution tree.
+    pub certification: VerifiedSubmission,
+}
+
+impl IntegrationLanding {
+    /// Shape validation only; the dedicated controller must prove ownership,
+    /// native ancestry, current policy and the actual gate result separately.
+    pub fn validate(&self) -> Result<(), AppError> {
+        let invalid = |detail: &str| AppError::Validation(format!("integration landing {detail}"));
+        if self.version != 1 || self.epoch == 0 {
+            return Err(invalid("requires version one and a claimed effect epoch"));
+        }
+        for identity in [&self.owner, &self.attempt] {
+            if uuid::Uuid::parse_str(identity).is_err() {
+                return Err(invalid("requires owner and attempt UUIDs"));
+            }
+        }
+        crate::domain::pr_url::parse_pr_url(&self.pull_request)?;
+        for oid in [&self.original_head, &self.pinned_base, &self.base] {
+            if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(invalid("requires full original and base object ids"));
+            }
+        }
+        self.certification.validate()
+    }
 }
 
 impl LandingAuthority {
@@ -80,6 +138,7 @@ impl LandingAuthority {
         match self {
             Self::Certified(value) => value.validate(),
             Self::Skipped(value) => value.validate(),
+            Self::Integration(value) => value.integration.validate(),
         }
     }
 
@@ -88,6 +147,7 @@ impl LandingAuthority {
         match self {
             Self::Certified(value) => &value.head,
             Self::Skipped(value) => &value.head,
+            Self::Integration(value) => &value.integration.certification.head,
         }
     }
 
@@ -96,6 +156,7 @@ impl LandingAuthority {
         match self {
             Self::Certified(value) => &value.tree,
             Self::Skipped(value) => &value.tree,
+            Self::Integration(value) => &value.integration.certification.tree,
         }
     }
 
@@ -104,6 +165,15 @@ impl LandingAuthority {
         match self {
             Self::Certified(value) => Some(value),
             Self::Skipped(_) => None,
+            Self::Integration(value) => Some(&value.integration.certification),
+        }
+    }
+
+    /// Managed binding, requiring its dedicated controller even when certified.
+    pub fn integration(&self) -> Option<&IntegrationLanding> {
+        match self {
+            Self::Integration(value) => Some(&value.integration),
+            Self::Certified(_) | Self::Skipped(_) => None,
         }
     }
 }

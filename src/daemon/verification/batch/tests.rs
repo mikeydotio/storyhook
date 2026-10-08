@@ -101,7 +101,11 @@ fn head(store: &SqliteStore, env: &Environment, project: ProjectId) -> Verificat
     StoryService::new(&ctx)
         .set_state(&id, "verifying", None, None, None)
         .unwrap();
-    VerificationQueue::new(store).next().unwrap().unwrap()
+    VerificationQueue::new(store)
+        .with_environment(env.clone())
+        .next()
+        .unwrap()
+        .unwrap()
 }
 
 #[test]
@@ -948,4 +952,42 @@ fn a_probe_verdict_counts_only_for_the_exact_prefix() {
         },
     };
     assert_eq!(judge(&cleanup, Search), "halt");
+}
+
+// Reuse only this native shell fixture. The operation itself never asks the
+// batch actuator for authority or substitutes a batch/original PR candidate.
+#[test]
+fn managed_integration_gate_keeps_original_slot_and_withholds_repair_callback() {
+    let boundary = Boundary::new();
+    let activity = VerificationActivity::new();
+    let active = activity.acquire(&boundary.candidate, boundary.env.now());
+    let actuator = boundary.actuator(&activity);
+    let managed = PrLink {
+        owner: "acme".into(),
+        repo: "widgets".into(),
+        number: 991,
+        url: "https://github.com/acme/widgets/pull/991".into(),
+        close_on_merge: false,
+        status: "open".into(),
+        linked_at: "2026-01-01T00:00:00Z".into(),
+        last_checked_at: None,
+    };
+    let candidate = boundary.candidate.clone();
+    let outcome = actuator.verify_integration(&candidate, &managed, &active.cancellation);
+    assert!(
+        matches!(outcome, VerificationOutcome::Certified { .. }),
+        "{outcome:?}"
+    );
+    let observed = boundary.read("gate");
+    assert!(!observed.contains("STORYHOOK_REPAIR_"), "{observed}");
+    assert!(observed.contains("STORYHOOK_CERTIFY_ONLY=1"), "{observed}");
+    assert!(
+        observed.ends_with("https://github.com/acme/widgets/pull/991\n"),
+        "{observed}"
+    );
+    assert_eq!(candidate, boundary.candidate);
+    assert_eq!(
+        activity.active_for(candidate.project).unwrap().attempt_id,
+        active.active.attempt_id
+    );
 }

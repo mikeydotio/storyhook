@@ -14,8 +14,26 @@ pub(crate) fn observed_generations(
 ) -> Result<std::collections::BTreeSet<(StoryNo, crate::store::GlobalSeq)>, StoreError> {
     let mut observed = std::collections::BTreeSet::new();
     for record in tx.project_recoveries(project)? {
+        // A valid atomic shared readmission releases exactly its retained generation.
+        // Invalid records still hold every observation and never grant admission.
+        let released = if record.state.get("shared").is_some() {
+            persistence::read_view(tx, record.clone())
+                .ok()
+                .and_then(|v| v.state.shared)
+                .map(|s| {
+                    s.readmissions
+                        .into_iter()
+                        .map(|r| (r.story, r.generation))
+                        .collect::<std::collections::BTreeSet<_>>()
+                })
+                .unwrap_or_default()
+        } else {
+            std::collections::BTreeSet::new()
+        };
         for observation in tx.project_recovery_observations(project, &record.id)? {
-            observed.insert((observation.story, observation.generation));
+            if !released.contains(&(observation.story, observation.generation)) {
+                observed.insert((observation.story, observation.generation));
+            }
         }
     }
     Ok(observed)

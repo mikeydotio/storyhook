@@ -215,10 +215,30 @@ pub(super) fn run<S: Store>(
                 .read(|tx| settled.prove(tx, candidate, &record.id, &request.execution))
             {
                 Ok(proof) => Ok(RustDiagnosisResult::Proven(Box::new(proof))),
-                Err(error) => Ok(held(
-                    record,
-                    &format!("native evidence does not prove candidate cause: {error}"),
-                )),
+                Err(error) => {
+                    let shared = ctx.store().read(|tx| {
+                        settled.prove_shared(tx, candidate, &record.id, &request.execution)
+                    });
+                    if let Ok(proof) = shared {
+                        if let Some(recovery) =
+                            crate::service::project_recovery::ProjectRecoveryService::new(ctx)
+                                .observe_shared(candidate, &proof)?
+                        {
+                            return Ok(held(
+                                record,
+                                &format!(
+                                    "native shared failure retained by recovery {}; managed repair owns readmission",
+                                    recovery.record.id
+                                ),
+                            ));
+                        }
+                        return Ok(RustDiagnosisResult::Superseded);
+                    }
+                    Ok(held(
+                        record,
+                        &format!("native evidence does not prove candidate cause: {error}"),
+                    ))
+                }
             }
         }
         (work, settled) => {

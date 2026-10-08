@@ -37,6 +37,8 @@ pub(super) fn stories(state: &RecoveryState) -> BTreeSet<StoryNo> {
         prerequisite,
         // Names a recovery, not a story.
         supersedes: _,
+        // Readmissions repeat subjects; the strict shared validator enforces membership.
+        shared: _,
     } = state;
     let mut named = BTreeSet::new();
     for AffectedSubmission {

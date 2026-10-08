@@ -42,6 +42,10 @@ pub enum ReservationReason {
     Cleanup,
     /// An attribution hold committed; the attempt is releasing its execution ownership.
     Attribution,
+    /// Fresh read-only proof of one already requested managed merge.
+    IntegrationObservation,
+    /// The original held submission owns a distinct managed integration lifecycle.
+    Integration,
 }
 
 impl ReservationReason {
@@ -53,6 +57,8 @@ impl ReservationReason {
             Self::Remediation => "delivery of its returned diagnosis",
             Self::Cleanup => "cleanup of its worktree and window",
             Self::Attribution => "release after a causal attribution hold",
+            Self::IntegrationObservation => "native observation of the retained managed landing",
+            Self::Integration => "managed integration of the retained original submission",
         }
     }
 
@@ -74,6 +80,10 @@ impl ReservationReason {
             // One reap, plus one wake of store work around it.
             Self::Cleanup => Some(CONTROL_VERB_CEILING + RECOVERY_WAKE),
             Self::Attribution => Some(RECOVERY_WAKE),
+            Self::IntegrationObservation => Some(CONTROL_VERB_CEILING + RECOVERY_WAKE),
+            // The progressing central gate has existing idle supervision. A
+            // reservation must not impose an additional total wall-clock cap.
+            Self::Integration => None,
         }
     }
 }
@@ -208,6 +218,10 @@ impl VerificationGuard {
                     Some((ReservationReason::Remediation, true)) => "diagnosis-delivery",
                     Some((ReservationReason::Cleanup, true)) => "cleanup",
                     Some((ReservationReason::Attribution, true)) => "attribution-hold",
+                    Some((ReservationReason::Integration, true)) => "managed-integration",
+                    Some((ReservationReason::IntegrationObservation, true)) => {
+                        "managed-landing-observation"
+                    }
                     _ => "verdict",
                 };
                 super::cost::phase(&self.registry.costs, &self.active.attempt_id, Some(phase));

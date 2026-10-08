@@ -2,7 +2,8 @@
 
 mod pipeline;
 mod proof;
-pub use proof::{CausalReturnEvidence, SettledRustComparison};
+pub(in crate::service) use proof::RetainedNativeEvidence;
+pub use proof::{CausalReturnEvidence, SettledRustComparison, SharedRecoveryEvidence};
 #[cfg(test)]
 pub(crate) mod tests;
 

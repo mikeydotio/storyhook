@@ -1217,6 +1217,40 @@ pub(super) fn submission_is_current(
     })
 }
 
+/// A recovery capability cannot adopt contradictory resource custody recorded
+/// after its pinned submission, even if the original lease later reappears.
+/// Identical replays and prior-generation history do not challenge custody.
+///
+/// This supplements current-generation/state and physical inode/pane checks;
+/// a late lease event is a custody conflict, not proof of physical replacement.
+/// Ordinary verification's adjacent generation-lease selection is unchanged.
+pub(crate) fn recovery_cleanup_history_is_current(
+    tx: &impl ReadOps,
+    candidate: &VerificationCandidate,
+) -> Result<bool, StoreError> {
+    let Some(generation) = candidate.verifying_generation else {
+        return Ok(false);
+    };
+    let prefix = super::project_prefix(tx, candidate.project)?;
+    let story = StoryNo::parse_id(&prefix, &candidate.story_id)?;
+    let events = tx.events_for(candidate.project, story)?;
+    let Some(boundary) = events.iter().position(|event| {
+        event.global_seq == generation
+            && matches!(event.known(), Some(StoryEvent::StoryStateChanged { state, .. })
+                if state == VERIFYING_STATE)
+    }) else {
+        return Ok(false);
+    };
+    Ok(events[boundary + 1..]
+        .iter()
+        .all(|event| match event.known() {
+            Some(StoryEvent::StoryCleanupLeaseRecorded { lease, .. }) => {
+                candidate.cleanup_lease.as_ref() == Some(lease.as_ref())
+            }
+            _ => true,
+        }))
+}
+
 pub(super) fn candidate_is_current(
     tx: &impl ReadOps,
     row: &StoryRow,
@@ -1454,6 +1488,12 @@ fn held_verifying_for_purpose(
             Some(QueueHold::StoppedRepair) => {
                 "verification stopped: managed repair requires certification".to_string()
             }
+            Some(QueueHold::IntegrationRecovery) => {
+                "managed integration retains this original submission and its resources".to_string()
+            }
+            Some(QueueHold::HostRecovery) => {
+                "native host recovery pauses admission pending proven restoration".to_string()
+            }
             Some(QueueHold::ProjectRecovery) => {
                 "project recovery owns this verification generation".to_string()
             }
@@ -1591,8 +1631,12 @@ pub(crate) enum QueueHold {
     Awaiting,
     /// A story or engine reset of the story is pending.
     Reset,
+    /// Native pressure restoration owns a store-wide host admission pause.
+    HostRecovery,
     /// Project recovery has observed this verification generation.
     ProjectRecovery,
+    /// A distinct integration owner retains this story, even if its generation changes.
+    IntegrationRecovery,
     /// Retained causal evidence has not released this submission.
     Attribution,
     /// A managed repair must certify its fix before resolving its recovery.
@@ -1622,7 +1666,32 @@ fn queue_hold(
             .is_some_and(|reset| !reset.completed)
     {
         Some(QueueHold::Reset)
-    } else if generation.is_some_and(|generation| observed.contains(&(row.story_no, generation))) {
+    } else if tx
+        .integration_recoveries(project)?
+        .iter()
+        .any(|owner| owner.active && owner.story == row.story_no)
+    {
+        Some(QueueHold::IntegrationRecovery)
+    } else if !tx
+        .landing_intents()?
+        .iter()
+        .any(|intent| intent.project == project && intent.story == row.story_no)
+        && match super::host_recovery::blocks_admission(tx) {
+            Err(StoreError::Corrupt(_)) if purpose == QueuePurpose::Status => false,
+            result => result?,
+        }
+    {
+        Some(QueueHold::HostRecovery)
+    } else if match super::project_recovery::shared_blocks_admission(
+        tx,
+        project,
+        Some(row.story_no),
+    ) {
+        Err(StoreError::Corrupt(_)) if purpose == QueuePurpose::Status => false,
+        result => result?,
+    } || generation
+        .is_some_and(|generation| observed.contains(&(row.story_no, generation)))
+    {
         Some(QueueHold::ProjectRecovery)
     } else if super::attribution::holds::held(tx, project, &row.snapshot.id, generation)? {
         Some(QueueHold::Attribution)

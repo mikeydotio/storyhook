@@ -106,6 +106,53 @@ enum Kind {
 /// classification for "git, run from this module" has not changed. A new
 /// program, or a new file, does.
 const INVENTORY: &[(&str, &str, Kind)] = &[
+    // SH-871 host request deadline preflight: the nonexistent executable must
+    // never reach spawn, so this fixture owns no process on the passing path.
+    (
+        "src/process.rs",
+        "\"storyhook-sh871-must-not-spawn-expired-host-request\"",
+        Kind::Waited,
+    ),
+    // Publication preflight fixtures refuse before spawn on an expired or
+    // cancelled original operation; this nonexistent program never executes.
+    (
+        "src/github_access/transport.rs",
+        "\"/storyhook-fixture-command-must-not-spawn\"",
+        Kind::Waited,
+    ),
+    // SH-871: native broker proof uses private file-backed input/output and
+    // bounded quiescent capture. Public JSON alone confers no authority.
+    (
+        "src/service/host_recovery/native.rs",
+        "\"bash\"",
+        Kind::Waited,
+    ),
+    // A finite scratch writer proves that leader success is insufficient;
+    // the owned process group must settle within the original deadline.
+    (
+        "src/service/integration_recovery/assembly/tests.rs",
+        "\"sh\"",
+        Kind::Waited,
+    ),
+    // SH-871: one scratch gate workload under the real central accounting
+    // boundary; file-backed quiescent capture settles its owned process group.
+    (
+        "src/service/integration_recovery/tests/owner/workflow.rs",
+        "\"python3\"",
+        Kind::Waited,
+    ),
+    // Controlled native inspection fixtures: an absent executable and finite
+    // scratch writers are supervised through the same quiescent capture.
+    (
+        "src/service/private_objects/native/tests.rs",
+        "&missing",
+        Kind::Waited,
+    ),
+    (
+        "src/service/private_objects/native/tests.rs",
+        "\"sh\"",
+        Kind::Waited,
+    ),
     // SH-870: metadata-only refresh; owned control supervisor enforces its deadline,
     // cancellation and process-group cleanup before the causal return transaction.
     (

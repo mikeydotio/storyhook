@@ -139,7 +139,7 @@ pub(super) fn assessment(
     if let Some(hold) = authority::policy_hold(tx, project, &row.snapshot)? {
         return Ok(Some(PolicyRearm::Held(hold)));
     }
-    if !subject.returned || view.state.decision.is_none() {
+    if view.state.shared.is_none() && (!subject.returned || view.state.decision.is_none()) {
         return Ok(Some(PolicyRearm::Held(AssessmentHold::CauseUnproved)));
     }
     if !undelivered(
@@ -186,6 +186,9 @@ pub(super) fn assessment(
         return Ok(Some(PolicyRearm::Held(
             AssessmentHold::ResourceOrDependency,
         )));
+    }
+    if view.state.shared.is_some() && !super::shared::retained_current(tx, view, subject)? {
+        return Ok(Some(PolicyRearm::Held(AssessmentHold::AuthorityChanged)));
     }
     Ok(Some(PolicyRearm::Ready))
 }

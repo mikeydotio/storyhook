@@ -55,6 +55,9 @@ impl LandingIntent {
     /// batch pull request for a batch member, else the story's own.
     #[must_use]
     pub fn landing_pull_request(&self) -> &str {
+        if let Some(integration) = self.certification.integration() {
+            return &integration.pull_request;
+        }
         self.batch
             .as_ref()
             .map_or(&self.pull_request, |batch| &batch.pull_request)
@@ -63,7 +66,23 @@ impl LandingIntent {
     /// The identity of the merge attempt, shared by every member of a batch.
     #[must_use]
     pub fn landing_attempt(&self) -> &str {
+        if let Some(integration) = self.certification.integration() {
+            return &integration.attempt;
+        }
         self.batch.as_ref().map_or(&self.id, |batch| &batch.landing)
+    }
+
+    /// Ordinary controllers cannot execute, complete or release this new format.
+    /// Dedicated owner admission will replace this conservative refusal later.
+    pub(crate) fn require_ordinary_controller(&self) -> Result<(), StoreError> {
+        if self.certification.integration().is_some() {
+            return Err(StoreError::Validation(if self.batch.is_some() {
+                "landing cannot combine batch and integration authority".into()
+            } else {
+                "integration landing requires its dedicated owner controller".into()
+            }));
+        }
+        Ok(())
     }
 }
 
@@ -195,6 +214,14 @@ fn validate_batch(tx: &impl ReadOps, batch: &BatchLandingIntent) -> Result<(), S
 
 /// Validates one immutable intent before acquisition, commit, or resolution.
 pub(crate) fn validate_intent(tx: &impl ReadOps, intent: &LandingIntent) -> Result<(), StoreError> {
+    if intent.certification.integration().is_some() {
+        if intent.batch.is_some() {
+            intent.require_ordinary_controller()?;
+        }
+        crate::service::integration_recovery::validate_landing_intent(tx, intent)?;
+    } else {
+        intent.require_ordinary_controller()?;
+    }
     use crate::domain::{
         StoryEvent, SuperState, VERIFYING_STATE_SLUG, apply_computed_epic_states, is_epic,
     };

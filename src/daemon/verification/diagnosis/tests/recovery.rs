@@ -39,6 +39,7 @@ pub(super) fn retained_lineage(b: &mut Board) -> String {
     // Seed a pre-upgrade accepted decision as data. New observations must not
     // use this fixture path to acquire implementation authority.
     let input = DecisionInput {
+        join_recovery: None,
         version: 1,
         revision: view.record.revision,
         project: b.candidate.project,

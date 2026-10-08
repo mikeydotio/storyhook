@@ -44,7 +44,7 @@ class Ledger:
                     raise Refusal("initialized authority state disappeared")
                 state = dict(version=1, authority=uuid.uuid4().hex, host=policy.value["host"],
                              boot=boot, policy=policy.digest, leases={}, scheduler={},
-                             pressure="initial", recovery=None, sample=None, now=clock())
+                             pressure="initial", recovery=None, sample=None, pressure_episode=None, now=clock())
                 self.db.execute("INSERT INTO authority VALUES(1,?)", (json.dumps(state),))
             else:
                 state = json.loads(found[0])
@@ -56,7 +56,7 @@ class Ledger:
                         raise Refusal("host policy changed; retained leases require their original policy")
                     previous = state["policy"]
                     state.update(policy=policy.digest, authority=uuid.uuid4().hex, scheduler={},
-                                 pressure="initial", recovery=None, sample=None)
+                                 pressure="initial", recovery=None, sample=None, pressure_episode=None)
                     self.validate(state)
                     self.event(state, "pressure", reason="idle policy revision activated", previous_policy=previous)
                     self.db.execute("UPDATE authority SET payload=? WHERE id=1", (json.dumps(state),))
@@ -82,6 +82,26 @@ class Ledger:
             yield state
             self.validate(state)
             self.db.execute("UPDATE authority SET payload=? WHERE id=1", (json.dumps(state),))
+            self.db.execute("COMMIT")
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
+
+    @contextmanager
+    def read_transaction(self):
+        """Read one current snapshot without updating its clock or any durable row."""
+        self.db.execute("BEGIN")
+        try:
+            row = self.db.execute("SELECT payload FROM authority WHERE id=1").fetchone()
+            if row is None:
+                raise Refusal("authority state disappeared")
+            state = json.loads(row[0])
+            self.validate(state)
+            now = self.clock()
+            if state["boot"] != self.boot or now < state["now"]:
+                raise Refusal("native snapshot boot or monotonic clock changed")
+            state["now"] = now
+            yield state
             self.db.execute("COMMIT")
         except BaseException:
             self.db.execute("ROLLBACK")
@@ -127,7 +147,28 @@ class Ledger:
         if lease:
             value.update(parent=lease["parent"], project=lease["project"], work=lease["work"],
                          resources=lease["resources"], binding=lease["binding"])
-        self.db.execute("INSERT INTO events(payload) VALUES(?)", (json.dumps(value),))
+        episode = state.get("pressure_episode")
+        if (lease and episode and not episode.get("invalidated")
+                and episode.get("recovered_sequence") is None
+                and state["pressure"] == "pressure"
+                and ((event == "denial" and details.get("reason") == "wait for fresh healthy sensors and recovery hysteresis")
+                     or (event == "cancel" and details.get("reason") == "severe pressure"))):
+            value["pressure_fault_sequence"] = episode["fault_sequence"]
+        inserted = self.db.execute("INSERT INTO events(payload) VALUES(?)", (json.dumps(value),))
+        sequence = inserted.lastrowid
+        if lease:
+            if event in ("request", "subgrant"):
+                lease["admission_sequence"] = sequence
+            if event in ("release", "cancel") and lease["state"] in TERMINAL:
+                lease["settlement_sequence"] = sequence
+            if event in ("attach", "cleanup"):
+                execution = next(e for e in lease["executions"] if e["id"] == details["execution"])
+                # A lost acknowledgement can replay cleanup after release. Keep
+                # the first successful native proof inside the operation window.
+                execution.setdefault("attach_sequence" if event == "attach" else "settlement_sequence", sequence)
+            if "pressure_fault_sequence" in value:
+                lease.setdefault("pressure_links", []).append(sequence)
+        return sequence
 
     def events(self, after):
         """Return at most 100 observations after a sequence, without acknowledging delivery."""

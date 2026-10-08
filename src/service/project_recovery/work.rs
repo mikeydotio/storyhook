@@ -97,6 +97,9 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
             let mut view = persistence::find(tx, self.ctx.project(), recovery)?;
             let index = work_index(&view, effect)?;
             if (!view.record.active && view.state.work[index].kind != WorkKind::Resume) || view.state.work[index].status != WorkStatus::Pending { return Ok(None); }
+            // An undecided second fault pauses admission without manufacturing
+            // a new repair-story hold that would prevent its explicit join.
+            if crate::service::host_recovery::blocks_admission(tx)? || super::shared::blocks_admission(tx, view.record.project, Some(view.state.work[index].story))? { return Ok(None); }
             if let Some(reason) = permitted(tx, &view, &view.state.work[index])? {
                 let work = &mut view.state.work[index]; work.status = WorkStatus::Held;
                 work.hold = Some(reason); work.detail = reason.detail().into();
@@ -177,7 +180,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                 // A successful helper may itself claim/advance the story. Completion
                 // retains transport evidence; only still-pending retry needs the old state.
                 let held = if view.state.work[index].status == WorkStatus::Pending {
-                    permitted(tx, &view, &view.state.work[index])?
+                    permitted_target(tx, &view, &view.state.work[index])?
                 } else {
                     policy(tx, &view, &view.state.work[index])?
                 };
@@ -312,6 +315,24 @@ pub(super) fn permitted(
     view: &RecoveryView,
     work: &WorkDelivery,
 ) -> Result<Option<AssessmentHold>, StoreError> {
+    if crate::service::host_recovery::blocks_admission(tx)?
+        || super::shared::blocks_admission(tx, view.record.project, Some(work.story))?
+    {
+        return Ok(Some(AssessmentHold::ResourceOrDependency));
+    }
+    permitted_target(tx, view, work)
+}
+
+// Local target authority also governs settlement. A distinct shared fault is
+// an admission pause, not proof that a settled absent call acquired resources.
+fn permitted_target(
+    tx: &impl ReadOps,
+    view: &RecoveryView,
+    work: &WorkDelivery,
+) -> Result<Option<AssessmentHold>, StoreError> {
+    if view.record.active && !super::shared::evidence_current(tx, view)? {
+        return Ok(Some(AssessmentHold::AuthorityChanged));
+    }
     if let Some(reason) = policy(tx, view, work)? {
         return Ok(Some(reason));
     }

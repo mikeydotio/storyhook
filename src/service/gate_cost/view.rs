@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 /// Cost retained for one submission across retries and intervening holds.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubmissionCost {
     /// Immutable submission identity, including its verifying generation.
     pub submission: GateSubmission,
@@ -37,6 +37,85 @@ pub struct SubmissionCost {
     pub breaches: Vec<String>,
     /// Wall and queue intervals use UTC boundaries and are estimates.
     pub wall_estimated: bool,
+}
+
+/// Read-only recovery context for one original submission, never effect authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetainedSubmissionStatus {
+    /// Original project/story/generation, independent of later retries.
+    pub submission: GateSubmission,
+    /// Distinct retained admissions, including unfinished ones; missing evidence is unknown.
+    pub admission_count: Option<usize>,
+    /// Existing cumulative cost semantics, including unknown/incomplete durations.
+    pub cost: Option<SubmissionCost>,
+    /// An unreadable history is unknown, never a zero count or recovery authority.
+    #[serde(default)]
+    pub evidence_error: Option<String>,
+    /// Argument vector for existing evidence lookup; select this generation in its result.
+    pub evidence_command: Vec<String>,
+}
+
+impl RetainedSubmissionStatus {
+    /// Project a selected original generation from existing history without new observations.
+    pub(crate) fn from_history(
+        submission: &GateSubmission,
+        project_slug: &str,
+        project_prefix: &str,
+        attempts: &Result<Vec<GateAttempt>, crate::store::StoreError>,
+    ) -> Self {
+        let view = EvidenceView::new(
+            submission.project,
+            &submission.story_id,
+            attempts.as_ref().map(|a| a.clone()).unwrap_or_default(),
+        );
+        let cost = view
+            .submissions
+            .into_iter()
+            .find(|cost| cost.submission.same_generation(submission));
+        let story = submission
+            .story_number()
+            .map_or_else(|| submission.story_id.clone(), |n| n.to_id(project_prefix));
+        Self {
+            submission: submission.clone(),
+            admission_count: cost.as_ref().map(|cost| cost.attempts.len()),
+            cost,
+            evidence_error: attempts.as_ref().err().map(ToString::to_string),
+            evidence_command: vec![
+                "story".into(),
+                "verifier".into(),
+                "evidence".into(),
+                story,
+                "--project".into(),
+                project_slug.into(),
+                "--json".into(),
+            ],
+        }
+    }
+
+    /// Human diagnostic with shell-quoted lookup arguments, not an executable effect.
+    pub(crate) fn render(&self) -> String {
+        let generation = self
+            .submission
+            .generation
+            .map_or_else(|| "unknown".into(), |g| g.get().to_string());
+        let count = self
+            .admission_count
+            .map_or_else(|| "unknown".into(), |n| n.to_string());
+        let command = self
+            .evidence_command
+            .iter()
+            .map(|arg| format!("'{}'", arg.replace('\'', "'\\''")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let error = self
+            .evidence_error
+            .as_ref()
+            .map_or(String::new(), |e| format!("Evidence unavailable: {e}\n"));
+        format!(
+            "{} generation {generation}: retained admissions {count} (including unfinished); cumulative costs: {command}\n{error}",
+            self.submission.story_id
+        )
+    }
 }
 
 /// Durable evidence returned by `story verifier evidence`.
@@ -294,5 +373,83 @@ mod tests {
             Some(900_000)
         );
         assert!(view.render().contains("physical gate cost unknown"));
+    }
+    #[test]
+    fn retained_recovery_status_counts_unique_original_generation_admissions() {
+        let a = attempt("a", "2026-10-03T00:01:00Z", "2026-10-03T00:16:00Z", 900_000);
+        let original = a.submission.clone();
+        let b = GateAttempt::new(
+            "unfinished".into(),
+            original.clone(),
+            "2026-10-03T00:20:00Z",
+        );
+        let mut other_generation = a.clone();
+        other_generation.id = "replacement".into();
+        other_generation.submission.generation = Some(GlobalSeq::new(8));
+        let mut foreign = a.clone();
+        foreign.id = "foreign".into();
+        foreign.submission.project = ProjectId::new(2);
+        let mut shared = a.clone();
+        shared.id = "shared-admission".into();
+        shared.submission.story_id = "SH-2".into();
+        let mut gate = GateExecution::new(
+            "shared-gate".into(),
+            &shared.admitted_at,
+            "/tmp/unused-journal".into(),
+        );
+        gate.submissions = vec![original.clone(), original.clone()];
+        // An unfinished shared physical execution keeps total cost unknown.
+        shared.executions.push(gate);
+        let view = RetainedSubmissionStatus::from_history(
+            &original,
+            "selected-project",
+            "RENAMED",
+            &Ok(vec![a.clone(), a, b, other_generation, foreign, shared]),
+        );
+        assert_eq!(view.admission_count, Some(3));
+        let cost = view.cost.as_ref().unwrap();
+        assert_eq!(cost.attempts, ["a", "unfinished", "shared-admission"]);
+        assert_eq!(cost.execution_milliseconds, None);
+        assert_eq!(cost.known_execution_milliseconds, Some(0));
+        assert_eq!(cost.wall_milliseconds, Some(1_200_000));
+        assert_eq!(
+            view.evidence_command,
+            [
+                "story",
+                "verifier",
+                "evidence",
+                "RENAMED-1",
+                "--project",
+                "selected-project",
+                "--json"
+            ]
+        );
+    }
+
+    #[test]
+    fn recovery_status_missing_evidence_never_claims_zero_attempts() {
+        let a = attempt("a", "2026-10-03T00:01:00Z", "2026-10-03T00:16:00Z", 900_000);
+        let mut original = a.submission.clone();
+        original.generation = Some(GlobalSeq::new(99));
+        let view =
+            RetainedSubmissionStatus::from_history(&original, "selected", "SH", &Ok(vec![a]));
+        assert_eq!(view.admission_count, None);
+        assert_eq!(view.cost, None);
+        assert!(
+            view.render()
+                .contains("generation 99: retained admissions unknown")
+        );
+        assert!(!view.render().contains("admissions 0"));
+        let corrupt = RetainedSubmissionStatus::from_history(
+            &original,
+            "selected",
+            "SH",
+            &Err(crate::store::StoreError::Corrupt(
+                "fixture admission unavailable".into(),
+            )),
+        );
+        assert_eq!(corrupt.admission_count, None);
+        assert!(corrupt.cost.is_none());
+        assert!(corrupt.render().contains("fixture admission unavailable"));
     }
 }

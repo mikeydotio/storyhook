@@ -22,7 +22,7 @@ class Authority(Ledger):
                         for execution in row["executions"]:
                             execution["settled"] = True
                         self.event(state, "recovery", row, reason="confirmed reboot")
-                state.update(boot=boot, pressure="initial", recovery=None, sample=None, scheduler={})
+                state.update(boot=boot, pressure="initial", recovery=None, sample=None, scheduler={}, pressure_episode=None)
             else:
                 self._reconcile(state)
 
@@ -146,6 +146,10 @@ class Authority(Ledger):
             execution = next((e for e in row["executions"] if e["id"] == execution_id), None)
             if execution is None:
                 raise Refusal("unknown execution settlement")
+            if execution["settled"]:
+                # The independent native lifetime proof is final. A replay must
+                # not reinterpret a later process that reused its session ID.
+                return
             result = prove(copy.deepcopy(execution))
             if result is not True:
                 reason = "descendant cleanup is unknown" if result is None else "descendant lifetime remains live"
@@ -212,10 +216,13 @@ class Authority(Ledger):
                 valid = valid and 0 <= state["now"] - sample["at"] <= self.policy.value["stale_ms"]
                 valid = valid and sample["cpu"] <= 1000 and sample["memory"] <= 1000
             old = state["pressure"]
+            completed_since = None
             prior = state["sample"]
             if prior and state["now"] - prior["at"] > self.policy.value["stale_ms"]:
                 state.update(pressure="sensor gap", recovery=None)
                 old = "sensor gap"
+            if (not valid or old == "sensor gap") and state.get("pressure_episode"):
+                state["pressure_episode"]["invalidated"] = True
             state["sample"] = copy.deepcopy(sample) if valid else None
             levels = self.policy.value["thresholds"]
             if not valid:
@@ -228,11 +235,12 @@ class Authority(Ledger):
                 if state["recovery"] is None:
                     state["recovery"] = state["now"]
                 if state["now"] - state["recovery"] >= self.policy.value["recover_ms"]:
+                    completed_since = state["recovery"]
                     state.update(pressure="ready", recovery=None)
             else:
                 state["recovery"] = None
-            if state["pressure"] != old:
-                self.event(state, "pressure", reason=state["pressure"], sample=state["sample"])
+            from .restoration import observe
+            observe(self, state, old, completed_since)
             severe = valid and any(sample[k] >= levels[k][2] for k in levels)
             for row in state["leases"].values():
                 expired = row["granted_at"] is not None and state["now"] - row["granted_at"] >= self.policy.value["lease_ms"]

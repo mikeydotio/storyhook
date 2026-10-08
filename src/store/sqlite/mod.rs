@@ -47,6 +47,8 @@ mod dispatch_policy;
 mod dropped_cleanup;
 mod engine_reset;
 mod gate_evidence;
+mod host_recovery;
+mod integration_recovery;
 mod landing;
 mod ownership;
 mod project_recovery;
@@ -954,6 +956,33 @@ impl Store for SqliteStore {
 macro_rules! impl_read_ops {
     ($ty:ident) => {
         impl ReadOps for $ty<'_> {
+            fn host_recoveries(&self) -> Result<Vec<crate::store::HostRecovery>, StoreError> {
+                host_recovery::list(&self.conn)
+            }
+            fn host_recovery_pending(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<crate::store::HostRecoveryPending>, StoreError> {
+                host_recovery::pending(&self.conn, project)
+            }
+            fn integration_recoveries(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<crate::store::IntegrationRecovery>, StoreError> {
+                integration_recovery::list(&self.conn, project)
+            }
+            fn integration_pending(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<crate::store::IntegrationPending>, StoreError> {
+                integration_recovery::pending(&self.conn, project)
+            }
+            fn integration_readmissions(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<crate::store::IntegrationReadmission>, StoreError> {
+                integration_recovery::readmissions(&self.conn, project)
+            }
             fn project_recoveries(
                 &self,
                 project: ProjectId,
@@ -1374,6 +1403,50 @@ impl WriteOps for SqliteWriteTx<'_> {
     ) -> Result<bool, StoreError> {
         project_recovery::insert(&self.conn, record)
     }
+    fn insert_host_recovery(
+        &mut self,
+        record: &crate::store::HostRecovery,
+    ) -> Result<bool, StoreError> {
+        host_recovery::insert(&self.conn, record)
+    }
+    fn insert_host_recovery_pending(
+        &mut self,
+        record: &crate::store::HostRecoveryPending,
+    ) -> Result<(), StoreError> {
+        host_recovery::insert_pending(&self.conn, record)
+    }
+    fn update_host_recovery(
+        &mut self,
+        record: &crate::store::HostRecovery,
+        expected: i64,
+    ) -> Result<bool, StoreError> {
+        host_recovery::update(&self.conn, record, expected)
+    }
+    fn insert_integration_recovery(
+        &mut self,
+        record: &crate::store::IntegrationRecovery,
+    ) -> Result<bool, StoreError> {
+        integration_recovery::insert(&self.conn, record)
+    }
+    fn insert_integration_pending(
+        &mut self,
+        record: &crate::store::IntegrationPending,
+    ) -> Result<(), StoreError> {
+        integration_recovery::insert_pending(&self.conn, record)
+    }
+    fn insert_integration_readmission(
+        &mut self,
+        record: &crate::store::IntegrationReadmission,
+    ) -> Result<(), StoreError> {
+        integration_recovery::insert_readmission(&self.conn, record)
+    }
+    fn update_integration_recovery(
+        &mut self,
+        record: &crate::store::IntegrationRecovery,
+        expected: i64,
+    ) -> Result<bool, StoreError> {
+        integration_recovery::update(&self.conn, record, expected)
+    }
     fn update_project_recovery(
         &mut self,
         record: &crate::store::ProjectRecovery,
@@ -1775,3 +1848,6 @@ impl WriteOps for SqliteWriteTx<'_> {
         write::delete_attachment_blob(&self.conn, project, story, attachment_id)
     }
 }
+
+#[cfg(test)]
+mod recovery_identity_tests;

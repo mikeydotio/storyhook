@@ -17,6 +17,12 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
         let now = self.ctx.now();
         self.ctx.write_stories(|tx| {
             let mut view = persistence::find(tx, self.ctx.project(), id)?;
+            if view.state.shared.is_some() {
+                if super::shared::readmit::reconcile(tx, self.ctx, &mut view, &now)? {
+                    persistence::save(tx, &mut view, &now)?;
+                }
+                return Ok(view);
+            }
             let Some(release) = super::resolution::release(&view.state) else { return Ok(view); };
             let cause = release.cause.clause();
             let holds = view.state.decision.as_ref().map(|d| d.dependency_holds.clone()).unwrap_or_default();
@@ -85,20 +91,47 @@ pub(super) fn eligible(
     ))
 }
 
-pub(super) fn resource_hold(
+pub(crate) fn resource_hold(
     tx: &impl ReadOps,
     project: ProjectId,
     story: StoryNo,
+) -> Result<bool, StoreError> {
+    resource_hold_with_intent(tx, project, story, None)
+}
+
+/// The dedicated managed landing controller may continue its own exact durable
+/// intent. This excludes no other landing, reset, or quarantined engine custody.
+pub(crate) fn resource_hold_except_managed_landing(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+    owned: &crate::store::LandingIntent,
+) -> Result<bool, StoreError> {
+    if owned.project != project
+        || owned.story != story
+        || owned.certification.integration().is_none()
+        || !tx.landing_intents()?.contains(owned)
+    {
+        return Ok(true);
+    }
+    crate::service::integration_recovery::validate_landing_intent(tx, owned)?;
+    resource_hold_with_intent(tx, project, story, Some(owned))
+}
+
+fn resource_hold_with_intent(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+    owned: Option<&crate::store::LandingIntent>,
 ) -> Result<bool, StoreError> {
     if tx.story_resets(project)?.contains_key(&story)
         || tx
             .story_reset(project, story)?
             .is_some_and(|reset| !reset.completed)
         || tx.engine_reset(project, story)?.is_some()
-        || tx
-            .landing_intents()?
-            .iter()
-            .any(|intent| intent.project == project && intent.story == story)
+        || tx.landing_intents()?.iter().any(|intent| {
+            intent.project == project && intent.story == story && Some(intent) != owned
+        })
     {
         return Ok(true);
     }

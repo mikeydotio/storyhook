@@ -12,6 +12,7 @@ pub(super) fn ready(f: &ServiceFixture) -> RecoveryView {
 
 pub(super) fn input(view: &RecoveryView, scope: RepairScope) -> DecisionInput {
     DecisionInput {
+        join_recovery: None,
         version: 1, revision: view.record.revision, project: view.record.project,
         generation: view.state.assessment.generation,
         dispatch_identity: view.state.assessment.dispatch_identity.clone(), scope,

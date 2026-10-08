@@ -517,6 +517,12 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0058_engine_stop_origin.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 59,
+        name: "shared_recovery_ownership",
+        sql: include_str!("schema/0059_shared_recovery_ownership.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 mod lineage;

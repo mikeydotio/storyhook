@@ -4,6 +4,7 @@ mod contrast;
 pub(crate) mod holds;
 mod model;
 mod native;
+pub(in crate::service) use native::RetainedNativeEvidence;
 #[cfg(test)]
 pub(crate) use native::tests::Fixture as NativeFixture;
 mod preparation;
@@ -18,6 +19,7 @@ pub use holds::AttributionHold;
 pub use model::*;
 pub use native::{
     CausalReturnEvidence, NativeProbeBinding, NativeRustComparison, SettledRustComparison,
+    SharedRecoveryEvidence,
 };
 pub use preparation::{DiagnosticPreparation, DiagnosticSettlement, PreparationResult};
 pub use rust_cargo::{CargoTarget, RustExecutable};

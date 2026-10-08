@@ -86,6 +86,9 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                             || (view.state.assessment.status == AssessmentStatus::InFlight
                                 && authority::assessment_hold(tx, &view)?.is_none())));
                 };
+                if view.record.active && !super::shared::evidence_current(tx, &view)? {
+                    return Ok(false);
+                }
                 let work = view
                     .state
                     .work
@@ -95,6 +98,11 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                         StoreError::Validation("recovery delivery effect disappeared".into())
                     })?;
                 if work.epoch != epoch || work.status != WorkStatus::InFlight {
+                    return Ok(false);
+                }
+                if crate::service::host_recovery::blocks_admission(tx)?
+                    || super::shared::blocks_admission(tx, view.record.project, Some(work.story))?
+                {
                     return Ok(false);
                 }
                 if super::work::permitted(tx, &view, work)?.is_none() {
@@ -146,7 +154,11 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                 }
                 if let Some(decision) = &view.state.decision {
                     for hold in &decision.dependency_holds {
-                        if super::resume::eligible(tx, &view, hold)? {
+                        if (view.state.shared.is_some()
+                            && super::shared::readmit::eligible(tx, &view, hold)?)
+                            || (view.state.shared.is_none()
+                                && super::resume::eligible(tx, &view, hold)?)
+                        {
                             return Ok(true);
                         }
                     }

@@ -39,6 +39,11 @@ impl<S: Store> VerificationQueue<'_, S> {
         certification: &LandingAuthority,
     ) -> Result<LandingAdmission, AppError> {
         certification.validate()?;
+        if certification.integration().is_some() {
+            return Err(AppError::Validation(
+                "integration landing requires its dedicated owner controller".into(),
+            ));
+        }
         if ctx.project() != candidate.project {
             return Err(AppError::Validation(
                 "landing context belongs to another project".into(),
@@ -116,6 +121,7 @@ impl<S: Store> VerificationQueue<'_, S> {
         detail: &str,
         candidate: Option<&VerificationCandidate>,
     ) -> Result<bool, AppError> {
+        intent.require_ordinary_controller()?;
         if ctx.project() != intent.project {
             return Err(AppError::Validation(
                 "landing context belongs to another project".into(),
@@ -141,6 +147,9 @@ impl<S: Store> VerificationQueue<'_, S> {
                         prepared.head, prepared.tree, prepared.attempt,
                         crate::text_lint::quote_evidence(detail)
                     ),
+                    LandingAuthority::Integration(_) => return Err(StoreError::Validation(
+                        "integration landing requires its dedicated owner controller".into(),
+                    )),
                 };
                 complete_story(tx, ctx, intent, comment)?;
                 Ok(true)
@@ -231,6 +240,7 @@ pub(super) fn completable(
     intent: &LandingIntent,
     candidate: Option<&VerificationCandidate>,
 ) -> Result<bool, StoreError> {
+    intent.require_ordinary_controller()?;
     if let Some(candidate) = candidate
         && !super::verification::human::permits(tx, candidate)?
     {
@@ -257,6 +267,7 @@ pub(super) fn complete_story<S: Store>(
     intent: &LandingIntent,
     comment: String,
 ) -> Result<(), StoreError> {
+    intent.require_ordinary_controller()?;
     use crate::domain::{StoryEvent, completion_state};
     let prefix = super::project_prefix(tx, intent.project)?;
     let row = tx
@@ -320,6 +331,7 @@ pub(crate) fn supersede_for_reset(
     intent: &LandingIntent,
     now: &str,
 ) -> Result<String, StoreError> {
+    intent.require_ordinary_controller()?;
     let mut batch_note = String::new();
     if let Some(binding) = &intent.batch
         && let Some(record) = tx
@@ -358,5 +370,66 @@ pub(super) fn release_intent(
     tx: &mut impl WriteOps,
     intent: &LandingIntent,
 ) -> Result<bool, StoreError> {
+    intent.require_ordinary_controller()?;
     tx.remove_landing_intent(intent)
+}
+
+/// Dedicated managed completion in the existing landing mutation funnel. Native
+/// ancestry can complete the story without inventing a merge of its author PR.
+/// The integration owner calls this only within its exact guarded CAS.
+pub(super) fn complete_integration_story<S: Store>(
+    tx: &mut impl WriteOps,
+    ctx: &Ctx<'_, S>,
+    native: &super::integration_recovery::NativeIntegrationLanded,
+) -> Result<(), StoreError> {
+    native.validate_lifetime().map_err(StoreError::from)?;
+    let intent = native.query().intent();
+    let evidence = native.evidence();
+    if intent.certification.integration().is_none() || !tx.landing_intents()?.contains(intent) {
+        return Err(StoreError::Validation(
+            "exact managed landing intent missing".into(),
+        ));
+    }
+    crate::store::landing::validate_intent(tx, intent)?;
+    let prefix = super::project_prefix(tx, intent.project)?;
+    let row = tx
+        .story(intent.project, intent.story)?
+        .ok_or_else(|| StoreError::NotFound(intent.story_id.clone()))?;
+    let done = crate::domain::completion_state(&tx.states(intent.project)?)
+        .ok_or_else(|| StoreError::Validation("project lacks required done state".into()))?;
+    let states = tx.state_map(intent.project)?;
+    let now = ctx.now();
+    if let Some(incident) = tx.verification_incident(intent.project)?
+        && incident.generation == intent.generation
+    {
+        tx.clear_verification_incident(&incident.incident_id)?;
+    }
+    tx.remove_landing_intent(intent)?;
+    super::story::append_state_transition(
+        tx,
+        intent.project,
+        intent.story,
+        &row,
+        &prefix,
+        &states,
+        &done,
+        &now,
+        vec![crate::domain::StoryEvent::StoryCommentAdded {
+            at: now.clone(),
+            text: format!(
+                "{} managed integration PR {} landed commit `{}` with certified tree `{}`. Native Git proved original submitted head `{}` and managed head `{}` are ancestors, and the merge is reachable from observed base `{}`. The original PR {} retains its independently observed status.",
+                super::VERIFICATION_GREEN_PREFIX,
+                evidence.managed_pr,
+                evidence.merge_commit,
+                evidence.merge_tree,
+                evidence.original_head,
+                evidence.managed_head,
+                evidence.observed_base,
+                evidence.original_pr
+            ),
+        }],
+        ctx.provenance(),
+    )?;
+    native.validate_lifetime().map_err(StoreError::from)?;
+    Ok(())
 }

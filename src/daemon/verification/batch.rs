@@ -616,7 +616,16 @@ fn plan<S: Store>(
             .project(head.project)?
             .ok_or_else(|| StoreError::NotFound(format!("project {}", head.project)))?
             .prefix;
-        Ok((!recovering && !incident && !landing, prefix))
+        // Retained shared submissions need their own pinned-head admission.
+        // A batch intentionally withholds that callback, so neither its head
+        // nor any partner may carry a current recovery certification obligation.
+        let mut retained = false;
+        for member in &preview.members {
+            let story = crate::store::StoryNo::parse_id(&prefix, &member.story_id)?;
+            retained |=
+                crate::service::project_recovery::requires_certification(tx, head.project, story)?;
+        }
+        Ok((!recovering && !retained && !incident && !landing, prefix))
     })?;
     if !ordinary {
         return Ok(None);

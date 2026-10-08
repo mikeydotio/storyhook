@@ -50,6 +50,8 @@ pub(super) fn read_view(
     record: ProjectRecovery,
 ) -> Result<RecoveryView, StoreError> {
     let state = decode(&record)?;
+    timestamp(&state.created_at)?;
+    timestamp(&state.updated_at)?;
     let observations = tx.project_recovery_observations(record.project, &record.id)?;
     if state
         .subjects
@@ -86,7 +88,8 @@ pub(super) fn read_view(
             || decision.input.dispatch_identity != state.assessment.dispatch_identity
             || decision.input.revision >= record.revision
             || !repair_consistent
-            || decision.repair_story.is_some() != decision.delivery_identity.is_some()
+            || (decision.repair_story.is_some() && decision.input.join_recovery.is_none())
+                != decision.delivery_identity.is_some()
             || decision
                 .owned_edges
                 .iter()
@@ -105,7 +108,7 @@ pub(super) fn read_view(
                 || Some(hold.story) == decision.repair_story
                 || (decision.repair_story.is_none()
                     && decision.input.scope != super::RepairScope::External)
-                || !state.subjects.iter().any(|subject| subject.returned && subject.story == hold.story
+                || !state.subjects.iter().any(|subject| (subject.returned || state.shared.is_some()) && subject.story == hold.story
                     && subject.candidate.verifying_generation == Some(hold.generation))
                 || !tx.events_for(record.project, hold.story)?.iter().any(|event| event.global_seq == hold.event
                     && matches!(event.known(), Some(crate::domain::StoryEvent::StoryAwaitingSet { awaiting, .. }) if awaiting == &hold.awaiting))
@@ -132,7 +135,31 @@ pub(super) fn read_view(
             }
         }
     }
+    if let Some(shared) = &state.shared
+        && (shared.version != 1
+            || observations.is_empty()
+            || state.subjects.iter().any(|subject| {
+                if subject.returned {
+                    state.decision.as_ref().and_then(|d| d.repair_story) != Some(subject.story)
+                } else {
+                    !observations.iter().any(|observation| {
+                        observation.story == subject.story
+                            && Some(observation.generation)
+                                == subject.candidate.verifying_generation
+                    })
+                }
+            })
+            || state
+                .decision
+                .as_ref()
+                .is_some_and(|decision| decision.input.scope == super::RepairScope::SameStory))
+    {
+        return Err(StoreError::Corrupt(
+            "shared recovery lacks exact retained subjects or has author-repair authority".into(),
+        ));
+    }
     super::work::validate(&state)?;
+    super::shared::join::validate(tx, &record, &state)?;
     super::attempts_validation::validate(&state, record.project)?;
     super::landing::validate(tx, &state, record.project)?;
     super::prerequisite::validate(tx, &record, &state)?;
@@ -160,6 +187,11 @@ pub(super) fn read_view(
     }
     super::refusal::validate(tx, &state, record.project)?;
     for observation in &observations {
+        if state.shared.is_some() {
+            super::shared::validate_observation(&state, &record, observation)
+                .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+            continue;
+        }
         let evidence: FaultObservation = serde_json::from_value(observation.evidence.clone())
             .map_err(|error| {
                 StoreError::Corrupt(format!(
@@ -204,6 +236,7 @@ pub(super) fn read_view(
         state,
         observations,
     };
+    super::shared::readmit::validate(tx, &view).map_err(|e| StoreError::Corrupt(e.to_string()))?;
     super::resume::validate(tx, &view)?;
     super::work_holds::validate(tx, &view)?;
     super::repair_return::validate(&view)?;

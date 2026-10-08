@@ -37,6 +37,18 @@ pub struct RecoveryStatus {
     pub completed_attempts: usize,
     /// Maximum completed repair attempts.
     pub attempt_limit: usize,
+    /// Original start, never renewed by delivery retries or operator pauses.
+    #[serde(default)]
+    pub started_at: Option<String>,
+    /// Wall time since initial enrollment, including pauses and retries.
+    #[serde(default)]
+    pub elapsed_milliseconds: Option<u64>,
+    /// Cumulative native diagnosis duration across enrolled submissions.
+    #[serde(default)]
+    pub diagnosis_milliseconds: u64,
+    /// Whether these submissions remain submitted and are readmitted centrally.
+    #[serde(default)]
+    pub retained_submissions: bool,
     /// Concrete next action or the constraint that prevents it.
     pub next_action: String,
 }
@@ -74,6 +86,10 @@ pub(crate) fn snapshot(
                     repair_link: None,
                     completed_attempts: 0,
                     attempt_limit: 0,
+                    started_at: None,
+                    elapsed_milliseconds: None,
+                    diagnosis_milliseconds: 0,
+                    retained_submissions: false,
                 });
                 continue;
             }
@@ -95,6 +111,24 @@ pub(crate) fn snapshot(
             None
         };
         current.push(RecoveryStatus {
+            elapsed_milliseconds: Some(
+                (chrono::Utc::now()
+                    - persistence::timestamp(&view.state.created_at)?.with_timezone(&chrono::Utc))
+                .num_milliseconds()
+                .max(0) as u64,
+            ),
+            started_at: Some(view.state.created_at.clone()),
+            diagnosis_milliseconds: if view.state.shared.is_some() {
+                view.observations
+                    .iter()
+                    .try_fold(0u64, |total, observation| {
+                        super::shared::validate_observation(&view.state, &view.record, observation)
+                            .map(|e| total.saturating_add(e.attribution.diagnosis_ms))
+                    })?
+            } else {
+                0
+            },
+            retained_submissions: view.state.shared.is_some(),
             id: view.record.id,
             fault: view.record.code,
             locus: view.record.locus,
@@ -112,12 +146,20 @@ pub(crate) fn snapshot(
             repair_link,
             phase: phase.into(),
             next_action,
-            completed_attempts: view
-                .state
-                .attempts
-                .iter()
-                .filter(|a| a.completion.is_some())
-                .count(),
+            completed_attempts: if let Some(owner) = super::shared::join::leader(&view.state) {
+                persistence::find(tx, project, owner)?
+                    .state
+                    .attempts
+                    .iter()
+                    .filter(|a| a.completion.is_some())
+                    .count()
+            } else {
+                view.state
+                    .attempts
+                    .iter()
+                    .filter(|a| a.completion.is_some())
+                    .count()
+            },
             attempt_limit: 3,
         });
     }
@@ -182,7 +224,7 @@ fn phase(
             return Ok(Some((
                 "external-prerequisite",
                 format!(
-                    "{} An operator, not an agent, must restore it and then record that with `story verifier repair satisfy {} --input <json-file>`. That statement is an attestation, not a check: each affected story still needs a fresh generation that passes central verification.",
+                    "{} An operator, not an agent, must restore it and then record that with `story verifier repair satisfy {} --input <json-file>`. That statement is an attestation, not a check: each affected story still needs fresh central verification; a retained submission is readmitted without author resubmission.",
                     decision.input.prerequisite.as_deref().unwrap_or_default(),
                     view.record.id
                 ),
@@ -211,6 +253,24 @@ fn phase(
                     } else {
                         repair.unwrap_or("repair owner")
                     }
+                ),
+            )));
+        }
+        if state.shared.is_some()
+            && let Some((cause, outstanding)) = &released
+        {
+            if outstanding.held.is_empty() && outstanding.owed.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some((
+                if outstanding.held.is_empty() {
+                    "readmitted"
+                } else {
+                    "readmission-held"
+                },
+                format!(
+                    "{} Retained submissions wait for central readmission or a fresh current-base merge and gate; no author resubmission is required. Preserve operator controls, uncertain cleanup and unrelated component holds.",
+                    cause.lead()
                 ),
             )));
         }

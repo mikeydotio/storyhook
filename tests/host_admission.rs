@@ -60,6 +60,11 @@ fn causal_diagnosis_requires_supported_admission_and_settled_sessions() {
     run("test_attribution_admission.py");
 }
 
+#[test]
+fn host_admission_native_restoration_contract() {
+    run("test_host_restoration.py");
+}
+
 /// These suites drive their own fixture authorities. A grant inherited from
 /// the production runner that admitted this test binary (SH-869) would make
 /// the client refuse every fixture root, so the bearer capability is removed;
@@ -82,4 +87,13 @@ fn run(script: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn host_restoration_native_bridge_and_module_ship_with_the_verifier() {
+    let files: Vec<_> = storyhook::daemon::verifier_bundle::files()
+        .map(|(path, _, _)| path)
+        .collect();
+    assert!(files.contains(&"host-restoration.py"));
+    assert!(files.contains(&"host_admission/restoration.py"));
 }

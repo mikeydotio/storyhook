@@ -1,6 +1,7 @@
 //! Real native results matched to isolated durable records; no injected probe verdicts.
 use super::*;
 mod forgery;
+mod shared;
 use crate::service::{Ctx, NewStoryInput, StoryService, VerificationCandidate, VerificationQueue};
 use crate::store::{
     GateAttempt, GateExecution, GateExecutionPurpose, GateFailedCase, GateSubmission, ProjectId,
@@ -53,14 +54,34 @@ impl Evidence {
         original: &Path,
         mixed: bool,
     ) -> AttributionRecord {
+        self.retain_named(
+            native,
+            original,
+            mixed,
+            &self.candidate,
+            "attempt",
+            "attribution",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn retain_named(
+        &self,
+        native: &NativeRustComparison,
+        original: &Path,
+        mixed: bool,
+        candidate: &VerificationCandidate,
+        attempt_id: &str,
+        attribution_id: &str,
+    ) -> AttributionRecord {
         let at = "2026-10-05T00:00:00Z";
         let submission = GateSubmission {
-            project: self.candidate.project,
-            story_id: self.candidate.story_id.clone(),
-            generation: self.candidate.verifying_generation,
-            submitted_at: self.candidate.verifying_since.clone(),
+            project: candidate.project,
+            story_id: candidate.story_id.clone(),
+            generation: candidate.verifying_generation,
+            submitted_at: candidate.verifying_since.clone(),
         };
-        let mut attempt = GateAttempt::new("attempt".into(), submission.clone(), at);
+        let mut attempt = GateAttempt::new(attempt_id.into(), submission.clone(), at);
         attempt.control_revision = Some(0);
         attempt.verdict = Some("tests-failed".into());
         let mut gate = GateExecution::new("original".into(), at, original.display().to_string());
@@ -81,7 +102,7 @@ impl Evidence {
         attempt.executions.push(gate);
         let mut record = AttributionRecord {
             version: 1,
-            id: "attribution".into(),
+            id: attribution_id.into(),
             revision: 0,
             submission,
             attempt: attempt.id.clone(),
@@ -141,8 +162,8 @@ impl Evidence {
         preparation.verdict = Some("passed".into());
         preparation.journal_bound = true;
         attempt.executions.push(preparation);
-        for (index, (side, result)) in native.observations.iter().enumerate() {
-            let id = format!("probe-{index}");
+        for (side, result) in &native.observations {
+            let id = result.execution_id.clone();
             record.probes.push(DiagnosticProbe {
                 id: id.clone(),
                 plan: 0,
@@ -165,10 +186,10 @@ impl Evidence {
             execution.finished_at = Some(at.into());
             execution.milliseconds = Some(result.milliseconds);
             execution.verdict = Some(
-                if *side == ProbeSide::Candidate {
-                    "failed"
-                } else {
-                    "passed"
+                match &result.outcome {
+                    ProbeOutcome::Passed => "passed",
+                    ProbeOutcome::Failed { .. } => "failed",
+                    ProbeOutcome::Unavailable { .. } => "unavailable",
                 }
                 .into(),
             );

@@ -67,8 +67,23 @@ pub(super) fn apply<S: Store>(
 ) -> Result<(), StoreError> {
     let project = view.record.project;
     let prefix = project_prefix(tx, project)?;
+    if receipt.input.join_recovery.is_some() {
+        append(
+            tx,
+            ctx,
+            receipt
+                .repair_story
+                .ok_or_else(|| StoreError::Corrupt("coordinated repair owner missing".into()))?,
+            &[StoryEvent::StoryCommentAdded {
+                at: now.into(),
+                text: receipt.input.comment(&view.record.id),
+            }],
+        )?;
+    }
     for subject in &view.state.subjects {
-        if !subject_is_current(tx, project, subject)? {
+        if !(subject_is_current(tx, project, subject)?
+            || super::shared::retained_current(tx, view, subject)?)
+        {
             receipt.skipped_subjects.push(subject.story);
             continue;
         }

@@ -60,6 +60,16 @@ fn refuse_recovery_evidence(
     story: StoryNo,
     id: &str,
 ) -> Result<(), StoreError> {
+    if let Some(owner) = tx
+        .integration_recoveries(project)?
+        .iter()
+        .find(|owner| owner.story == story)
+    {
+        return Err(refusal(format!(
+            "story `{id}` is retained evidence in integration recovery {}; reconcile its resources and retain its history before any deletion",
+            owner.id
+        )));
+    }
     let recoveries = super::project_recovery::naming(tx, project, story)?;
     let Some(first) = recoveries.first() else {
         return Ok(());

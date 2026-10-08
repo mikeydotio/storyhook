@@ -170,6 +170,62 @@ pub(crate) fn run_captured_private(
     .map_err(|failure| failure.error)
 }
 
+/// Credential-private capture under an existing operation deadline and owner
+/// cancellation. Sub-queries cannot renew the caller's remaining budget.
+pub(crate) fn run_captured_private_until(
+    command: Command,
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Captured, CaptureError> {
+    run_captured_until(
+        command,
+        TerminationPolicy::Kill,
+        None,
+        CaptureWait {
+            private_output: true,
+            ..CaptureWait::default()
+        },
+        Some(cancelled),
+        |_| Ok(()),
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    )
+    .map_err(|failure| failure.error)
+}
+
+/// Bounded credential-private capture with a regular-file request, never a pipe
+/// that descendants can keep open after the owning helper exits.
+pub(crate) fn run_captured_private_input_until(
+    command: Command,
+    input: Option<std::fs::File>,
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Captured, CaptureError> {
+    if cancelled() {
+        return Err(CaptureError::Cancelled);
+    }
+    if Instant::now() >= deadline {
+        return Err(CaptureError::Wait(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "private input deadline expired before starting a child",
+        )));
+    }
+    run_captured_until(
+        command,
+        TerminationPolicy::Kill,
+        input,
+        CaptureWait {
+            private_output: true,
+            quiescent: true,
+            settlement_deadline: Some(deadline),
+            ..CaptureWait::default()
+        },
+        Some(cancelled),
+        |_| Ok(()),
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    )
+    .map_err(|failure| failure.error)
+}
+
 /// Journals a supervisory child only when it fails (SH-761): no start
 /// record, no output mirroring, and a finish record only for a non-zero
 /// exit. A periodic reconcile whose success is the steady state would
@@ -294,6 +350,68 @@ pub(crate) fn run_captured_cancellable<G>(
     .map_err(|failure| failure.error)
 }
 
+/// A bounded native effect retains its registration through complete owned
+/// process-group settlement. Both pre-spawn checks and drain spend the same
+/// absolute operation deadline; an authority change cancels rather than renews it.
+/// Registration retains its existing diagnostic custody when local settlement
+/// cannot be proved. Retention never authorizes a new signal or effect.
+pub(crate) trait OwnedCaptureRegistration {
+    fn retain_unsettled(self);
+}
+impl OwnedCaptureRegistration for () {
+    fn retain_unsettled(self) {}
+}
+
+pub(crate) fn finish_owned_capture<G: OwnedCaptureRegistration>(
+    result: Result<Captured, CaptureFailure>,
+    registration: Option<G>,
+) -> Result<Captured, CaptureError> {
+    if matches!(&result, Err(failure) if matches!(failure.error, CaptureError::Unsettled(_))) {
+        if let Some(registration) = registration {
+            registration.retain_unsettled();
+        }
+    } else {
+        drop(registration);
+    }
+    result.map_err(|failure| failure.error)
+}
+
+pub(crate) fn run_captured_owned_quiescent_until<G: OwnedCaptureRegistration>(
+    command: Command,
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+    register: impl FnOnce(u32) -> Result<G, String>,
+) -> Result<Captured, CaptureError> {
+    if cancelled() {
+        return Err(CaptureError::Cancelled);
+    }
+    if Instant::now() >= deadline {
+        return Err(CaptureError::Wait(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "owned effect deadline expired before starting a child",
+        )));
+    }
+    let mut registration = None;
+    let result = run_captured_until(
+        command,
+        TerminationPolicy::Kill,
+        None,
+        CaptureWait {
+            quiescent: true,
+            settlement_deadline: Some(deadline),
+            private_output: true,
+            ..CaptureWait::default()
+        },
+        Some(&|| Instant::now() >= deadline || cancelled()),
+        |pid| {
+            registration = Some(register(pid)?);
+            Ok(())
+        },
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    );
+    finish_owned_capture(result, registration)
+}
+
 /// Runs a command until its append-only journal stops advancing for `timeout`.
 /// Output chatter is deliberately not progress. An unreadable or damaged
 /// journal fails closed with the caller's ordinary process-group cleanup.
@@ -393,6 +511,46 @@ pub(crate) fn run_captured_query(
     .map_err(|failure| failure.error)
 }
 
+/// A private query whose owned process group must settle before success.
+/// The absolute caller deadline includes setup and descendant drain; it is
+/// never renewed when the leader exits. This is process-group custody, not
+/// proof about a descendant that deliberately escapes into another session.
+pub(crate) fn run_captured_query_quiescent(
+    command: Command,
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+    answer_limit: u64,
+    answers: &'static [i32],
+) -> Result<Captured, CaptureError> {
+    if cancelled() {
+        return Err(CaptureError::Cancelled);
+    }
+    if Instant::now() >= deadline {
+        return Err(CaptureError::Wait(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "query deadline expired before starting a child",
+        )));
+    }
+    run_captured_until(
+        command,
+        TerminationPolicy::Kill,
+        None,
+        CaptureWait {
+            quiescent: true,
+            settlement_deadline: Some(deadline),
+            private_output: true,
+            failures_only: true,
+            stdout_limit: Some(answer_limit),
+            answers,
+            ..CaptureWait::default()
+        },
+        Some(cancelled),
+        |_| Ok(()),
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    )
+    .map_err(|failure| failure.error)
+}
+
 /// Runs a bounded subprocess with staged, file-backed standard input.
 pub(crate) fn run_captured_with_input(
     command: Command,
@@ -416,6 +574,8 @@ pub(crate) fn run_captured_with_input(
 struct CaptureWait {
     poll: Option<Duration>,
     quiescent: bool,
+    /// Absolute routes spend only their original remaining budget on settlement.
+    settlement_deadline: Option<Instant>,
     private_output: bool,
     /// Journal the child's lifecycle only when it fails (SH-761).
     failures_only: bool,
@@ -458,6 +618,9 @@ fn run_captured_until<G>(
         .stderr(child_stderr);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    if cancellation.is_some_and(|cancelled| cancelled()) {
+        return Err(CaptureError::Cancelled.into());
+    }
     let mut child = command.spawn().map_err(CaptureError::Spawn)?;
     let pid = child.id();
     let context = format!("child={pid}");
@@ -482,7 +645,9 @@ fn run_captured_until<G>(
             } else {
                 kill_process_group(pid);
                 let _ = child.wait();
-                return Err(CaptureError::Track(error).into());
+                return Err(
+                    settled_error(pid, termination, &wait, CaptureError::Track(error)).into(),
+                );
             }
         }
     };
@@ -491,7 +656,7 @@ fn run_captured_until<G>(
             terminate_timed_out(&mut child, pid, termination);
             drop(observer);
             return Err(CaptureFailure::after(
-                settled_error(pid, termination, wait.quiescent, CaptureError::Cancelled),
+                settled_error(pid, termination, &wait, CaptureError::Cancelled),
                 stdout_file,
             ));
         }
@@ -501,7 +666,7 @@ fn run_captured_until<G>(
                 terminate_timed_out(&mut child, pid, termination);
                 drop(observer);
                 return Err(CaptureFailure::after(
-                    settled_error(pid, termination, wait.quiescent, CaptureError::Wait(error)),
+                    settled_error(pid, termination, &wait, CaptureError::Wait(error)),
                     stdout_file,
                 ));
             }
@@ -512,12 +677,7 @@ fn run_captured_until<G>(
                     let outcome = terminate_timed_out(&mut child, pid, termination);
                     drop(observer);
                     return Err(CaptureFailure::after(
-                        settled_error(
-                            pid,
-                            termination,
-                            wait.quiescent,
-                            CaptureError::Timeout(outcome),
-                        ),
+                        settled_error(pid, termination, &wait, CaptureError::Timeout(outcome)),
                         stdout_file,
                     ));
                 }
@@ -538,12 +698,7 @@ fn run_captured_until<G>(
                 );
                 drop(observer);
                 return Err(CaptureFailure::after(
-                    settled_error(
-                        pid,
-                        termination,
-                        wait.quiescent,
-                        CaptureError::Timeout(outcome),
-                    ),
+                    settled_error(pid, termination, &wait, CaptureError::Timeout(outcome)),
                     stdout_file,
                 ));
             }
@@ -552,7 +707,7 @@ fn run_captured_until<G>(
                 let _ = child.wait();
                 drop(observer);
                 return Err(CaptureFailure::after(
-                    settled_error(pid, termination, wait.quiescent, CaptureError::Wait(error)),
+                    settled_error(pid, termination, &wait, CaptureError::Wait(error)),
                     stdout_file,
                 ));
             }
@@ -585,21 +740,36 @@ fn run_captured_until<G>(
 fn settled_error(
     pid: u32,
     termination: TerminationPolicy,
-    quiescent: bool,
+    wait: &CaptureWait,
     error: CaptureError,
 ) -> CaptureError {
-    if !quiescent {
+    if !wait.quiescent {
         return error;
     }
     let grace = match termination {
         TerminationPolicy::Kill => Duration::ZERO,
         TerminationPolicy::TerminateThenKill { grace } => grace,
     };
-    let deadline = Instant::now() + grace;
-    while process_group_is_live(pid) && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(10));
+    let deadline = wait
+        .settlement_deadline
+        .unwrap_or_else(|| Instant::now() + grace);
+    settled_error_observed(pid, deadline, error, process_group_is_live)
+}
+
+fn settled_error_observed(
+    pid: u32,
+    deadline: Instant,
+    error: CaptureError,
+    mut is_live: impl FnMut(u32) -> bool,
+) -> CaptureError {
+    while is_live(pid) && Instant::now() < deadline {
+        thread::sleep(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(10)),
+        );
     }
-    if process_group_is_live(pid) {
+    if is_live(pid) {
         CaptureError::Unsettled(format!(
             "helper process group {pid} remains after termination; retain ownership until recovery proves quiescence; {}",
             error.detail()
@@ -740,6 +910,113 @@ fn read_capture_up_to(mut file: File, limit: u64) -> (Vec<u8>, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sh871_exhausted_settlement_budget_keeps_live_group_unsettled() {
+        let error =
+            settled_error_observed(12345, Instant::now(), CaptureError::Cancelled, |_| true);
+        assert!(
+            matches!(&error, CaptureError::Unsettled(detail) if detail.contains("12345") && detail.contains("cancelled"))
+        );
+        let settled =
+            settled_error_observed(12345, Instant::now(), CaptureError::Cancelled, |_| false);
+        assert!(matches!(settled, CaptureError::Cancelled));
+    }
+
+    #[test]
+    fn sh871_owned_effect_refuses_expired_deadline_before_spawn_or_registration() {
+        let command = Command::new("storyhook-sh871-must-not-spawn-expired-host-request");
+        let result = run_captured_owned_quiescent_until(
+            command,
+            Instant::now(),
+            &|| false,
+            |_| -> Result<(), String> { panic!("expired effect registered a process") },
+        );
+        assert!(
+            matches!(result,Err(CaptureError::Wait(ref error)) if error.kind()==std::io::ErrorKind::TimedOut)
+        );
+    }
+    #[test]
+    fn sh871_owned_effect_retains_registration_until_surviving_group_is_settled() {
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        let root = storyhook_test_support::scratch_dir();
+        let ready = root.path().join("ready");
+        let pid = AtomicU32::new(0);
+        let registered = AtomicBool::new(false);
+        let observed = AtomicBool::new(false);
+        struct Registration<'a> {
+            registered: &'a AtomicBool,
+            retained: bool,
+        }
+        impl OwnedCaptureRegistration for Registration<'_> {
+            fn retain_unsettled(mut self) {
+                self.retained = true;
+            }
+        }
+        impl Drop for Registration<'_> {
+            fn drop(&mut self) {
+                if !self.retained {
+                    self.registered.store(false, Ordering::SeqCst);
+                }
+            }
+        }
+        let mut command = Command::new("sh");
+        command.args(["-c","(printf ready > \"$1\"; sleep 30) & while [ ! -f \"$1\" ]; do sleep 0.01; done; printf '{\"ok\":true}'","fixture"]).arg(&ready);
+        let result = run_captured_owned_quiescent_until(
+            command,
+            Instant::now()
+                + storyhook_test_support::load_grace::graced_now(Duration::from_secs(30)),
+            &|| {
+                let leader = pid.load(Ordering::SeqCst);
+                // A successfully reaped leader must not release registration while
+                // the same process group still contains this effect's child.
+                if leader != 0 && ready.exists() && unsafe { libc::kill(leader as i32, 0) } == -1 {
+                    assert!(registered.load(Ordering::SeqCst));
+                    observed.store(true, Ordering::SeqCst);
+                    true
+                } else {
+                    false
+                }
+            },
+            |leader| {
+                pid.store(leader, Ordering::SeqCst);
+                registered.store(true, Ordering::SeqCst);
+                Ok(Registration {
+                    registered: &registered,
+                    retained: false,
+                })
+            },
+        );
+        let detail = result
+            .as_ref()
+            .err()
+            .map(CaptureError::detail)
+            .unwrap_or_else(|| "successful capture".into());
+        let leader = pid.load(Ordering::SeqCst);
+        // Even a failed detector must not delete fixture resources while its
+        // exact known group remains. Observe settlement only; no broad signals.
+        let mut cleanup =
+            storyhook_test_support::load_grace::Patience::new(Duration::from_secs(30));
+        while leader != 0 && process_group_is_live(leader) && !cleanup.expired() {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if leader != 0 && process_group_is_live(leader) {
+            let retained = root.keep();
+            panic!(
+                "fixture local settlement unproved: leader={leader} pgid={leader}; {detail}; retained {}",
+                retained.display()
+            );
+        }
+        assert!(
+            observed.load(Ordering::SeqCst),
+            "capture returned before observing surviving descendants: leader={leader} pgid={leader}; {detail}"
+        );
+        assert!(
+            matches!(result, Err(CaptureError::Cancelled)),
+            "owned capture did not report original cancellation: leader={leader} pgid={leader}; {detail}"
+        );
+        assert!(!registered.load(Ordering::SeqCst));
+    }
 
     #[test]
     fn quiescent_capture_rejects_success_while_descendants_survive_the_deadline() {
@@ -1032,6 +1309,21 @@ mod tests {
         assert!(
             pid_disappears(pid),
             "the grandchild {pid} outlived its group's deadline"
+        );
+    }
+
+    #[test]
+    fn sh871_private_host_request_refuses_expired_deadline_before_spawn() {
+        // A nonexistent executable distinguishes preflight refusal from spawning
+        // and terminating a child after discovering an exhausted budget.
+        let command = Command::new("storyhook-sh871-must-not-spawn-expired-host-request");
+        let failure = run_captured_private_input_until(command, None, Instant::now(), &|| false)
+            .err()
+            .expect("expired private request must refuse before spawning");
+        assert!(
+            matches!(failure, CaptureError::Wait(ref error) if error.kind() == std::io::ErrorKind::TimedOut),
+            "{}",
+            failure.detail()
         );
     }
 }

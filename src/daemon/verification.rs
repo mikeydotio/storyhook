@@ -16,6 +16,7 @@ mod cleanup;
 mod control;
 mod cost;
 mod diagnosis;
+pub(crate) mod integration_gate;
 pub use diagnosis::{RustDiagnosisRequest, RustDiagnosisResult};
 #[cfg(test)]
 mod authority_refresh_tests;
@@ -33,6 +34,8 @@ pub use batch::{
 pub use batch_preview::batch_preview_log;
 pub use cleanup::{CompletedVerification, VerificationCleanupFailure};
 
+pub(crate) mod integration_worker;
+mod managed_landing;
 mod observation;
 mod reconcile_hold;
 mod recovery_transport;
@@ -151,6 +154,7 @@ pub struct VerificationActivity {
 }
 
 struct VerificationSlot {
+    local_effect_unsettled: bool,
     candidate: VerificationCandidate,
     workspace: Option<Arc<crate::service::workspace_lock::WorkspaceLock>>,
     active: ActiveVerification,
@@ -346,6 +350,7 @@ impl VerificationActivity {
         slots.insert(
             candidate.project,
             VerificationSlot {
+                local_effect_unsettled: false,
                 candidate: candidate.clone(),
                 workspace: None,
                 active: active.clone(),
@@ -361,6 +366,7 @@ impl VerificationActivity {
             active,
             cancellation,
             recovery_request_id: None,
+            retain_unsettled: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -373,10 +379,17 @@ pub struct VerificationGuard {
     active: ActiveVerification,
     cancellation: Cancellation,
     recovery_request_id: Option<String>,
+    retain_unsettled: std::sync::atomic::AtomicBool,
 }
 
 impl Drop for VerificationGuard {
     fn drop(&mut self) {
+        if self
+            .retain_unsettled
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
         let mut slots = self
             .registry
             .active
@@ -390,10 +403,33 @@ impl Drop for VerificationGuard {
 }
 
 impl VerificationGuard {
+    /// Keep the exact central slot occupied when native effect drain is unknown.
+    pub(crate) fn retain_unsettled(&self) {
+        self.retain_unsettled
+            .store(true, std::sync::atomic::Ordering::Release);
+        let mut slots = self
+            .registry
+            .active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(slot) = slots
+            .get_mut(&self.active.project)
+            .filter(|slot| slot.active == self.active)
+        {
+            slot.local_effect_unsettled = true;
+        }
+        self.cancellation.cancel();
+    }
+
     /// Whether an operator has irreversibly cancelled this owned attempt.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancellation.is_cancelled()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cancellation_for_fixture(&self) -> Cancellation {
+        self.cancellation.clone()
     }
 
     /// When this worker acquired the generation it currently owns.
@@ -578,6 +614,52 @@ pub enum VerificationOutcome {
     },
 }
 
+/// Native local settlement accompanies the helper's remote observation. Neither
+/// helper JSON nor a saved receipt can construct this effect-drain authority.
+#[derive(Debug)]
+pub struct ManagedLandingOutcome {
+    outcome: LandingOutcome,
+    settled: bool,
+    owner: String,
+    intent: String,
+    epoch: u32,
+}
+impl ManagedLandingOutcome {
+    fn new(
+        claim: &crate::service::integration_recovery::IntegrationLandingClaim,
+        outcome: LandingOutcome,
+        settled: bool,
+    ) -> Self {
+        Self {
+            outcome,
+            settled,
+            owner: claim.id().into(),
+            intent: claim.intent().id.clone(),
+            epoch: claim.epoch(),
+        }
+    }
+    pub(crate) fn proves_settlement(
+        &self,
+        claim: &crate::service::integration_recovery::IntegrationLandingClaim,
+    ) -> bool {
+        self.settled
+            && self.owner == claim.id()
+            && self.intent == claim.intent().id
+            && self.epoch == claim.epoch()
+    }
+    #[cfg(test)]
+    pub(crate) fn fixture(
+        claim: &crate::service::integration_recovery::IntegrationLandingClaim,
+        outcome: LandingOutcome,
+        settled: bool,
+    ) -> Self {
+        Self::new(claim, outcome, settled)
+    }
+    pub(crate) fn outcome(&self) -> &LandingOutcome {
+        &self.outcome
+    }
+}
+
 /// External outcome of one durably admitted merge attempt.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case")]
@@ -751,6 +833,24 @@ pub trait VerificationActuator: Send + Sync {
         candidate: &VerificationCandidate,
         intent: &crate::store::LandingIntent,
     ) -> LandingOutcome;
+    /// Explicit opt-in to the native managed integration lifecycle. Legacy and
+    /// fixture actuators cannot accidentally trigger remote work by default.
+    fn supports_managed_integration(&self) -> bool {
+        false
+    }
+    /// A separately owned, one-shot managed merge; ordinary adapters refuse.
+    fn land_integration(
+        &self,
+        claim: &crate::service::integration_recovery::IntegrationLandingClaim,
+    ) -> ManagedLandingOutcome {
+        ManagedLandingOutcome::new(
+            claim,
+            LandingOutcome::Uncertain {
+                detail: "this adapter cannot land managed integration authority".into(),
+            },
+            true,
+        )
+    }
     /// Observes an uncertain attempt without sending another merge request.
     fn recover_landing(
         &self,
@@ -767,6 +867,20 @@ pub trait VerificationActuator: Send + Sync {
         _cancellation: &VerificationCancellation,
     ) -> VerificationOutcome {
         self.verify(candidate, pull_request)
+    }
+    /// Gate a separately owned integration PR under the original central
+    /// candidate. Adapters must explicitly opt in: an ordinary verification
+    /// fallback could incorrectly grant the original repair-admission callback.
+    fn verify_integration(
+        &self,
+        _candidate: &VerificationCandidate,
+        _managed: &PrLink,
+        _cancellation: &VerificationCancellation,
+    ) -> VerificationOutcome {
+        VerificationOutcome::InfrastructureFailure {
+            detail: "this verifier adapter cannot certify a managed integration PR".into(),
+            disposition: VerificationFailureDisposition::Permanent,
+        }
     }
     /// Read the current open PR head before granting a causal repair return.
     /// Unsupported or unavailable metadata withholds the return.
@@ -1027,13 +1141,40 @@ impl ShellVerificationActuator {
         intent: &crate::store::LandingIntent,
         recover: bool,
     ) -> LandingOutcome {
+        if let Err(error) = intent.require_ordinary_controller() {
+            return LandingOutcome::Uncertain {
+                detail: error.to_string(),
+            };
+        }
+        self.run_landing_target(candidate, intent, recover, None).0
+    }
+
+    fn run_landing_target(
+        &self,
+        candidate: &VerificationCandidate,
+        intent: &crate::store::LandingIntent,
+        recover: bool,
+        managed_owner: Option<&managed_landing::Operation<'_>>,
+    ) -> (LandingOutcome, bool) {
+        let settled = std::cell::Cell::new(true);
         let _log = self.log_scope(candidate);
         let run = || -> Result<LandingOutcome, AppError> {
             let link = candidate
                 .pull_request
                 .as_ref()
                 .map_err(|problem| AppError::Validation(problem.message()))?;
-            if let Some(problem) = checkout_repository_problem(&self.env, &intent.checkout, link) {
+            if let Some(owner) = managed_owner {
+                owner.validate(&self.activity)?;
+                crate::github_access::Repository::resolve_publication(
+                    &intent.checkout,
+                    &self.env,
+                    owner.repository(),
+                    owner.deadline(),
+                    &|| owner.validate(&self.activity).is_err(),
+                )?;
+            } else if let Some(problem) =
+                checkout_repository_problem(&self.env, &intent.checkout, link)
+            {
                 return Err(AppError::Validation(problem));
             }
             let script = self.verifier_script()?;
@@ -1044,9 +1185,14 @@ impl ShellVerificationActuator {
                 journal.with_file_name(format!("landing-{}.attempted", intent.landing_attempt()));
             let mut command = Command::new("bash");
             apply_verification_allowlist(&mut command);
+            command.arg(script).arg("--landing");
+            if let Some(owner) = managed_owner {
+                command
+                    .arg("--managed-integration")
+                    .arg(owner.id())
+                    .arg(intent.landing_attempt());
+            }
             command
-                .arg(script)
-                .arg("--landing")
                 .arg(if recover { "recover" } else { "attempt" })
                 .arg(intent.landing_pull_request())
                 .arg(intent.certification.head())
@@ -1071,7 +1217,35 @@ impl ShellVerificationActuator {
                 command.arg(&prepared.attempt);
             }
             let request_id = verification_request_id(candidate);
-            let captured = if recover {
+            let captured = if let Some(owner) = managed_owner {
+                owner.validate(&self.activity)?;
+                if let Some(workspace) = self.activity.workspace_for(candidate.project) {
+                    workspace.command(&mut command);
+                }
+                owner.validate(&self.activity)?;
+                owner.take_request()?;
+                let captured = crate::process::run_captured_owned_quiescent_until(
+                    command,
+                    owner.deadline(),
+                    &|| owner.validate(&self.activity).is_err(),
+                    |pid| {
+                        self.owned_processes
+                            .register("verifier", pid, Some(&request_id))
+                            .map_err(|error| error.to_string())
+                    },
+                )
+                .map_err(|error| {
+                    if matches!(&error, crate::process::CaptureError::Unsettled(_)) {
+                        settled.set(false);
+                    }
+                    AppError::Storage(format!(
+                        "managed landing did not conclusively settle: {}",
+                        error.detail()
+                    ))
+                })?;
+                owner.validate(&self.activity)?;
+                captured
+            } else if recover {
                 self.run_control_command(
                     command,
                     "verifier",
@@ -1119,9 +1293,10 @@ impl ShellVerificationActuator {
                 ))
             })
         };
-        run().unwrap_or_else(|error| LandingOutcome::Uncertain {
+        let outcome = run().unwrap_or_else(|error| LandingOutcome::Uncertain {
             detail: error.to_string(),
-        })
+        });
+        (outcome, settled.get())
     }
 
     fn helper_path(&self) -> Result<PathBuf, AppError> {
@@ -1929,6 +2104,28 @@ impl VerificationActuator for ShellVerificationActuator {
         )
     }
 
+    fn supports_managed_integration(&self) -> bool {
+        true
+    }
+
+    fn land_integration(
+        &self,
+        claim: &crate::service::integration_recovery::IntegrationLandingClaim,
+    ) -> ManagedLandingOutcome {
+        let (outcome, settled) = match managed_landing::Operation::new(&self.activity, claim) {
+            Ok(owner) => {
+                self.run_landing_target(claim.candidate(), claim.intent(), false, Some(&owner))
+            }
+            Err(error) => (
+                LandingOutcome::Uncertain {
+                    detail: error.to_string(),
+                },
+                true,
+            ),
+        };
+        ManagedLandingOutcome::new(claim, outcome, settled)
+    }
+
     fn current_pr_head(&self, candidate: &VerificationCandidate) -> Result<String, AppError> {
         self.diagnosis_head(candidate)
     }
@@ -1944,6 +2141,21 @@ impl VerificationActuator for ShellVerificationActuator {
             pull_request,
             cancellation,
             RepairAdmission::Owned,
+            VerificationMode::Gated,
+        )
+    }
+
+    fn verify_integration(
+        &self,
+        candidate: &VerificationCandidate,
+        managed: &PrLink,
+        cancellation: &VerificationCancellation,
+    ) -> VerificationOutcome {
+        self.run_verify_pr(
+            candidate,
+            managed,
+            cancellation,
+            RepairAdmission::Withheld,
             VerificationMode::Gated,
         )
     }
@@ -2450,11 +2662,22 @@ where
             crate::service::project_recovery::reconcile_incident(tx, project, &env.now())
         })?;
     }
+    if actuator.supports_managed_integration()
+        && let Some(result) =
+            integration_worker::reconcile(store, env, activity, inflight, project)?
+    {
+        return Ok(result);
+    }
     let ordered = queue.ordered_for(project)?;
     // One recovery per batch per tick: every member's intent observes the
     // same batch merge (SH-832 D5).
     let mut recovered_batches = BTreeSet::new();
     for intent in store.read(|tx| tx.landing_intents())? {
+        // The dedicated native observer owns this format; never fall through
+        // to a legacy helper or renew a managed request from stored JSON.
+        if intent.certification.integration().is_some() {
+            continue;
+        }
         let Some(candidate) = ordered
             .iter()
             .find(|c| c.project == intent.project && c.story_id == intent.story_id)
@@ -2571,6 +2794,13 @@ where
         .is_some_and(|c| !c.blocked_by.is_empty() || c.landing_pending)
     {
         return Ok(TickResult::RetryLater);
+    }
+    if incident_candidate.is_none()
+        && actuator.supports_managed_integration()
+        && let Some(result) =
+            integration_worker::start_one(store, env, actuator, activity, inflight, project, bus)?
+    {
+        return Ok(result);
     }
     let Some(mut candidate) = incident_candidate.or_else(|| {
         ordered
@@ -3210,7 +3440,7 @@ where
                         } => {
                             queue.upsert_generation_comment(&ctx, &candidate,
                                 "CENTRAL VERIFICATION ATTRIBUTION HELD",
-                                &format!("CENTRAL VERIFICATION ATTRIBUTION HELD — evidence {evidence}. Gate {gate}; tree {tree}; log {log}. No repair is assigned. Inspect `story verifier evidence {} --json`.\n\n{}\n\n{}\n\n{}",
+                                &format!("CENTRAL VERIFICATION ATTRIBUTION HELD — evidence {evidence}. Gate {gate}; tree {tree}; log {log}. No implementer repair is assigned by this held result. Inspect `story verifier evidence {} --json`.\n\n{}\n\n{}\n\n{}",
                                     candidate.story_id, crate::text_lint::quote_evidence(&detail), crate::text_lint::quote_evidence(&diagnostic), found_by.as_deref().unwrap_or_default()), None)?;
                             return Ok(TickResult::Returned);
                         }
@@ -3250,6 +3480,17 @@ where
                     detail,
                     disposition,
                 } => {
+                    if !active.is_cancelled() {
+                        let pending = active.reserve(ReservationReason::Attribution, ctx.now());
+                        if crate::service::host_recovery::retain_failed_pressure(
+                            &ctx,
+                            &candidate,
+                            &active.active.attempt_id,
+                        )? {
+                            pending.retire();
+                            return Ok(TickResult::Returned);
+                        }
+                    }
                     match record_infrastructure_failure(
                         &queue,
                         &ctx,
@@ -3601,6 +3842,7 @@ fn fire_verification_halted(
     incident: &crate::store::VerificationIncident,
 ) -> Result<(), AppError> {
     let held_stories: Vec<_> = VerificationQueue::new(ctx.store())
+        .with_environment(ctx.env().clone())
         .ordered_for(candidate.project)?
         .into_iter()
         .map(|candidate| candidate.story_id)

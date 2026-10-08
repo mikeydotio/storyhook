@@ -68,6 +68,9 @@ impl<S: Store> VerificationQueue<'_, S> {
                 held: true, retired: None,
             };
             tx.insert_attribution(&record)?;
+            if cause == FailureCause::Integration {
+                crate::service::integration_recovery::retain_conflict_observation(tx, candidate, &record, attempt)?;
+            }
             clear_candidate_retry_incident(tx, candidate)?;
             let states = tx.state_map(project)?;
             append_and_fold(tx, project, story, &prefix, &states, ExpectedSeq::Exact(row.head_seq),

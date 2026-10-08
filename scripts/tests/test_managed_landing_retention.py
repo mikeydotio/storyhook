@@ -1,0 +1,842 @@
+"""SH-871 local orchestration regressions; never a live GitHub policy test.
+
+Only the binary transport boundary is doubled. Production landing scripts,
+machine lock, isolated merge computation and receipt writer use scratch Git.
+Fixture receipts describe synthetic test inputs, never this repository's gate.
+Every command owns a private session until its leader and descendants settle.
+Timeout preserves the scratch root and aborts the suite. The Rust owner closes
+a lifetime pipe before waiting for this Python owner to perform bounded cleanup.
+These fixed helpers do not escape sessions; this is not escaped-process custody.
+"""
+
+import errno
+import json
+import os
+from pathlib import Path
+import shlex
+import shutil
+import select
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from load_grace import contention, patience
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+from host_admission import native
+
+WATCH_OWNER = False
+CANCELLED = False
+CUSTODY_UNCERTAIN = False
+OWNER = "11111111-2222-4333-8444-555555555555"
+ATTEMPT = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+OTHER = "99999999-2222-4333-8444-555555555555"
+IDENTITY = "github.com/fixture/managed"
+
+
+class FixtureAborted(KeyboardInterrupt):
+    """Unittest must not start another case after lost or uncertain ownership."""
+
+
+def owner_cancelled():
+    if CANCELLED or CUSTODY_UNCERTAIN:
+        return True
+    return (WATCH_OWNER and select.select([sys.stdin], [], [], 0)[0]
+            and os.read(sys.stdin.fileno(), 1) == b"")
+
+
+class PendingChildObservation(Exception):
+    """The exact retained child is temporarily unreadable, never proven gone."""
+
+    def __init__(self, owner, stage, error):
+        self.owner = owner
+        super().__init__(f"pending exact child {owner.pid} at {stage}: {error}")
+
+
+class PendingSessionObservation(PendingChildObservation):
+    """Fresh SID membership is known, but no incarnation authority is available."""
+
+    def __init__(self, owner, pid, error):
+        self.owner = owner
+        self.observed_pid = pid
+        Exception.__init__(self,
+                           f"pending session {owner.pid} member {pid} at process: {error}")
+
+
+class PinnedChild:
+    """Only this unreaped Popen child can supply a terminal PID witness."""
+
+    def __init__(self, child, boot):
+        self.child = child
+        self.pid = child.pid
+        self.boot = boot
+        self.last_exit = None
+        self.observation_errors = []
+        self.pending_count = 0
+
+    def record_error(self, stage, pid, error):
+        self.observation_errors.append(dict(stage=stage, pid=pid, errno=error.errno,
+                                            error=str(error)))
+        self.observation_errors = self.observation_errors[-8:]
+
+    def pending(self, stage, error):
+        self.pending_count += 1
+        raise PendingChildObservation(self, stage, error) from error
+
+    def pending_session(self, pid, error):
+        if self.child.returncode is not None:
+            raise RuntimeError("cannot observe a session after reaping its pin")
+        self.pending_count += 1
+        raise PendingSessionObservation(self, pid, error) from error
+
+    def exited(self):
+        if self.child.returncode is not None:
+            raise RuntimeError("cannot reuse reaped child as a session pin")
+        try:
+            observed = os.waitid(os.P_PID, self.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except OSError as error:
+            self.record_error("waitid", self.pid, error)
+            if error.errno == errno.ESRCH:
+                self.pending("waitid", error)
+            raise
+        if observed is None:
+            return False
+        if observed.si_pid != self.pid:
+            raise RuntimeError("waitid returned a different child identity")
+        self.last_exit = dict(pid=observed.si_pid, code=observed.si_code,
+                              status=observed.si_status)
+        return True
+
+    def diagnostic(self):
+        return dict(child_pid=self.pid, session=self.pid, boot=self.boot,
+                    reaped=self.child.returncode is not None, last_exit=self.last_exit,
+                    pending_count=self.pending_count, observation_errors=self.observation_errors)
+
+
+def failed_member_observation(owner, pid, stage, error, *, session_matches=False):
+    owner.record_error(stage, pid, error)
+    if pid == owner.pid:
+        try:
+            if owner.exited():
+                return None
+        except PendingChildObservation:
+            if error.errno != errno.ESRCH:
+                raise error  # A pending waitid cannot downgrade EPERM/ECHILD.
+            raise
+        if error.errno == errno.ESRCH:
+            owner.pending(stage, error)
+        raise error
+    if stage == "process" and session_matches and error.errno == errno.EPERM:
+        # The positive same-call SID read narrows this to our pinned session,
+        # but grants no incarnation or signal authority. Never omit this row.
+        owner.pending_session(pid, error)
+    if isinstance(error, ProcessLookupError):
+        return None  # Ordinary non-root disappearance; not a root exit proof.
+    raise error
+
+
+def session_member(owner, pid):
+    """Skip only an exactly proven exited root, never an unreadable descendant."""
+    if pid == owner.pid and owner.exited():
+        return None
+    try:
+        session = os.getsid(pid)
+    except OSError as error:
+        return failed_member_observation(owner, pid, "getsid", error)
+    if session != owner.pid:
+        return None
+    # Keep waitid outside native-query error handlers so its identity or
+    # permission refusal cannot be relabelled as a getsid/process race.
+    if pid == owner.pid and owner.exited():
+        return None
+    try:
+        value = native.process(pid, owner.boot)
+    except OSError as error:
+        return failed_member_observation(owner, pid, "process", error, session_matches=True)
+    return value if value["session"] == owner.pid and value["live"] else None
+
+
+def session_members(owner):
+    """Enumerate before getsid, so a pinned Darwin zombie need not be queried."""
+    found = []
+    try:
+        pids = native.pids()
+    except OSError as error:
+        owner.record_error("census", None, error)
+        raise
+    for pid in pids:
+        value = session_member(owner, pid)
+        if value is not None:
+            found.append(value)
+    return found
+
+
+def retry_pending_observation(owner, pending, deadline, *,
+                              clock=time.monotonic, pause=time.sleep, cancelled=owner_cancelled):
+    """Wait only for another observation; grant no signal, empty census or reap."""
+    if pending.owner is not owner or owner.child.returncode is not None:
+        raise FixtureAborted("pending observation lost its exact unreaped child")
+    remaining = deadline - clock()
+    if remaining <= 0 or cancelled():
+        raise FixtureAborted(f"{pending}; original observation lifetime exhausted or cancelled")
+    pause(min(0.01, remaining))  # Observation cadence within the original deadline.
+
+
+def bounded(args, cwd, env, root, deadline, *, own_session=True, cancel_when_exited=None):
+    """File capture plus a waitable session leader, including set-m descendants."""
+    global CUSTODY_UNCERTAIN
+    remaining = min(patience(30, contention()), deadline - time.monotonic())
+    if remaining <= 0 or owner_cancelled():
+        (root / "preserve").touch()
+        raise FixtureAborted("fixture deadline elapsed or owner cancelled before spawn")
+    if own_session and not all(hasattr(os, name) for name in
+                               ("waitid", "P_PID", "WEXITED", "WNOWAIT", "WNOHANG")):
+        (root / "preserve").touch()
+        raise FixtureAborted("Python lacks pinned-child waitid support; no child started")
+    deadline = time.monotonic() + remaining
+    boot = native.boot_identity() if own_session else None
+    with tempfile.TemporaryFile(dir=root) as out, tempfile.TemporaryFile(dir=root) as err:
+        child = subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                 stdout=out, stderr=err, start_new_session=own_session)
+        owner = PinnedChild(child, boot) if own_session else None
+        failure = None
+        try:
+            if not own_session:
+                # Transport Git belongs to the top-level fixture command's
+                # session. Do not create an untracked nested session here.
+                child.wait(timeout=remaining)
+            else:
+                cleanup_deadline = None
+                while True:
+                    try:
+                        # WNOWAIT pins the session ID even when macOS can no longer
+                        # inspect the exact zombie through proc_pidinfo/getsid.
+                        exited = owner.exited()
+                        detector_cancel = exited and cancel_when_exited is not None and cancel_when_exited(child.pid)
+                        if failure is None and (owner_cancelled() or detector_cancel or time.monotonic() >= deadline):
+                            failure = "fixture command deadline or owner cancellation"
+                            (root / "preserve").touch()
+                            cleanup_deadline = time.monotonic() + patience(5, contention())
+                        members = session_members(owner)
+                        if exited and not members:
+                            # A second census AFTER positive direct-root exit proof
+                            # closes an enumerate/fork/exit window before reaping.
+                            if not session_members(owner):
+                                child.wait(timeout=max(0.01, (cleanup_deadline or deadline) - time.monotonic()))
+                                break
+                        if failure is not None:
+                            for value in members:
+                                now = session_member(owner, value["pid"])
+                                if (now is not None and now["start"] == value["start"] and now["boot"] == value["boot"]
+                                        and now["session"] == child.pid and now["live"]):
+                                    try:
+                                        os.kill(now["pid"], signal.SIGKILL)
+                                    except OSError as error:
+                                        owner.record_error("kill", now["pid"], error)
+                                        if isinstance(error, ProcessLookupError):
+                                            continue  # Exit raced the exact-incarnation signal.
+                                        raise
+                            if time.monotonic() >= cleanup_deadline:
+                                raise FixtureAborted("owned session did not settle; scratch root retained")
+                        # Observation cadence, not a workload completion allowance.
+                        time.sleep(0.01)
+                    except PendingChildObservation as pending:
+                        # A partial census is never an empty one. Discard it and
+                        # retry observation without renewing the original budget.
+                        retry_pending_observation(
+                            owner, pending, min(deadline, cleanup_deadline or deadline)
+                        )
+                        continue
+
+        except BaseException as error:
+            CUSTODY_UNCERTAIN = True
+            (root / "preserve").touch()
+            if not own_session:
+                child.kill()  # Unreaped direct Git only; outer owner still holds the session.
+                child.wait(timeout=patience(2, contention()))
+            identity = (owner.diagnostic() if owner is not None else
+                        dict(child_pid=child.pid, session=None, boot=boot,
+                             reaped=child.returncode is not None, last_exit=None))
+            diagnostic = dict(identity, error=str(error))
+            diagnostic_path = root / "custody-failure.json"
+            try:
+                diagnostic_path.write_text(json.dumps(diagnostic, sort_keys=True) + "\n")
+                receipt = str(diagnostic_path)
+            except OSError as receipt_error:
+                receipt = f"diagnostic write refused: {receipt_error}"
+            raise FixtureAborted(
+                f"fixture custody is uncertain: {json.dumps(diagnostic, sort_keys=True)}; {receipt}"
+            ) from error
+        if failure is not None:
+            raise FixtureAborted(
+                failure + "; owned session settled, root retained; "
+                + json.dumps(owner.diagnostic(), sort_keys=True)
+            )
+        out.seek(0)
+        err.seek(0)
+        return subprocess.CompletedProcess(args, child.returncode,
+                                           out.read().decode(), err.read().decode())
+
+
+def transport(root, argv):
+    """Allowlisted local transport for the exact private fixture, never a URL."""
+    config = json.loads((root / "transport.json").read_text())
+    repo, bare = Path(config["repo"]), Path(config["bare"])
+    assert repo.parent == root and bare.parent == root
+    assert argv[:1] == ["github"] and len(argv) >= 6
+    kind = argv[1]
+    assert argv[2:6] == ["--checkout", str(repo), "--authority", str(repo)]
+    rest = argv[6:]
+    if rest[:1] == ["--expected"]:
+        assert rest[1] == IDENTITY
+        rest = rest[2:]
+    if kind == "resolve":
+        assert not rest
+        print(json.dumps({"identity": {"host": "github.com", "owner": "fixture", "repo": "managed"}}))
+        return
+    assert rest[:1] == ["--"]
+    args = rest[1:]
+    with (root / "calls.jsonl").open("a") as calls:
+        calls.write(json.dumps([kind, *args]) + "\n")
+    branch, head = config["branch"], config["head"]
+    if kind == "git":
+        allowed = [
+            ["ls-remote", "--symref", "origin", "HEAD"],
+            ["ls-remote", "--heads", "origin", "refs/heads/" + branch],
+            ["fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main",
+             "+refs/pull/1/head:refs/remotes/origin/pr/1"],
+            ["fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+            ["fetch", "-q", "origin", "+refs/heads/main:refs/storyhook/landing/" + head],
+            ["push", "-q", "origin", ":refs/heads/" + branch],
+        ]
+        assert args in allowed, args
+        # Pin the fixture path on each transport command, even if local origin
+        # configuration were accidentally changed by the harness.
+        args = [str(bare) if arg == "origin" else arg for arg in args]
+        os.chdir(repo)
+        os.execvp("git", ["git", *args])
+    if kind == "exec":
+        assert args[:3] == ["pr", "view", "1"] and args[3:4] == ["--json"] and len(args) == 5
+        merged = config.get("merged")
+        print(json.dumps({"number": 1, "state": "MERGED" if merged else "OPEN",
+                          "isDraft": False, "isCrossRepository": False,
+                          "baseRefName": "main", "headRefName": branch, "headRefOid": head,
+                          "mergedAt": "2026-01-01T00:00:00Z" if merged else None,
+                          "mergeCommit": {"oid": merged} if merged else None}))
+        return
+    assert kind == "merge" and args == ["1", head], (kind, args)
+    assert not config.get("merged"), "the production caller retried the merge"
+    if config.get("merge_reply") == "refused":
+        print('{"result":"refused","status":403}')
+        return
+    if config.get("merge_reply") == "unknown":
+        raise SystemExit("synthetic lost response; no outcome proof")
+    deadline = time.monotonic() + patience(20, contention())
+    prefix = ["git", "--git-dir", str(bare), "-c", "user.name=Fixture",
+              "-c", "user.email=fixture@example.invalid"]
+    result = bounded([*prefix, "commit-tree", config["tree"], "-p", config["base"],
+                      "-p", head, "-m", "Synthetic local transport merge"],
+                     repo, os.environ.copy(), root, deadline, own_session=False)
+    assert result.returncode == 0, result.stderr
+    merged = result.stdout.strip()
+    result = bounded([*prefix, "update-ref", "refs/heads/main", merged, config["base"]],
+                     repo, os.environ.copy(), root, deadline, own_session=False)
+    assert result.returncode == 0, result.stderr
+    config["merged"] = merged
+    (root / "transport.json").write_text(json.dumps(config))
+    print('{"result":"accepted"}')
+
+
+class PinnedChildCensus(unittest.TestCase):
+    """Deterministic native-denial boundaries; no child or signal is created."""
+
+    def setUp(self):
+        self.owner = PinnedChild(SimpleNamespace(pid=42, returncode=None), "fixture-boot")
+        self.exit = SimpleNamespace(si_pid=42, si_code=os.CLD_EXITED, si_status=0)
+
+    def test_exact_unreaped_exit_skips_root_before_native_queries(self):
+        with patch.object(os, "waitid", return_value=self.exit) as wait, \
+                patch.object(native, "pids", return_value=[42]), \
+                patch.object(os, "getsid", side_effect=PermissionError(1, "zombie")) as sid, \
+                patch.object(native, "process", side_effect=PermissionError(1, "zombie")) as process:
+            self.assertEqual(session_members(self.owner), [])
+            sid.assert_not_called()
+            process.assert_not_called()
+            wait.assert_called_once_with(os.P_PID, 42, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        self.assertEqual(self.owner.diagnostic(), dict(
+            child_pid=42, session=42, boot="fixture-boot", reaped=False,
+            last_exit=dict(pid=42, code=os.CLD_EXITED, status=0),
+            pending_count=0, observation_errors=[]))
+
+    def test_exact_root_exit_racing_getsid_requires_fresh_witness(self):
+        with patch.object(os, "waitid", side_effect=[None, self.exit]) as wait, \
+                patch.object(native, "pids", return_value=[42]), \
+                patch.object(os, "getsid", side_effect=PermissionError(1, "exited during getsid")), \
+                patch.object(native, "process") as process:
+            self.assertEqual(session_members(self.owner), [])
+            self.assertEqual(wait.call_count, 2)
+            process.assert_not_called()
+
+    def test_exact_root_exit_racing_process_requires_fresh_witness(self):
+        with patch.object(os, "waitid", side_effect=[None, None, self.exit]) as wait, \
+                patch.object(native, "pids", return_value=[42]), \
+                patch.object(os, "getsid", return_value=42), \
+                patch.object(native, "process", side_effect=PermissionError(1, "exited during process")):
+            self.assertEqual(session_members(self.owner), [])
+            self.assertEqual(wait.call_count, 3)
+
+    def test_unproven_root_denial_remains_unknown(self):
+        for boundary in ("getsid", "process"):
+            for error in (PermissionError(1, "unreadable root"), ProcessLookupError(3, "unproven exit")):
+                with self.subTest(boundary=boundary, error=type(error).__name__), \
+                        patch.object(os, "waitid", return_value=None), \
+                        patch.object(native, "pids", return_value=[42]), \
+                        patch.object(os, "getsid", side_effect=error if boundary == "getsid" else None,
+                                     return_value=42), \
+                        patch.object(native, "process", side_effect=error):
+                    expected = (PendingChildObservation if error.errno == errno.ESRCH
+                                else type(error))
+                    with self.assertRaises(expected):
+                        session_members(self.owner)
+                    self.assertIsNone(self.owner.last_exit)
+
+    def test_descendant_denial_is_not_excused_by_root_exit(self):
+        for boundary in ("getsid", "process"):
+            with self.subTest(boundary=boundary), \
+                    patch.object(os, "waitid", return_value=self.exit), \
+                    patch.object(native, "pids", return_value=[42, 43]), \
+                    patch.object(os, "getsid", side_effect=PermissionError(1, "descendant")
+                                 if boundary == "getsid" else None, return_value=42), \
+                    patch.object(native, "process", side_effect=PermissionError(1, "descendant")):
+                expected = PermissionError if boundary == "getsid" else PendingSessionObservation
+                with self.assertRaises(expected):
+                    session_members(self.owner)
+
+    def test_wrong_child_witness_cannot_exempt_root(self):
+        wrong = SimpleNamespace(si_pid=43, si_code=os.CLD_EXITED, si_status=0)
+        with patch.object(os, "waitid", return_value=wrong), \
+                patch.object(native, "pids", return_value=[42]), \
+                patch.object(os, "getsid") as sid:
+            with self.assertRaisesRegex(RuntimeError, "different child identity"):
+                session_members(self.owner)
+            sid.assert_not_called()
+
+    def test_reaped_child_cannot_pin_reused_session(self):
+        self.owner.child.returncode = 0
+        with patch.object(os, "waitid", return_value=self.exit) as wait, \
+                patch.object(native, "pids", return_value=[42]):
+            with self.assertRaisesRegex(RuntimeError, "reaped child"):
+                session_members(self.owner)
+            wait.assert_not_called()
+
+    def test_live_descendant_is_retained_and_foreign_session_is_not_adopted(self):
+        live = dict(pid=43, start="fixture:43", boot="fixture-boot", session=42, live=True)
+        with patch.object(os, "waitid", return_value=self.exit), \
+                patch.object(native, "pids", return_value=[42, 43, 44]), \
+                patch.object(os, "getsid", side_effect=[42, 99]), \
+                patch.object(native, "process", return_value=live) as process:
+            self.assertEqual(session_members(self.owner), [live])
+            process.assert_called_once_with(43, "fixture-boot")
+
+
+    def test_pending_native_root_requires_later_exit_or_readable_identity(self):
+        for boundary in ("getsid", "process"):
+            for recovered in ("exit", "readable"):
+                with self.subTest(boundary=boundary, recovered=recovered):
+                    owner = PinnedChild(SimpleNamespace(pid=42, returncode=None), "fixture-boot")
+                    live = dict(pid=42, start="fixture:42", boot="fixture-boot", session=42, live=True)
+                    with patch.object(os, "waitid", return_value=None) as wait, \
+                            patch.object(native, "pids", return_value=[42]), \
+                            patch.object(os, "getsid", side_effect=ProcessLookupError(3, "transition")
+                                         if boundary == "getsid" else None, return_value=42) as sid, \
+                            patch.object(native, "process", side_effect=ProcessLookupError(3, "transition")) as process, \
+                            patch.object(os, "kill") as kill, patch.object(time, "sleep") as pause:
+                        with self.assertRaises(PendingChildObservation) as raised:
+                            session_members(owner)
+                        self.assertIsNone(owner.last_exit)
+                        self.assertEqual(owner.observation_errors[-1]["stage"], boundary)
+                        self.assertEqual(owner.observation_errors[-1]["pid"], 42)
+                        retry_pending_observation(owner, raised.exception, 5,
+                                                  clock=lambda: 4, pause=pause, cancelled=lambda: False)
+                        pause.assert_called_once_with(0.01)
+                        kill.assert_not_called()
+                        self.assertIsNone(owner.child.returncode)
+                        sid.side_effect = None
+                        process.side_effect = None
+                        process.return_value = live
+                        wait.return_value = self.exit if recovered == "exit" else None
+                        members = session_members(owner)
+                        self.assertEqual(members, [] if recovered == "exit" else [live])
+                        self.assertEqual(owner.last_exit is not None, recovered == "exit")
+                        kill.assert_not_called()
+
+    def test_waitid_esrch_remains_pending_until_exact_exit_witness(self):
+        with patch.object(os, "waitid", side_effect=[ProcessLookupError(3, "transition"), self.exit]), \
+                patch.object(os, "kill") as kill, patch.object(time, "sleep") as pause:
+            with self.assertRaises(PendingChildObservation) as raised:
+                self.owner.exited()
+            self.assertIsNone(self.owner.last_exit)
+            self.assertEqual(self.owner.observation_errors[-1]["stage"], "waitid")
+            retry_pending_observation(self.owner, raised.exception, 5,
+                                      clock=lambda: 4, pause=pause, cancelled=lambda: False)
+            self.assertTrue(self.owner.exited())
+            self.assertEqual(self.owner.last_exit["pid"], 42)
+            kill.assert_not_called()
+            self.assertIsNone(self.owner.child.returncode)
+
+    def test_pending_lifetime_exhaustion_or_cancellation_grants_no_authority(self):
+        pending = PendingChildObservation(self.owner, "getsid", ProcessLookupError(3, "transition"))
+        for now, cancelled in [(5, False), (4, True)]:
+            with self.subTest(now=now, cancelled=cancelled), \
+                    patch.object(time, "sleep") as pause, patch.object(os, "kill") as kill, \
+                    patch.object(os, "waitid") as wait:
+                with self.assertRaisesRegex(FixtureAborted, "lifetime exhausted or cancelled"):
+                    retry_pending_observation(self.owner, pending, 5, clock=lambda: now,
+                                              pause=pause, cancelled=lambda: cancelled)
+                pause.assert_not_called()
+                kill.assert_not_called()
+                wait.assert_not_called()
+                self.assertIsNone(self.owner.last_exit)
+                self.assertIsNone(self.owner.child.returncode)
+
+    def test_waitid_permission_and_no_child_errors_are_fatal(self):
+        for error in (PermissionError(1, "denied"), ChildProcessError(10, "not owned")):
+            with self.subTest(error=type(error).__name__), patch.object(os, "waitid", side_effect=error):
+                with self.assertRaises(type(error)):
+                    self.owner.exited()
+                self.assertIsNone(self.owner.last_exit)
+                self.assertEqual(self.owner.pending_count, 0)
+                self.assertEqual(self.owner.observation_errors[-1]["stage"], "waitid")
+        # A native-query denial cannot become retryable merely because its
+        # follow-up waitid also encounters a transient root disappearance.
+        with patch.object(os, "waitid", side_effect=[None, ProcessLookupError(3, "transition")]), \
+                patch.object(os, "getsid", side_effect=PermissionError(1, "denied")), \
+                patch.object(native, "pids", return_value=[42]):
+            with self.assertRaises(PermissionError):
+                session_members(self.owner)
+
+
+    def test_confirmed_session_denial_discards_partial_census_without_effects(self):
+        live = dict(pid=43, start="fixture:43", boot="fixture-boot", session=42, live=True)
+        with patch.object(os, "waitid", return_value=self.exit), \
+                patch.object(native, "pids", return_value=[42, 43, 44]), \
+                patch.object(os, "getsid", return_value=42), \
+                patch.object(native, "process", side_effect=[live, PermissionError(1, "member")]), \
+                patch.object(os, "kill") as kill, patch.object(time, "sleep") as pause:
+            with self.assertRaises(PendingSessionObservation) as raised:
+                session_members(self.owner)
+            self.assertEqual(raised.exception.observed_pid, 44)
+            self.assertIs(raised.exception.owner, self.owner)
+            self.assertEqual(self.owner.observation_errors[-1]["stage"], "process")
+            self.assertEqual(self.owner.observation_errors[-1]["pid"], 44)
+            retry_pending_observation(self.owner, raised.exception, 5,
+                                      clock=lambda: 4, pause=pause, cancelled=lambda: False)
+            kill.assert_not_called()
+            self.assertIsNone(self.owner.child.returncode)
+            pause.assert_called_once_with(0.01)
+
+    def test_pending_session_recensus_requires_fresh_membership_and_identity(self):
+        for resolved in ("readable", "foreign", "foreign_after_sid", "gone"):
+            with self.subTest(resolved=resolved):
+                owner = PinnedChild(SimpleNamespace(pid=42, returncode=None), "fixture-boot")
+                row = dict(pid=43, start="new-incarnation:43", boot="fixture-boot", session=42, live=True)
+                with patch.object(os, "waitid", return_value=self.exit), \
+                        patch.object(native, "pids", return_value=[42, 43]) as pids, \
+                        patch.object(os, "getsid", return_value=42) as sid, \
+                        patch.object(native, "process", side_effect=PermissionError(1, "member")) as process, \
+                        patch.object(os, "kill") as kill:
+                    with self.assertRaises(PendingSessionObservation):
+                        session_members(owner)
+                    pids.return_value = [42] if resolved == "gone" else [42, 43]
+                    sid.return_value = 99 if resolved == "foreign" else 42
+                    process.reset_mock()
+                    process.side_effect = None
+                    process.return_value = dict(row, session=99) if resolved == "foreign_after_sid" else row
+                    members = session_members(owner)
+                    self.assertEqual(members, [row] if resolved == "readable" else [])
+                    if resolved in ("readable", "foreign_after_sid"):
+                        process.assert_called_once_with(43, "fixture-boot")
+                    else:
+                        process.assert_not_called()
+                    kill.assert_not_called()
+                    self.assertIsNone(owner.child.returncode)
+
+    def test_persistent_session_denial_exhausts_original_budget(self):
+        with patch.object(os, "waitid", return_value=self.exit), \
+                patch.object(native, "pids", return_value=[42, 43]), \
+                patch.object(os, "getsid", return_value=42), \
+                patch.object(native, "process", side_effect=PermissionError(1, "permanent denial")), \
+                patch.object(os, "kill") as kill, patch.object(time, "sleep") as pause:
+            for now in (4, 5):
+                with self.assertRaises(PendingSessionObservation) as raised:
+                    session_members(self.owner)
+                if now == 4:
+                    retry_pending_observation(self.owner, raised.exception, 5,
+                                              clock=lambda: now, pause=pause, cancelled=lambda: False)
+                else:
+                    with self.assertRaisesRegex(FixtureAborted, "lifetime exhausted"):
+                        retry_pending_observation(self.owner, raised.exception, 5,
+                                                  clock=lambda: now, pause=pause, cancelled=lambda: False)
+            self.assertEqual(self.owner.pending_count, 2)
+            pause.assert_called_once_with(0.01)
+            kill.assert_not_called()
+            self.assertIsNone(self.owner.child.returncode)
+
+    def test_unscoped_or_unsupported_session_denials_remain_fatal(self):
+        for stage, error in (("getsid", PermissionError(1, "unknown session")),
+                             ("census", PermissionError(1, "unknown census")),
+                             ("process", PermissionError(13, "unsupported denial")),
+                             ("process", ChildProcessError(10, "ownership failure"))):
+            with self.subTest(stage=stage, errno=error.errno):
+                owner = PinnedChild(SimpleNamespace(pid=42, returncode=None), "fixture-boot")
+                with patch.object(os, "waitid", return_value=self.exit), \
+                        patch.object(native, "pids", side_effect=error if stage == "census" else None,
+                                     return_value=[42, 43]), \
+                        patch.object(os, "getsid", side_effect=error if stage == "getsid" else None,
+                                     return_value=42), \
+                        patch.object(native, "process", side_effect=error):
+                    with self.assertRaises(type(error)):
+                        session_members(owner)
+                    self.assertEqual(owner.pending_count, 0)
+                    self.assertEqual(owner.observation_errors[-1]["stage"], stage)
+
+
+class ManagedLandingRetention(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="sh871-retention-", dir="/tmp")).resolve()
+        self.addCleanup(self.cleanup)
+        self.deadline = time.monotonic() + patience(120, contention())
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.bare = self.root / "origin.git"
+        self.marker = self.root / ("landing-" + ATTEMPT + ".attempted")
+        self.branch = "storyhook/integration/" + OWNER
+        self.wrapper = self.root / "fixture-story"
+        self.wrapper.write_text("#!/bin/sh\nexec " + shlex.join([
+            sys.executable, "-B", str(Path(__file__).resolve()), "--transport", str(self.root)
+        ]) + ' "$@"\n')
+        self.wrapper.chmod(0o700)
+        self.git("init", "-q", "--template=", "-b", "main")
+        self.git("config", "user.name", "Fixture")
+        self.git("config", "user.email", "fixture@example.invalid")
+        for field, value in [("name", "Fixture"), ("email", "fixture@example.invalid"),
+                             ("role", "both"), ("reason", "Isolated local Git fixture")]:
+            self.git("config", "storyhookIdentity.fixture." + field, value)
+        (self.repo / "base").write_text("base\n")
+        self.git("add", "base")
+        self.git("commit", "-qm", "base")
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
+        (self.repo / "new").write_text("head\n")
+        self.git("add", "new")
+        self.git("commit", "-qm", "head")
+        self.head = self.git("rev-parse", "HEAD").stdout.strip()
+        self.tree = self.git("rev-parse", "HEAD^{tree}").stdout.strip()
+        self.git("init", "-q", "--bare", "--template=", "-b", "main", str(self.bare))
+        self.git("remote", "add", "origin", str(self.bare))
+        self.git("push", "-q", "origin", self.base + ":refs/heads/main",
+                 self.head + ":refs/heads/" + self.branch, self.head + ":refs/pull/1/head")
+        (self.repo / ".githooks").symlink_to(ROOT / ".githooks", target_is_directory=True)
+        (self.repo / "scripts").symlink_to(ROOT / "scripts", target_is_directory=True)
+        (self.root / "transport.json").write_text(json.dumps({
+            "repo": str(self.repo), "bare": str(self.bare), "branch": self.branch,
+            "base": self.base, "head": self.head, "tree": self.tree,
+        }))
+
+    def cleanup(self):
+        if (self.root / "preserve").exists():
+            print("preserved uncertain fixture root: " + str(self.root), file=sys.stderr)
+        else:
+            shutil.rmtree(self.root)
+
+    def command(self, *args, extra=None):
+        # Start without credential/Git routing inheritance, then apply the
+        # canonical environment contract before adding this fixture's transport.
+        env = {"PATH": os.environ["PATH"], "LC_ALL": "C"}
+        values = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null",
+                  "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0",
+                  "STORYHOOK_LOCK_DIR": str(self.root / "locks"),
+                  "STORY_BIN": str(self.wrapper), "STORYHOOK_PYTHON": sys.executable}
+        values.update(extra or {})
+        return bounded([
+            "bash", "-c", 'source "$1/scripts/test-env.sh"; storyhook_isolate --home "$2"; shift 2; exec "$@"',
+            "sh871-retention", str(ROOT), str(self.root / "environment"), "env",
+            *[key + "=" + value for key, value in values.items()], *map(str, args)
+        ], self.repo, env, self.root, self.deadline)
+
+    def git(self, *args):
+        result = self.command("git", *args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result
+
+    def certify_fixture_tree(self):
+        # Synthetic receipt only inside this disposable repository. It exercises
+        # the real writer/reader boundary; no test suite is claimed to have run.
+        for phase in ["preflight", "postlude"]:
+            result = self.command("bash", ROOT / "scripts/gate-receipt.sh", phase)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def land(self, managed=True, mode="attempt", owner=OWNER, tree=None, marker=None, trailing=()):
+        args = ["--managed-integration", owner, ATTEMPT] if managed else []
+        return self.command("bash", ROOT / "scripts/landing-intent.sh", *args, mode, "1",
+                            self.head, tree or self.tree, marker or self.marker, *trailing)
+
+    def calls(self):
+        path = self.root / "calls.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def mutations(self):
+        return [call for call in self.calls() if call[0] == "merge" or call[:2] == ["git", "push"]]
+
+    def branch_tip(self):
+        return self.git("ls-remote", "--heads", "origin", "refs/heads/" + self.branch).stdout.strip()
+
+    def test_managed_landing_retains_exact_owned_branch_after_certified_merge(self):
+        self.certify_fixture_tree()
+        result = self.land()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["result"], "merged", result.stdout)
+        self.assertEqual(self.mutations(), [["merge", "1", self.head]])
+        self.assertEqual(self.branch_tip().split()[0], self.head)
+        self.assertEqual(self.marker.read_text().strip(), self.head + " " + self.tree)
+
+    def test_ordinary_landing_still_deletes_remote_source_branch(self):
+        self.certify_fixture_tree()
+        result = self.land(managed=False)
+        self.assertEqual(json.loads(result.stdout)["result"], "merged", result.stdout + result.stderr)
+        self.assertEqual(self.mutations(), [["merge", "1", self.head],
+                         ["git", "push", "-q", "origin", ":refs/heads/" + self.branch]])
+        self.assertEqual(self.branch_tip(), "")
+
+    def test_owner_branch_mismatch_never_merges_or_deletes(self):
+        self.certify_fixture_tree()
+        result = self.land(owner=OTHER)
+        self.assertEqual(json.loads(result.stdout)["result"], "uncertain", result.stdout)
+        self.assertEqual(self.mutations(), [])
+        self.assertFalse(self.marker.exists())
+        self.assertTrue(self.branch_tip())
+
+    def test_managed_landing_requires_gate_receipt_and_exact_tree(self):
+        for certified, tree in [(False, self.tree), (True, "0" * 40)]:
+            with self.subTest(certified=certified):
+                if certified:
+                    self.certify_fixture_tree()
+                result = self.land(tree=tree)
+                self.assertEqual(json.loads(result.stdout)["result"], "not-attempted", result.stdout)
+                self.assertEqual(self.mutations(), [])
+                self.assertFalse(self.marker.exists())
+                self.assertTrue(self.branch_tip())
+
+    def test_managed_recovery_never_retries_merge_or_deletes_branch(self):
+        result = self.land(mode="recover")
+        self.assertEqual(json.loads(result.stdout)["result"], "uncertain", result.stdout)
+        self.assertEqual(self.mutations(), [])
+        self.certify_fixture_tree()
+        result = self.land()
+        self.assertEqual(json.loads(result.stdout)["result"], "merged", result.stdout)
+        before = self.mutations()
+        result = self.land(mode="recover")
+        self.assertEqual(json.loads(result.stdout)["result"], "merged", result.stdout)
+        self.assertEqual(self.mutations(), before)
+        self.assertTrue(self.branch_tip())
+
+    def test_managed_refusal_retains_exact_causal_receipt_without_cleanup(self):
+        self.certify_fixture_tree()
+        config = json.loads((self.root / "transport.json").read_text())
+        config["merge_reply"] = "refused"
+        (self.root / "transport.json").write_text(json.dumps(config))
+        for mode in ["attempt", "recover"]:
+            result = self.land(mode=mode)
+            self.assertEqual(json.loads(result.stdout)["result"], "refused", result.stdout)
+        self.assertEqual(self.mutations(), [["merge", "1", self.head]])
+        self.assertEqual(json.loads(Path(str(self.marker) + ".refused").read_text()),
+                         {"version": 1, "head": self.head, "tree": self.tree, "number": "1", "status": 403})
+        self.assertTrue(self.branch_tip())
+
+    def test_managed_unknown_outcome_never_fabricates_refusal_or_retries(self):
+        self.certify_fixture_tree()
+        config = json.loads((self.root / "transport.json").read_text())
+        config["merge_reply"] = "unknown"
+        (self.root / "transport.json").write_text(json.dumps(config))
+        for mode in ["attempt", "recover"]:
+            result = self.land(mode=mode)
+            self.assertEqual(json.loads(result.stdout)["result"], "uncertain", result.stdout)
+        self.assertEqual(self.mutations(), [["merge", "1", self.head]])
+        self.assertTrue(self.marker.exists())
+        self.assertFalse(Path(str(self.marker) + ".refused").exists())
+        self.assertTrue(self.branch_tip())
+
+    def test_managed_protocol_rejects_malformed_identity_marker_skipped_and_flags(self):
+        for changes in [{"owner": "invalid"}, {"marker": self.root / "other.attempted"},
+                        {"trailing": ("skipped-attempt",)}, {"mode": "--unknown"}]:
+            with self.subTest(changes=changes):
+                result = self.land(**changes)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.mutations(), [])
+                self.assertFalse(self.marker.exists())
+        for flag in ["--managed-unknown", "--locked-managed", "--merge-managed"]:
+            result = self.command("bash", ROOT / "scripts/land-pr.sh", flag)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(self.mutations(), [])
+
+    def test_cancellation_settles_descendant_in_another_group_before_return(self):
+        marker = self.root / "owned-descendant.json"
+        descendant = (
+            "import json,os,pathlib,time;"
+            f"p=pathlib.Path({str(marker)!r});"
+            "p.with_suffix('.tmp').write_text(json.dumps({'pid':os.getpid(),'session':os.getsid(0)}));"
+            "p.with_suffix('.tmp').replace(p);"
+            "time.sleep(600)"
+        )
+        leader = "import subprocess,sys;subprocess.Popen([sys.executable,'-c'," + repr(descendant) + "],process_group=0)"
+        witness = {}
+        def cancel_after_exact_exit(pid):
+            # The helper supplies this direct-child identity only after its own
+            # positive WNOWAIT observation. Independently retain the same proof.
+            observed = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            if marker.exists() and observed is not None and observed.si_pid == pid:
+                witness.update(leader=pid, status=observed.si_status)
+                return True
+            return False
+        with self.assertRaisesRegex(FixtureAborted, "owned session settled"):
+            bounded([sys.executable, "-c", leader], self.repo, {"PATH": os.environ["PATH"]},
+                    self.root, self.deadline, cancel_when_exited=cancel_after_exact_exit)
+        self.assertTrue(marker.exists(), "the detector must observe actual descendant readiness")
+        descendant = json.loads(marker.read_text())
+        pid = descendant["pid"]
+        self.assertEqual(witness.get("status"), 0, "cancellation must follow exact successful leader exit")
+        self.assertEqual(witness.get("leader"), descendant["session"])
+        self.assertNotEqual(witness["leader"], pid)
+        try:
+            value = native.process(pid, native.boot_identity())
+        except ProcessLookupError:
+            value = None
+        self.assertTrue(value is None or not value["live"], "owned descendant survived cancellation")
+        self.assertTrue((self.root / "preserve").exists())
+        # This deliberately induced cancellation has positive settlement proof.
+        # Only this detector may retire its own expected preservation marker.
+        (self.root / "preserve").unlink()
+
+
+if __name__ == "__main__":
+    if sys.argv[1:2] == ["--transport"]:
+        transport(Path(sys.argv[2]), sys.argv[3:])
+    else:
+        if "--watch-owner" in sys.argv:
+            sys.argv.remove("--watch-owner")
+            WATCH_OWNER = True
+        def cancellation(_signal, _frame):
+            global CANCELLED
+            CANCELLED = True
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(sig, cancellation)
+        try:
+            unittest.main()
+        except FixtureAborted as error:
+            print(error, file=sys.stderr)
+            sys.exit(1)

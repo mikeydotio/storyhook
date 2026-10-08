@@ -22,7 +22,7 @@ pub(super) fn state_revision(
         .ok_or_else(|| StoreError::Corrupt("recovery subject has no state transition".into()))
 }
 
-pub(super) fn label_revision(
+pub(crate) fn label_revision(
     tx: &impl ReadOps,
     project: ProjectId,
     story: StoryNo,
@@ -72,6 +72,10 @@ pub(super) fn assessment_hold(
     };
     if let Some(reason) = policy_hold(tx, project, &row.snapshot)? {
         return Ok(Some(reason));
+    }
+    if view.state.shared.is_some() {
+        return Ok((!super::shared::retained_current(tx, view, subject)?)
+            .then_some(AssessmentHold::AuthorityChanged));
     }
     // Pending legacy charters and raw fault text cannot acquire new repair
     // authority. Already accepted lineages remain governed by their work receipts.

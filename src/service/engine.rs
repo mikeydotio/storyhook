@@ -2587,6 +2587,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     |tx| {
                         let current = run_for_project(tx, slug, run_id)?;
                         if current.state != EngineRunState::Running
+                            || super::host_recovery::blocks_admission(tx)?
+                            || super::project_recovery::shared_blocks_admission(
+                                tx,
+                                self.ctx.project(),
+                                None,
+                            )?
                             || !scope_is_available(tx, self.ctx.project(), &current.scope)?
                         {
                             return Ok(false);
