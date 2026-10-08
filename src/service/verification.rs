@@ -1457,6 +1457,9 @@ fn held_verifying_for_purpose(
             Some(QueueHold::IntegrationRecovery) => {
                 "managed integration retains this original submission and its resources".to_string()
             }
+            Some(QueueHold::HostRecovery) => {
+                "native host recovery pauses admission pending proven restoration".to_string()
+            }
             Some(QueueHold::ProjectRecovery) => {
                 "project recovery owns this verification generation".to_string()
             }
@@ -1594,6 +1597,8 @@ pub(crate) enum QueueHold {
     Awaiting,
     /// A story or engine reset of the story is pending.
     Reset,
+    /// Native pressure restoration owns a store-wide host admission pause.
+    HostRecovery,
     /// Project recovery has observed this verification generation.
     ProjectRecovery,
     /// A distinct integration owner retains this story, even if its generation changes.
@@ -1633,6 +1638,16 @@ fn queue_hold(
         .any(|owner| owner.active && owner.story == row.story_no)
     {
         Some(QueueHold::IntegrationRecovery)
+    } else if !tx
+        .landing_intents()?
+        .iter()
+        .any(|intent| intent.project == project && intent.story == row.story_no)
+        && match super::host_recovery::blocks_admission(tx) {
+            Err(StoreError::Corrupt(_)) if purpose == QueuePurpose::Status => false,
+            result => result?,
+        }
+    {
+        Some(QueueHold::HostRecovery)
     } else if match super::project_recovery::shared_blocks_admission(
         tx,
         project,

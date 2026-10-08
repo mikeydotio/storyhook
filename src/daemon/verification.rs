@@ -3248,6 +3248,17 @@ where
                     detail,
                     disposition,
                 } => {
+                    if !active.is_cancelled() {
+                        let pending = active.reserve(ReservationReason::Attribution, ctx.now());
+                        if crate::service::host_recovery::retain_failed_pressure(
+                            &ctx,
+                            &candidate,
+                            &active.active.attempt_id,
+                        )? {
+                            pending.retire();
+                            return Ok(TickResult::Returned);
+                        }
+                    }
                     match record_infrastructure_failure(
                         &queue,
                         &ctx,

@@ -47,8 +47,8 @@ mod dispatch_policy;
 mod dropped_cleanup;
 mod engine_reset;
 mod gate_evidence;
-mod integration_recovery;
 mod host_recovery;
+mod integration_recovery;
 mod landing;
 mod ownership;
 mod project_recovery;
@@ -956,7 +956,15 @@ impl Store for SqliteStore {
 macro_rules! impl_read_ops {
     ($ty:ident) => {
         impl ReadOps for $ty<'_> {
-            fn host_recoveries(&self) -> Result<Vec<crate::store::HostRecovery>, StoreError> { host_recovery::list(&self.conn) }
+            fn host_recoveries(&self) -> Result<Vec<crate::store::HostRecovery>, StoreError> {
+                host_recovery::list(&self.conn)
+            }
+            fn host_recovery_pending(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<crate::store::HostRecoveryPending>, StoreError> {
+                host_recovery::pending(&self.conn, project)
+            }
             fn integration_recoveries(
                 &self,
                 project: ProjectId,
@@ -1383,8 +1391,25 @@ impl WriteOps for SqliteWriteTx<'_> {
     ) -> Result<bool, StoreError> {
         project_recovery::insert(&self.conn, record)
     }
-    fn insert_host_recovery(&mut self, record:&crate::store::HostRecovery)->Result<bool,StoreError>{host_recovery::insert(&self.conn,record)}
-    fn update_host_recovery(&mut self, record:&crate::store::HostRecovery,expected:i64)->Result<bool,StoreError>{host_recovery::update(&self.conn,record,expected)}
+    fn insert_host_recovery(
+        &mut self,
+        record: &crate::store::HostRecovery,
+    ) -> Result<bool, StoreError> {
+        host_recovery::insert(&self.conn, record)
+    }
+    fn insert_host_recovery_pending(
+        &mut self,
+        record: &crate::store::HostRecoveryPending,
+    ) -> Result<(), StoreError> {
+        host_recovery::insert_pending(&self.conn, record)
+    }
+    fn update_host_recovery(
+        &mut self,
+        record: &crate::store::HostRecovery,
+        expected: i64,
+    ) -> Result<bool, StoreError> {
+        host_recovery::update(&self.conn, record, expected)
+    }
     fn insert_integration_recovery(
         &mut self,
         record: &crate::store::IntegrationRecovery,

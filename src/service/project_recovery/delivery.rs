@@ -100,7 +100,9 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                 if work.epoch != epoch || work.status != WorkStatus::InFlight {
                     return Ok(false);
                 }
-                if super::shared::blocks_admission(tx, view.record.project, Some(work.story))? {
+                if crate::service::host_recovery::blocks_admission(tx)?
+                    || super::shared::blocks_admission(tx, view.record.project, Some(work.story))?
+                {
                     return Ok(false);
                 }
                 if super::work::permitted(tx, &view, work)?.is_none() {

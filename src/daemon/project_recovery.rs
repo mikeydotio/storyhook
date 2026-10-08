@@ -308,7 +308,13 @@ pub(crate) fn poll(
 ) {
     let subscription = bus.subscribe();
     let actuator = ShellVerificationActuator::new(env.clone());
+    let mut host = super::host_recovery::Worker::default();
     while !stop.load(Ordering::Acquire) {
+        match host.process_one(store, env, activity, stop) {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(error) => eprintln!("storyhook: native host recovery: {error}"),
+        }
         match process_one(store, env, &actuator, activity, stop) {
             Ok(true) => continue,
             Ok(false) => {}

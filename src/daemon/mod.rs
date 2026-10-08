@@ -59,6 +59,7 @@ pub mod engine;
 pub mod gc;
 #[cfg(feature = "github-pr")]
 pub mod github_poll;
+mod host_recovery;
 pub mod http1;
 pub mod install_guard;
 pub(crate) mod launchd;

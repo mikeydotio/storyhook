@@ -40,3 +40,16 @@ CREATE TRIGGER host_recovery_no_resurrection
     BEFORE UPDATE OF active ON host_recoveries
     WHEN OLD.active=0 AND NEW.active=1
     BEGIN SELECT RAISE(ABORT, 'restored host recovery cannot reactivate'); END;
+
+-- Pending evidence is not a host owner and grants no execution or release.
+-- Keep the original submission/custody if the native broker is unavailable.
+CREATE TABLE host_recovery_pending (
+    id TEXT PRIMARY KEY NOT NULL CHECK(length(id)>0),
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+    story_no INTEGER NOT NULL,
+    generation INTEGER NOT NULL CHECK(generation>0),
+    evidence TEXT NOT NULL CHECK(json_valid(evidence) AND json_type(evidence)='object'),
+    FOREIGN KEY(project_id,story_no) REFERENCES stories(project_id,story_no) ON DELETE RESTRICT
+);
+CREATE TRIGGER host_pending_immutable BEFORE UPDATE ON host_recovery_pending
+    BEGIN SELECT RAISE(ABORT, 'pending native host custody is immutable'); END;

@@ -62,13 +62,13 @@ pub mod block_delivery;
 mod dispatch_policy;
 pub use dispatch_policy::DispatchPolicyOverride;
 pub mod continuation;
-pub mod integration_recovery;
 pub mod host_recovery;
+pub mod integration_recovery;
 pub mod project_recovery;
 pub use block_delivery::{BlockAction, BlockDelivery, DeliveryStatus};
 pub use continuation::{Continuation, ContinuationPhase, ContinuationStatus};
+pub use host_recovery::{HostRecovery, HostRecoveryPending};
 pub use integration_recovery::IntegrationRecovery;
-pub use host_recovery::HostRecovery;
 pub use project_recovery::{ProjectRecovery, ProjectRecoveryObservation};
 pub mod conformance;
 mod dropped_cleanup;
@@ -318,6 +318,11 @@ pub struct WriteWithSnapshot<T> {
 pub trait ReadOps {
     /// All native host fault owners, shared across projects in this store.
     fn host_recoveries(&self) -> Result<Vec<HostRecovery>, StoreError>;
+    /// Original gate custody awaiting live native host proof, without host authority.
+    fn host_recovery_pending(
+        &self,
+        project: ProjectId,
+    ) -> Result<Vec<HostRecoveryPending>, StoreError>;
     /// Distinct single-submission integration owners, including retained history.
     fn integration_recoveries(
         &self,
@@ -686,8 +691,17 @@ pub trait WriteOps: ReadOps {
     fn insert_project_recovery(&mut self, record: &ProjectRecovery) -> Result<bool, StoreError>;
     /// Reserve one new native host fault owner, or report an existing exact key.
     fn insert_host_recovery(&mut self, record: &HostRecovery) -> Result<bool, StoreError>;
+    /// Retain immutable pending native custody; identical replay is idempotent.
+    fn insert_host_recovery_pending(
+        &mut self,
+        record: &HostRecoveryPending,
+    ) -> Result<(), StoreError>;
     /// Advance exactly one host recovery revision without changing its identity.
-    fn update_host_recovery(&mut self, record: &HostRecovery, expected:i64) -> Result<bool, StoreError>;
+    fn update_host_recovery(
+        &mut self,
+        record: &HostRecovery,
+        expected: i64,
+    ) -> Result<bool, StoreError>;
     /// Acquire the original story's sole live integration owner.
     fn insert_integration_recovery(
         &mut self,

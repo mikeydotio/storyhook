@@ -375,7 +375,8 @@ fn check_candidate(tx: &impl ReadOps, candidate: &VerificationCandidate) -> Resu
     let expected = crate::domain::pr_url::parse_pr_url(&expected_pr.url)
         .map_err(|e| invalid(&e.to_string()))?;
     let links = tx.open_pr_links_for_story(candidate.project, story)?;
-    if !tx.verification_enabled(candidate.project)?
+    if crate::service::host_recovery::blocks_admission(tx)?
+        || !tx.verification_enabled(candidate.project)?
         || crate::domain::is_reserved(&row.snapshot)
         || !crate::service::automations::permits_generation(
             tx,

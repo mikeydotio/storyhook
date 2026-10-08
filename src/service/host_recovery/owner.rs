@@ -85,7 +85,7 @@ impl<'a, S: Store> HostRecoveryService<'a, S> {
             let (mut record, mut state) = match existing {
                 Some(record) => { let state = decode(&record)?; (record, state) },
                 None => {
-                    let state = State { version: 1, fault: subject.request.fault.clone(), started_at: now.clone(), updated_at: now.clone(), members: Vec::new() };
+                    let state = State { version: 1, fault: subject.request.fault.clone(), started_at: subject.admitted_at.clone(), updated_at: now.clone(), members: Vec::new() };
                     (HostRecovery { id: uuid::Uuid::new_v4().to_string(), fault_key: key, revision: 0, active: true, state: Value::Null }, state)
                 }
             };
@@ -167,6 +167,20 @@ pub(crate) fn blocks_admission(tx: &impl ReadOps) -> Result<bool, StoreError> {
         active |= record.active;
     }
     Ok(active)
+}
+
+pub(super) fn subject_restored(tx: &impl ReadOps, subject: &Subject) -> Result<bool, StoreError> {
+    for record in tx.host_recoveries()? {
+        let state = decode(&record)?;
+        if state
+            .members
+            .iter()
+            .any(|member| same_identity(&member.subject, subject) && member.restored.is_some())
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Durable pin remains mandatory after the host owner becomes inactive.
@@ -329,6 +343,7 @@ fn decode(record: &HostRecovery) -> Result<State, StoreError> {
     for member in &state.members {
         let s = &member.subject;
         s.attribution.validate()?;
+        chrono::DateTime::parse_from_rfc3339(&s.admitted_at).map_err(|_| corrupt())?;
         if s.request.fault != state.fault
             || !s.attribution.held
             || s.attribution.retired.is_some()

@@ -19,6 +19,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_attempt(true)
+    }
+    fn with_attempt(settled: bool) -> Self {
         let fixture = storyhook_test_support::ServiceFixture::new();
         let root = fixture.github_checkout("https://github.com/acme/widgets");
         let store = SqliteStore::open(fixture.store().path()).unwrap();
@@ -88,7 +91,7 @@ impl Fixture {
         };
         gate.resource_events = events;
         let mut attempt = GateAttempt::new("host-attempt".into(), submission.clone(), AT);
-        attempt.finished_at = Some(AT.into());
+        attempt.finished_at = settled.then(|| AT.into());
         attempt.control_revision = Some(0);
         attempt.verdict = Some("infrastructure-failure".into());
         attempt.executions.push(gate.clone());
@@ -130,7 +133,20 @@ impl Fixture {
             })
             .unwrap();
         let mut subject = store
-            .read(|tx| capture(tx, &candidate, &record.id, &gate.id, "pressure"))
+            .read(|tx| {
+                capture_with_phase(
+                    tx,
+                    &candidate,
+                    &record.id,
+                    &gate.id,
+                    "pressure",
+                    if settled {
+                        CapturePhase::NativeAuthority
+                    } else {
+                        CapturePhase::PendingObservation
+                    },
+                )
+            })
             .unwrap();
         subject.repository_common = root.join(".git");
         Self {
@@ -407,4 +423,197 @@ fn host_restoration_preserves_manual_control_and_tampered_raw_holds() {
                 .held
         );
     }
+}
+
+#[test]
+fn native_host_pause_fences_other_project_queue_and_cached_direct_admission() {
+    use crate::service::project_recovery::{ProjectRecoveryService, RepairAdmission, RepairInput};
+    let f = Fixture::new();
+    let other = ProjectId::new(f.fixture.add_project("another-project", "OTHER").get());
+    let other_ctx = Ctx::new(
+        &f.store,
+        other,
+        f.fixture.cwd(),
+        Environment::at(f.fixture.cwd()).with_subprocess_patience(),
+    )
+    .no_hooks(true);
+    let stories = StoryService::new(&other_ctx);
+    let story = stories
+        .create(&NewStoryInput {
+            title: "independent cached gate".into(),
+            ..Default::default()
+        })
+        .unwrap()
+        .id;
+    stories
+        .set_state(&story, "verifying", None, None, None)
+        .unwrap();
+    let cached = f
+        .store
+        .read(|tx| crate::service::verification::ordered_candidates_for(tx, other))
+        .unwrap()
+        .pop()
+        .unwrap();
+    let input = RepairInput {
+        base: "a".repeat(40),
+        head: "b".repeat(40),
+        head_tree: "c".repeat(40),
+        tree: "d".repeat(40),
+    };
+    let original = f.ctx();
+    let service = HostRecoveryService::new(&original);
+    let owner = service
+        .enroll(&HostFaultEvidence {
+            live: f.proof(false),
+        })
+        .unwrap();
+    assert!(
+        f.store
+            .read(|tx| crate::service::verification::ordered_candidates_for(tx, other))
+            .unwrap()
+            .is_empty()
+    );
+    let refused = ProjectRecoveryService::new(&other_ctx)
+        .admit_repair(&cached, "cached-before-host-fault", &input)
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("active native host fault"),
+        "{refused}"
+    );
+    service
+        .restore(
+            &owner.id,
+            owner.revision,
+            &HostRestorationEvidence {
+                live: f.proof(true),
+            },
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        f.store
+            .read(|tx| crate::service::verification::ordered_candidates_for(tx, other))
+            .unwrap(),
+        vec![cached.clone()]
+    );
+    assert!(matches!(
+        ProjectRecoveryService::new(&other_ctx)
+            .admit_repair(&cached, "after-native-restoration", &input)
+            .unwrap(),
+        RepairAdmission::Proceed { recovery_id: None }
+    ));
+    let retained = &f.subject.candidate;
+    let number = f.subject.attribution.submission.story_number().unwrap();
+    assert!(
+        f.store
+            .read(
+                |tx| crate::service::project_recovery::requires_certification(
+                    tx,
+                    retained.project,
+                    number
+                )
+            )
+            .unwrap()
+    );
+    f.store
+        .write(|tx| tx.put_verification_enabled(retained.project, false))
+        .unwrap();
+    assert!(
+        f.store
+            .read(|tx| crate::service::verification::ordered_candidates_for(tx, retained.project))
+            .unwrap()
+            .is_empty(),
+        "host readmission entered verification-skipped mode"
+    );
+}
+
+#[test]
+fn pending_native_host_custody_survives_restart_without_granting_owner_authority() {
+    let f = Fixture::with_attempt(false);
+    let ctx = f.ctx();
+    assert!(retain_failed_pressure(&ctx, &f.subject.candidate, "host-attempt").unwrap());
+    let before = f
+        .store
+        .read(|tx| tx.host_recovery_pending(f.subject.candidate.project))
+        .unwrap();
+    assert_eq!(before.len(), 1);
+    assert!(retain_failed_pressure(&ctx, &f.subject.candidate, "host-attempt").unwrap());
+    assert_eq!(
+        f.store
+            .read(|tx| tx.host_recovery_pending(f.subject.candidate.project))
+            .unwrap(),
+        before
+    );
+    assert!(
+        f.store.read(|tx| tx.host_recoveries()).unwrap().is_empty(),
+        "an observation minted global host authority"
+    );
+    let restarted = SqliteStore::open(f.store.path()).unwrap();
+    let waiting = restarted
+        .read(|tx| pending_subjects(tx, f.subject.candidate.project))
+        .unwrap();
+    assert_eq!(waiting.len(), 1);
+    let pending = &waiting[0];
+    assert_eq!(pending.candidate, f.subject.candidate);
+    assert!(
+        restarted
+            .read(|tx| capture(
+                tx,
+                &pending.candidate,
+                &pending.attribution,
+                &pending.execution,
+                &pending.component
+            ))
+            .is_err(),
+        "a live gate admission supplied completed native authority"
+    );
+    restarted
+        .write(|tx| {
+            let mut attempt = tx
+                .gate_attempts(f.subject.candidate.project)?
+                .pop()
+                .unwrap();
+            let previous = attempt.revision;
+            attempt.revision += 1;
+            attempt.finished_at = Some(AT.into());
+            assert!(tx.update_gate_attempt(&attempt, previous)?);
+            Ok(())
+        })
+        .unwrap();
+    let retained = restarted
+        .read(|tx| {
+            capture(
+                tx,
+                &pending.candidate,
+                &pending.attribution,
+                &pending.execution,
+                &pending.component,
+            )
+        })
+        .unwrap();
+    assert_eq!(retained.candidate, f.subject.candidate);
+    assert_eq!(retained.admitted_at, AT);
+    fs::write(
+        &retained.archive.path,
+        "changed after pending custody was retained",
+    )
+    .unwrap();
+    assert!(
+        restarted
+            .read(|tx| capture(
+                tx,
+                &pending.candidate,
+                &pending.attribution,
+                &pending.execution,
+                &pending.component
+            ))
+            .is_err()
+    );
+    assert_eq!(
+        restarted
+            .read(|tx| tx.host_recovery_pending(f.subject.candidate.project))
+            .unwrap(),
+        before,
+        "raw failure erased pending original identity"
+    );
 }

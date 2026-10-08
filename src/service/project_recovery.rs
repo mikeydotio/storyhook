@@ -39,6 +39,7 @@ pub use attempts::{
     RepairAdmission, RepairAttempt, RepairCompletion, RepairInput, RepairRefusal,
     RepairRefusalRecord,
 };
+pub(crate) use authority::label_revision as recovery_label_revision;
 pub(crate) use coordination::{observed_generations, owns_coordination};
 pub use decision::{DecisionInput, DecisionReceipt, JoinRepair, RepairScope, RepairSpec};
 pub use judgment::RepairJudgment;
@@ -51,14 +52,13 @@ pub use prerequisite::{PrerequisiteInput, PrerequisiteReceipt};
 pub(crate) use references::naming;
 pub use refusal::RepairRefusalDisposition;
 pub(crate) use resume::owns_resume;
+pub(crate) use resume::resource_hold as recovery_resource_hold;
 pub(crate) use shared::blocks_admission as shared_blocks_admission;
 pub use shared::{SharedFaultIdentity, SharedReadmission, SharedRecovery};
 pub use status::RecoveryStatus;
 pub(crate) use status::snapshot as status_snapshot;
 pub use work::{WorkDelivery, WorkKind, WorkStatus};
 pub use work_holds::WorkHold;
-pub(crate) use authority::label_revision as recovery_label_revision;
-pub(crate) use resume::resource_hold as recovery_resource_hold;
 
 /// Coordinates project recovery using the selected project's ordinary story transactions.
 pub struct ProjectRecoveryService<'a, S: Store> {
@@ -364,5 +364,6 @@ pub(crate) fn requires_certification(
     let generation = crate::service::verification::verifying_entry(tx, project, story)?
         .map(|(_, generation)| generation);
     Ok(attempts::owner(tx, project, story)?.is_some()
-        || shared::readmit::expected_head(tx, project, story, generation)?.is_some())
+        || shared::readmit::expected_head(tx, project, story, generation)?.is_some()
+        || crate::service::host_recovery::expected_head(tx, project, story, generation)?.is_some())
 }

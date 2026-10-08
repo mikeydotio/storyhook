@@ -1,4 +1,4 @@
-use crate::store::{HostRecovery, StoreError};
+use crate::store::{HostRecovery, HostRecoveryPending, ProjectId, StoreError};
 use rusqlite::{Connection, params};
 pub(super) fn list(conn: &Connection) -> Result<Vec<HostRecovery>, StoreError> {
     if !crate::store::migrate::has_columns(
@@ -53,4 +53,63 @@ pub(super) fn update(
         ));
     }
     Ok(conn.execute("UPDATE host_recoveries SET revision=?1,active=?2,state=?3 WHERE id=?4 AND fault_key=?5 AND revision=?6 AND (active=1 OR ?2=0)",params![record.revision,record.active,record.state.to_string(),record.id,record.fault_key,expected]).map_err(|e|StoreError::from_sqlite(e,"updating host recovery"))?==1)
+}
+
+pub(super) fn pending(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<Vec<HostRecoveryPending>, StoreError> {
+    if !crate::store::migrate::has_columns(
+        conn,
+        "host_recovery_pending",
+        &["id", "project_id", "story_no", "generation", "evidence"],
+    )? {
+        return Ok(Vec::new());
+    }
+    let mut statement = conn.prepare("SELECT id,story_no,generation,evidence FROM host_recovery_pending WHERE project_id=?1 ORDER BY rowid").map_err(|e| StoreError::from_sqlite(e,"reading pending host custody"))?;
+    let rows = statement
+        .query_map([project.get()], |row| {
+            let raw: String = row.get(3)?;
+            let evidence = serde_json::from_str(&raw).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+            Ok(HostRecoveryPending {
+                id: row.get(0)?,
+                project,
+                story: row.get(1)?,
+                generation: row.get(2)?,
+                evidence,
+            })
+        })
+        .map_err(|e| StoreError::from_sqlite(e, "querying pending host custody"))?;
+    rows.collect::<Result<_, _>>()
+        .map_err(|e| StoreError::from_sqlite(e, "decoding pending host custody"))
+}
+pub(super) fn insert_pending(
+    conn: &Connection,
+    record: &HostRecoveryPending,
+) -> Result<(), StoreError> {
+    if record.id.is_empty() || !record.evidence.is_object() {
+        return Err(StoreError::Validation(
+            "pending host custody lacks identity/evidence".into(),
+        ));
+    }
+    if let Some(previous) = pending(conn, record.project)?
+        .iter()
+        .find(|p| p.id == record.id)
+    {
+        return if previous == record {
+            Ok(())
+        } else {
+            Err(StoreError::Validation(
+                "pending host custody cannot be replaced".into(),
+            ))
+        };
+    }
+    conn.execute("INSERT INTO host_recovery_pending(id,project_id,story_no,generation,evidence) VALUES(?1,?2,?3,?4,?5)",params![record.id,record.project.get(),record.story,record.generation,record.evidence.to_string()]).map_err(|e|StoreError::from_sqlite(e,"retaining pending host custody"))?;
+    Ok(())
 }

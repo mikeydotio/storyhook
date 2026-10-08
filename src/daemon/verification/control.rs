@@ -265,23 +265,29 @@ impl VerificationActivity {
                 .prefix;
             let no = crate::store::StoryNo::parse_id(&prefix, &candidate.story_id)
                 .map_err(|_| crate::store::StoreError::NotFound(candidate.story_id.clone()))?;
-            let allowed = crate::service::verification::human::permits(tx, candidate)?
-                && !tx.story_resets(candidate.project)?.contains_key(&no)
-                && tx.engine_reset(candidate.project, no)?.is_none()
-                && !tx
-                    .story_reset(candidate.project, no)?
-                    .is_some_and(|reset| !reset.completed)
-                && !incident.as_ref().is_some_and(|incident| incident.halted)
-                && (tx.verification_enabled(candidate.project)?
-                    || !crate::service::project_recovery::requires_certification(
-                        tx,
-                        candidate.project,
-                        no,
-                    )?
-                    || tx
-                        .landing_intents()?
-                        .iter()
-                        .any(|intent| intent.project == candidate.project && intent.story == no));
+            let settling_owned_effect = reservation == Some(ReservationReason::Cleanup)
+                || tx
+                    .landing_intents()?
+                    .iter()
+                    .any(|intent| intent.project == candidate.project && intent.story == no);
+            let allowed =
+                (settling_owned_effect || !crate::service::host_recovery::blocks_admission(tx)?)
+                    && crate::service::verification::human::permits(tx, candidate)?
+                    && !tx.story_resets(candidate.project)?.contains_key(&no)
+                    && tx.engine_reset(candidate.project, no)?.is_none()
+                    && !tx
+                        .story_reset(candidate.project, no)?
+                        .is_some_and(|reset| !reset.completed)
+                    && !incident.as_ref().is_some_and(|incident| incident.halted)
+                    && (tx.verification_enabled(candidate.project)?
+                        || !crate::service::project_recovery::requires_certification(
+                            tx,
+                            candidate.project,
+                            no,
+                        )?
+                        || tx.landing_intents()?.iter().any(|intent| {
+                            intent.project == candidate.project && intent.story == no
+                        }));
             let retry_origin = incident
                 .filter(|incident| incident_matches(incident, candidate))
                 .map(|incident| VerificationRetryOrigin {

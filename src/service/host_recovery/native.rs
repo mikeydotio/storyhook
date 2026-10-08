@@ -109,6 +109,7 @@ impl Archive {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Subject {
+    pub admitted_at: String,
     pub candidate: VerificationCandidate,
     pub attribution: AttributionRecord,
     pub execution: GateExecution,
@@ -285,6 +286,29 @@ fn capture(
     execution: &str,
     component: &str,
 ) -> Result<Subject, StoreError> {
+    capture_with_phase(
+        tx,
+        candidate,
+        attribution,
+        execution,
+        component,
+        CapturePhase::NativeAuthority,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum CapturePhase {
+    PendingObservation,
+    NativeAuthority,
+}
+fn capture_with_phase(
+    tx: &impl ReadOps,
+    candidate: &VerificationCandidate,
+    attribution: &str,
+    execution: &str,
+    component: &str,
+    phase: CapturePhase,
+) -> Result<Subject, StoreError> {
     let record = tx
         .attributions(candidate.project)?
         .into_iter()
@@ -302,7 +326,7 @@ fn capture(
         .find(|e| e.id == execution)
         .cloned()
         .ok_or_else(|| invalid("original host execution missing"))?;
-    if attempt.finished_at.is_none()
+    if (matches!(phase, CapturePhase::NativeAuthority) && attempt.finished_at.is_none())
         || attempt.elapsed.estimated
         || gate.finished_at.is_none()
         || gate.estimated
@@ -343,6 +367,7 @@ fn capture(
         .story_number()
         .ok_or_else(|| invalid("invalid host subject story"))?;
     let subject = Subject {
+        admitted_at: attempt.admitted_at.clone(),
         candidate: candidate.clone(),
         attribution: record,
         execution: gate,
@@ -360,12 +385,22 @@ fn capture(
     if attempt.control_revision != Some(subject.control) {
         return Err(invalid("host subject control epoch changed"));
     }
-    current(tx, &subject)?;
+    current_with_phase(tx, &subject, phase)?;
+    if matches!(phase, CapturePhase::NativeAuthority) {
+        pending::validate_retained(tx, &subject)?;
+    }
     Ok(subject)
 }
 
 pub(super) fn current(tx: &impl ReadOps, subject: &Subject) -> Result<(), StoreError> {
-    authority(tx, subject)?;
+    current_with_phase(tx, subject, CapturePhase::NativeAuthority)
+}
+fn current_with_phase(
+    tx: &impl ReadOps,
+    subject: &Subject,
+    phase: CapturePhase,
+) -> Result<(), StoreError> {
+    authority_with_phase(tx, subject, phase)?;
     if !tx
         .gate_attempts(subject.candidate.project)?
         .iter()
@@ -385,6 +420,13 @@ pub(super) fn current(tx: &impl ReadOps, subject: &Subject) -> Result<(), StoreE
 }
 
 pub(super) fn authority(tx: &impl ReadOps, subject: &Subject) -> Result<(), StoreError> {
+    authority_with_phase(tx, subject, CapturePhase::NativeAuthority)
+}
+fn authority_with_phase(
+    tx: &impl ReadOps,
+    subject: &Subject,
+    phase: CapturePhase,
+) -> Result<(), StoreError> {
     let c = &subject.candidate;
     let story = subject
         .attribution
@@ -410,7 +452,7 @@ pub(super) fn authority(tx: &impl ReadOps, subject: &Subject) -> Result<(), Stor
                 && a.submission == subject.attribution.submission
                 && a.executions.contains(&subject.execution)
                 && a.control_revision == Some(subject.control)
-                && a.finished_at.is_some()
+                && (matches!(phase, CapturePhase::PendingObservation) || a.finished_at.is_some())
                 && !a.elapsed.estimated
         })
     {
@@ -751,3 +793,6 @@ fn invalid(detail: &str) -> StoreError {
 
 #[cfg(test)]
 mod tests;
+
+mod pending;
+pub(crate) use pending::{pending_subjects, retain_failed_pressure};
