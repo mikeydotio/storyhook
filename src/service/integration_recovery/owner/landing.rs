@@ -50,10 +50,6 @@ impl IntegrationLandingClaim {
     pub fn certification(&self) -> &gate::IntegrationCertificationEvidence {
         self.owner.gate.as_ref().expect("landing constructor")
     }
-    /// Exact native owner, checked against the central guard before launch.
-    pub(crate) fn owns_cancellation(&self, cancellation: &Cancellation) -> bool {
-        self.cancellation.same_owner(cancellation)
-    }
     /// The native adapter consumes this latch once after the durable intent.
     /// An error never renews it, even when no child was demonstrably launched.
     pub(crate) fn take_request(&self) -> Result<bool, AppError> {
@@ -76,7 +72,17 @@ impl IntegrationLandingClaim {
         if self.cancellation.is_cancelled() || Instant::now() >= self.deadline {
             return Err(invalid("original managed landing operation expired or cancelled").into());
         }
-        self.native.validate_custody()
+        self.native.validate_custody()?;
+        if self.cancellation.is_cancelled() || Instant::now() >= self.deadline {
+            return Err(invalid(
+                "original managed landing operation expired during custody validation",
+            )
+            .into());
+        }
+        Ok(())
+    }
+    pub(crate) fn operation_lifetime(&self) -> (Instant, &Cancellation) {
+        (self.deadline, &self.cancellation)
     }
 }
 
@@ -349,10 +355,6 @@ impl IntegrationLandingObservation {
     /// The retained exact central certificate to compare with actual landed Git.
     pub fn certification(&self) -> &gate::IntegrationCertificationEvidence {
         self.owner.gate.as_ref().expect("observation constructor")
-    }
-    /// Exact fresh observation owner, separate from the retired merge call.
-    pub(crate) fn owns_cancellation(&self, cancellation: &Cancellation) -> bool {
-        self.cancellation.same_owner(cancellation)
     }
     /// A new bounded read-only observation, never renewal of the old merge call.
     pub fn validate_lifetime(&self) -> Result<(), AppError> {

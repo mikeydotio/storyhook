@@ -44,6 +44,11 @@
       "count": 2,
       "kind": "delegated",
       "reason": "The actuator's configured gate idle bound (VERIFICATION_IDLE_TIMEOUT, 1776 s, in production); tests that need another value set the field."
+    },
+    "production run_captured_owned_quiescent_until(owner.deadline()": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Managed merge control retains the original opaque operation deadline, exact central cancellation and process registration through group settlement; ordinary gate progress supervision remains unchanged."
     }
   },
   "src/daemon/verification/recovery_transport.rs": {
@@ -147,6 +152,11 @@
       "count": 1,
       "kind": "proof",
       "reason": "A zero bound times out at once so the test can prove TERM-then-KILL cleanup."
+    },
+    "test run_captured_owned_quiescent_until(Instant::now()": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Expired native-effect boundary must refuse before spawn or registration; the nonexistent executable cannot run."
     }
   },
   "src/process/activity_tests.rs": {

@@ -349,6 +349,40 @@ pub(crate) fn run_captured_cancellable<G>(
     .map_err(|failure| failure.error)
 }
 
+/// A bounded native effect retains its registration through complete owned
+/// process-group settlement. Both pre-spawn checks and drain spend the same
+/// absolute operation deadline; an authority change cancels rather than renews it.
+pub(crate) fn run_captured_owned_quiescent_until<G>(
+    command: Command,
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+    register: impl FnOnce(u32) -> Result<G, String>,
+) -> Result<Captured, CaptureError> {
+    if cancelled() {
+        return Err(CaptureError::Cancelled);
+    }
+    if Instant::now() >= deadline {
+        return Err(CaptureError::Wait(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "owned effect deadline expired before starting a child",
+        )));
+    }
+    run_captured_until(
+        command,
+        TerminationPolicy::Kill,
+        None,
+        CaptureWait {
+            quiescent: true,
+            private_output: true,
+            ..CaptureWait::default()
+        },
+        Some(&|| Instant::now() >= deadline || cancelled()),
+        register,
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    )
+    .map_err(|failure| failure.error)
+}
+
 /// Runs a command until its append-only journal stops advancing for `timeout`.
 /// Output chatter is deliberately not progress. An unreadable or damaged
 /// journal fails closed with the caller's ordinary process-group cleanup.
@@ -552,6 +586,9 @@ fn run_captured_until<G>(
         .stderr(child_stderr);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    if cancellation.is_some_and(|cancelled| cancelled()) {
+        return Err(CaptureError::Cancelled.into());
+    }
     let mut child = command.spawn().map_err(CaptureError::Spawn)?;
     let pid = child.id();
     let context = format!("child={pid}");
@@ -834,6 +871,65 @@ fn read_capture_up_to(mut file: File, limit: u64) -> (Vec<u8>, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sh871_owned_effect_refuses_expired_deadline_before_spawn_or_registration() {
+        let command = Command::new("storyhook-sh871-must-not-spawn-expired-host-request");
+        let result = run_captured_owned_quiescent_until(
+            command,
+            Instant::now(),
+            &|| false,
+            |_| -> Result<(), String> { panic!("expired effect registered a process") },
+        );
+        assert!(
+            matches!(result,Err(CaptureError::Wait(ref error)) if error.kind()==std::io::ErrorKind::TimedOut)
+        );
+    }
+    #[test]
+    fn sh871_owned_effect_retains_registration_until_surviving_group_is_settled() {
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        let root = storyhook_test_support::scratch_dir();
+        let ready = root.path().join("ready");
+        let pid = AtomicU32::new(0);
+        let registered = AtomicBool::new(false);
+        let observed = AtomicBool::new(false);
+        struct Registration<'a>(&'a AtomicBool);
+        impl Drop for Registration<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+        let mut command = Command::new("sh");
+        command.args(["-c","(printf ready > \"$1\"; sleep 30) & while [ ! -f \"$1\" ]; do sleep 0.01; done; printf '{\"ok\":true}'","fixture"]).arg(&ready);
+        let result = run_captured_owned_quiescent_until(
+            command,
+            Instant::now()
+                + storyhook_test_support::load_grace::graced_now(Duration::from_secs(30)),
+            &|| {
+                let leader = pid.load(Ordering::SeqCst);
+                // A successfully reaped leader must not release registration while
+                // the same process group still contains this effect's child.
+                if leader != 0 && ready.exists() && unsafe { libc::kill(leader as i32, 0) } == -1 {
+                    assert!(registered.load(Ordering::SeqCst));
+                    observed.store(true, Ordering::SeqCst);
+                    true
+                } else {
+                    false
+                }
+            },
+            |leader| {
+                pid.store(leader, Ordering::SeqCst);
+                registered.store(true, Ordering::SeqCst);
+                Ok(Registration(&registered))
+            },
+        );
+        assert!(
+            observed.load(Ordering::SeqCst),
+            "capture returned before observing surviving descendants: {result:?}"
+        );
+        assert!(matches!(result, Err(CaptureError::Cancelled)), "{result:?}");
+        assert!(!registered.load(Ordering::SeqCst));
+    }
 
     #[test]
     fn quiescent_capture_rejects_success_while_descendants_survive_the_deadline() {
