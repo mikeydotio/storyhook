@@ -59,6 +59,16 @@ class PendingChildObservation(Exception):
         super().__init__(f"pending exact child {owner.pid} at {stage}: {error}")
 
 
+class PendingSessionObservation(PendingChildObservation):
+    """Fresh SID membership is known, but no incarnation authority is available."""
+
+    def __init__(self, owner, pid, error):
+        self.owner = owner
+        self.observed_pid = pid
+        Exception.__init__(self,
+                           f"pending session {owner.pid} member {pid} at process: {error}")
+
+
 class PinnedChild:
     """Only this unreaped Popen child can supply a terminal PID witness."""
 
@@ -78,6 +88,12 @@ class PinnedChild:
     def pending(self, stage, error):
         self.pending_count += 1
         raise PendingChildObservation(self, stage, error) from error
+
+    def pending_session(self, pid, error):
+        if self.child.returncode is not None:
+            raise RuntimeError("cannot observe a session after reaping its pin")
+        self.pending_count += 1
+        raise PendingSessionObservation(self, pid, error) from error
 
     def exited(self):
         if self.child.returncode is not None:
@@ -103,7 +119,7 @@ class PinnedChild:
                     pending_count=self.pending_count, observation_errors=self.observation_errors)
 
 
-def failed_member_observation(owner, pid, stage, error):
+def failed_member_observation(owner, pid, stage, error, *, session_matches=False):
     owner.record_error(stage, pid, error)
     if pid == owner.pid:
         try:
@@ -116,6 +132,10 @@ def failed_member_observation(owner, pid, stage, error):
         if error.errno == errno.ESRCH:
             owner.pending(stage, error)
         raise error
+    if stage == "process" and session_matches and error.errno == errno.EPERM:
+        # The positive same-call SID read narrows this to our pinned session,
+        # but grants no incarnation or signal authority. Never omit this row.
+        owner.pending_session(pid, error)
     if isinstance(error, ProcessLookupError):
         return None  # Ordinary non-root disappearance; not a root exit proof.
     raise error
@@ -138,7 +158,7 @@ def session_member(owner, pid):
     try:
         value = native.process(pid, owner.boot)
     except OSError as error:
-        return failed_member_observation(owner, pid, "process", error)
+        return failed_member_observation(owner, pid, "process", error, session_matches=True)
     return value if value["session"] == owner.pid and value["live"] else None
 
 
@@ -394,7 +414,8 @@ class PinnedChildCensus(unittest.TestCase):
                     patch.object(os, "getsid", side_effect=PermissionError(1, "descendant")
                                  if boundary == "getsid" else None, return_value=42), \
                     patch.object(native, "process", side_effect=PermissionError(1, "descendant")):
-                with self.assertRaises(PermissionError):
+                expected = PermissionError if boundary == "getsid" else PendingSessionObservation
+                with self.assertRaises(expected):
                     session_members(self.owner)
 
     def test_wrong_child_witness_cannot_exempt_root(self):
@@ -499,6 +520,91 @@ class PinnedChildCensus(unittest.TestCase):
                 patch.object(native, "pids", return_value=[42]):
             with self.assertRaises(PermissionError):
                 session_members(self.owner)
+
+
+    def test_confirmed_session_denial_discards_partial_census_without_effects(self):
+        live = dict(pid=43, start="fixture:43", boot="fixture-boot", session=42, live=True)
+        with patch.object(os, "waitid", return_value=self.exit), \
+                patch.object(native, "pids", return_value=[42, 43, 44]), \
+                patch.object(os, "getsid", return_value=42), \
+                patch.object(native, "process", side_effect=[live, PermissionError(1, "member")]), \
+                patch.object(os, "kill") as kill, patch.object(time, "sleep") as pause:
+            with self.assertRaises(PendingSessionObservation) as raised:
+                session_members(self.owner)
+            self.assertEqual(raised.exception.observed_pid, 44)
+            self.assertIs(raised.exception.owner, self.owner)
+            self.assertEqual(self.owner.observation_errors[-1]["stage"], "process")
+            self.assertEqual(self.owner.observation_errors[-1]["pid"], 44)
+            retry_pending_observation(self.owner, raised.exception, 5,
+                                      clock=lambda: 4, pause=pause, cancelled=lambda: False)
+            kill.assert_not_called()
+            self.assertIsNone(self.owner.child.returncode)
+            pause.assert_called_once_with(0.01)
+
+    def test_pending_session_recensus_requires_fresh_membership_and_identity(self):
+        for resolved in ("readable", "foreign", "foreign_after_sid", "gone"):
+            with self.subTest(resolved=resolved):
+                owner = PinnedChild(SimpleNamespace(pid=42, returncode=None), "fixture-boot")
+                row = dict(pid=43, start="new-incarnation:43", boot="fixture-boot", session=42, live=True)
+                with patch.object(os, "waitid", return_value=self.exit), \
+                        patch.object(native, "pids", return_value=[42, 43]) as pids, \
+                        patch.object(os, "getsid", return_value=42) as sid, \
+                        patch.object(native, "process", side_effect=PermissionError(1, "member")) as process, \
+                        patch.object(os, "kill") as kill:
+                    with self.assertRaises(PendingSessionObservation):
+                        session_members(owner)
+                    pids.return_value = [42] if resolved == "gone" else [42, 43]
+                    sid.return_value = 99 if resolved == "foreign" else 42
+                    process.reset_mock()
+                    process.side_effect = None
+                    process.return_value = dict(row, session=99) if resolved == "foreign_after_sid" else row
+                    members = session_members(owner)
+                    self.assertEqual(members, [row] if resolved == "readable" else [])
+                    if resolved in ("readable", "foreign_after_sid"):
+                        process.assert_called_once_with(43, "fixture-boot")
+                    else:
+                        process.assert_not_called()
+                    kill.assert_not_called()
+                    self.assertIsNone(owner.child.returncode)
+
+    def test_persistent_session_denial_exhausts_original_budget(self):
+        with patch.object(os, "waitid", return_value=self.exit), \
+                patch.object(native, "pids", return_value=[42, 43]), \
+                patch.object(os, "getsid", return_value=42), \
+                patch.object(native, "process", side_effect=PermissionError(1, "permanent denial")), \
+                patch.object(os, "kill") as kill, patch.object(time, "sleep") as pause:
+            for now in (4, 5):
+                with self.assertRaises(PendingSessionObservation) as raised:
+                    session_members(self.owner)
+                if now == 4:
+                    retry_pending_observation(self.owner, raised.exception, 5,
+                                              clock=lambda: now, pause=pause, cancelled=lambda: False)
+                else:
+                    with self.assertRaisesRegex(FixtureAborted, "lifetime exhausted"):
+                        retry_pending_observation(self.owner, raised.exception, 5,
+                                                  clock=lambda: now, pause=pause, cancelled=lambda: False)
+            self.assertEqual(self.owner.pending_count, 2)
+            pause.assert_called_once_with(0.01)
+            kill.assert_not_called()
+            self.assertIsNone(self.owner.child.returncode)
+
+    def test_unscoped_or_unsupported_session_denials_remain_fatal(self):
+        for stage, error in (("getsid", PermissionError(1, "unknown session")),
+                             ("census", PermissionError(1, "unknown census")),
+                             ("process", PermissionError(13, "unsupported denial")),
+                             ("process", ChildProcessError(10, "ownership failure"))):
+            with self.subTest(stage=stage, errno=error.errno):
+                owner = PinnedChild(SimpleNamespace(pid=42, returncode=None), "fixture-boot")
+                with patch.object(os, "waitid", return_value=self.exit), \
+                        patch.object(native, "pids", side_effect=error if stage == "census" else None,
+                                     return_value=[42, 43]), \
+                        patch.object(os, "getsid", side_effect=error if stage == "getsid" else None,
+                                     return_value=42), \
+                        patch.object(native, "process", side_effect=error):
+                    with self.assertRaises(type(error)):
+                        session_members(owner)
+                    self.assertEqual(owner.pending_count, 0)
+                    self.assertEqual(owner.observation_errors[-1]["stage"], stage)
 
 
 class ManagedLandingRetention(unittest.TestCase):
