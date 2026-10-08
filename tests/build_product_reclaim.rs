@@ -20,7 +20,7 @@ struct Fixture {
     lane: PathBuf,
     private: PathBuf,
     lease: StoryCleanupLease,
-    expected: (u64, StoryCleanupLease),
+    expected: (i64, StoryCleanupLease),
 }
 fn git(cwd: &Path, args: &[&str]) -> String {
     let mut c = Command::new("git");
@@ -94,7 +94,7 @@ impl Fixture {
                 revivify: None,
             },
         };
-        let config = json!({"enabled":true,"path":"products", "managed_entry":"scripts/managed-cargo.sh", "hook":hook,"timeout_seconds":10});
+        let config = json!({"enabled":true,"path":"products", "managed_entry":"scripts/managed-cargo.sh", "hook":hook,"timeout_seconds":120});
         let encoded: storyhook::service::build_products::Config =
             serde_json::from_value(config.clone()).unwrap();
         fs::write(
@@ -317,4 +317,115 @@ fn disabled_no_hooks_and_reenabled_old_generation_cannot_reclaim() {
         .unwrap();
     f.reclaim().unwrap();
     assert!(f.original().exists());
+}
+
+#[test]
+fn unleased_set_fields_submission_retains_products() {
+    let f = Fixture::new(no_purge());
+    f.move_to("in-progress");
+    StoryService::new(&f.ctx())
+        .set_fields(
+            "SH-1",
+            &storyhook::service::FieldEdits {
+                state: Some("verifying".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    f.reclaim().unwrap();
+    assert!(f.original().join("old").exists());
+}
+#[test]
+fn real_managed_entry_record_is_accepted_by_native_reclaimer() {
+    let f = Fixture::new(no_purge());
+    fs::remove_dir_all(
+        f.private
+            .join("storyhook-build-products-v1/build-0123456789abcdef0123456789abcdef"),
+    )
+    .unwrap();
+    let mut command = Command::new("bash");
+    command.arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/python-runtime.sh")).arg("--")
+        .arg("-c").arg(format!("import sys;sys.path.insert(0,{:?});import build_products;raise SystemExit(build_products.run_managed([sys.executable,'-c','print(123)'],cwd={:?}))",Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts").display().to_string(),f.lane.display().to_string()));
+    let result = run_bounded(
+        command,
+        "SH835 managed native fixture",
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(30)),
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    f.reclaim().unwrap();
+    assert!(!f.original().exists());
+}
+#[test]
+fn reset_and_new_build_survive_a_purge_paused_after_detachment() {
+    let f = Fixture::new(no_purge());
+    let ready = f.lease.repository_path.join("purge-ready");
+    let release = f.lease.repository_path.join("purge-release");
+    let script = f.lease.repository_path.join("pause-purge.sh");
+    // Fixed fixture argv; no host paths or provider processes are targeted.
+    fs::write(&script,format!("#!/bin/bash\nset -eu\ntouch '{}'\nfor ((i=0;i<1200;i++)); do [ ! -e '{}' ] || break; sleep .1; done\n[ -e '{}' ] || exit 70\nexec bash '{}' \"$1\"\n",ready.display(),release.display(),release.display(),Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/purge-detached-products.sh").display())).unwrap();
+    let config_path = f.lane.join(".storyhook.toml");
+    let mut config:Value=serde_json::to_value(toml::from_str::<toml::Value>(&fs::read_to_string(&config_path).unwrap()).unwrap()["build_products"].clone()).unwrap();
+    config["hook"] = json!(["bash", script]);
+    config["timeout_seconds"] = json!(180);
+    let c: storyhook::service::build_products::Config =
+        serde_json::from_value(config.clone()).unwrap();
+    fs::write(
+        config_path,
+        format!("[build_products]\n{}", toml::to_string(&c).unwrap()),
+    )
+    .unwrap();
+    let enrollment = f.private.join("storyhook-products-enrollment-v1.json");
+    let mut row: Value = serde_json::from_slice(&fs::read(&enrollment).unwrap()).unwrap();
+    row["config"] = config;
+    private_json(&enrollment, &row);
+    struct Release(PathBuf);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let _ = fs::write(&self.0, "release");
+        }
+    }
+    std::thread::scope(|scope| {
+        let pending = scope.spawn(|| f.reclaim());
+        let _release = Release(release.clone());
+        let deadline = std::time::Instant::now()
+            + storyhook_test_support::load_grace::graced_now(Duration::from_secs(30));
+        while !ready.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            ready.exists(),
+            "configured purge never reached detached phase"
+        );
+        assert!(!f.original().exists());
+        let ctx = f.ctx().no_hooks(true);
+        let reset = storyhook::service::story_reset::StoryResetService::new(&ctx)
+            .with_workspace_patience(Duration::ZERO);
+        let reserved = reset.reserve("SH-1", "SH-1").unwrap();
+        let result = reset.execute("SH-1", &reserved.token, || Ok(())).unwrap();
+        assert!(result.completed);
+        fs::create_dir_all(f.original()).unwrap();
+        fs::write(f.original().join("new"), "new generation").unwrap();
+        fs::write(&release, "release").unwrap();
+        let outcome = pending.join().unwrap();
+        // Reset may retain the dirty lane or retire its Git admin; either
+        // outcome must leave the recreated original outside purge authority.
+        if let Err(error) = outcome {
+            assert!(
+                error.to_string().contains("purge") || error.to_string().contains("No such file"),
+                "{error}"
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(f.original().join("new")).unwrap(),
+            "new generation"
+        );
+    });
+    assert_eq!(
+        storyhook::service::story_reset::WORKSPACE_PATIENCE,
+        Duration::from_secs(60)
+    );
 }

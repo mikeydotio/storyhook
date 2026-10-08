@@ -111,20 +111,39 @@ fn private_file(path: &Path, create: bool) -> Result<File, AppError> {
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, AppError> {
     serde_json::from_reader(private_file(path, false)?).map_err(|e| refusal(&e.to_string()))
 }
-fn publish(path: &Path, value: &impl Serialize) -> Result<(), AppError> {
+fn publish_at(parent: &File, value: &impl Serialize) -> Result<(), AppError> {
     use std::io::Write;
-    let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&temporary)?;
+    use std::os::fd::FromRawFd;
+    let temporary = CString::new(format!(".journal-{}", uuid::Uuid::new_v4())).expect("UUID");
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            temporary.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let mut file = unsafe { File::from_raw_fd(fd) };
     file.write_all(&serde_json::to_vec(value).map_err(|e| refusal(&e.to_string()))?)?;
     file.sync_all()?;
-    fs::rename(temporary, path)?;
-    File::open(path.parent().expect("journal parent"))?.sync_all()?;
+    if unsafe {
+        libc::renameat(
+            parent.as_raw_fd(),
+            temporary.as_ptr(),
+            parent.as_raw_fd(),
+            c"journal.json".as_ptr(),
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    parent.sync_all()?;
     Ok(())
 }
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Enrollment {
@@ -137,7 +156,7 @@ struct Enrollment {
 #[derive(Serialize, Deserialize)]
 struct Journal {
     version: u32,
-    generation: u64,
+    generation: i64,
     lease: StoryCleanupLease,
     directory: Identity,
     product: Identity,
@@ -148,7 +167,7 @@ pub(crate) fn generation(
     tx: &impl ReadOps,
     project: crate::store::ProjectId,
     story: StoryNo,
-) -> Result<Option<(u64, StoryCleanupLease)>, StoreError> {
+) -> Result<Option<(i64, StoryCleanupLease)>, StoreError> {
     if !tx.automations_enabled(project)? {
         return Ok(None);
     }
@@ -181,7 +200,7 @@ pub(crate) fn generation(
 pub fn reclaim_handoff<S: Store>(
     ctx: &Ctx<'_, S>,
     id: &str,
-    expected: (u64, StoryCleanupLease),
+    expected: (i64, StoryCleanupLease),
 ) -> Result<(), AppError> {
     if !ctx.hooks_enabled() {
         return Ok(());
@@ -295,9 +314,12 @@ pub fn reclaim_handoff<S: Store>(
         product,
         state: "prepared".into(),
     };
-    publish(&journal_path, &journal)?;
     let source_parent = open_directory(worktree)?;
     let destination_parent = open_directory(&job)?;
+    if Identity::of(&destination_parent.metadata()?) != journal.directory {
+        return Err(refusal("journal directory changed"));
+    }
+    publish_at(&destination_parent, &journal)?;
     // No external code here. Reset and repair transitions serialize with this
     // exact generation check and atomic rename. Long purge occurs after commit.
     ctx.store().write(|tx| {
@@ -345,9 +367,10 @@ pub fn reclaim_handoff<S: Store>(
         detach().map_err(StoreError::from)
     })?;
     journal.state = "detached".into();
-    publish(&journal_path, &journal)?;
+    publish_at(&destination_parent, &journal)?;
     drop(product_lock);
     drop(_workspace);
+    journal.directory.check(&job)?;
     run_hook(ctx, worktree, &config, &journal_path)
 }
 fn run_hook<S: Store>(
