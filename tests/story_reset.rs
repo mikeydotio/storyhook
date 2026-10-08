@@ -19,3 +19,6 @@ mod quiescent;
 mod residue;
 #[path = "story_reset/workspace.rs"]
 mod workspace;
+
+#[path = "story_reset/preview.rs"]
+mod preview;

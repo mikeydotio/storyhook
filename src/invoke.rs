@@ -703,6 +703,11 @@ fn dispatch_inner<S: Store>(
             comment,
             dry_run,
         } => dispatch_unclaim(ctx, &id, &comment, dry_run),
+        Invocation::ResetPreview { id, caller } => {
+            crate::service::story_reset::StoryResetService::new(ctx)
+                .preview(&id, &caller)
+                .map(|preview| Response::ResetPreview(Box::new(preview)))
+        }
         Invocation::Reset { id, force, caller } => {
             let reset = crate::service::reset::reset_story(ctx, &id, force, &caller)?;
             let mut response = ctx.story_view(&id)?;
@@ -3194,7 +3199,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Next { .. } => "next",
         Invocation::Claim { .. } => "claim",
         Invocation::Unclaim { .. } => "unclaim",
-        Invocation::Reset { .. } => "reset",
+        Invocation::Reset { .. } | Invocation::ResetPreview { .. } => "reset",
         Invocation::SupersedeBlockDeliveries { .. } => "supersede-block-deliveries",
         Invocation::SupersedeContinuations { .. } => "supersede-continuations",
         Invocation::Engine { .. } => "engine",
@@ -4338,6 +4343,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
         | Invocation::Reset { .. }
+        | Invocation::ResetPreview { .. }
         | Invocation::SupersedeBlockDeliveries { .. }
         | Invocation::SupersedeContinuations { .. }
         | Invocation::Engine { .. }
