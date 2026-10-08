@@ -186,7 +186,7 @@ fn same_submission(
     };
     Ok(
         tx.checkout_path(candidate.project)?.as_deref() == Some(candidate.checkout.as_path())
-            && matches!((crate::domain::parse_pr_url(&original.url), crate::domain::parse_pr_url(&current.url)), (Ok(a), Ok(b)) if a == b),
+            && matches!((crate::domain::pr_url::parse_pr_url(&original.url), crate::domain::pr_url::parse_pr_url(&current.url)), (Ok(a), Ok(b)) if a == b),
     )
 }
 
