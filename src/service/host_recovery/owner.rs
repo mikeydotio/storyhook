@@ -359,7 +359,19 @@ pub(crate) fn status_snapshot(
         .ok_or_else(|| invalid("status project missing"))?;
     let attempts = tx.gate_attempts(project);
     for record in tx.host_recoveries()? {
-        let state = match decode(&record) {
+        let state = match decode(&record).and_then(|state| {
+            if state.members.iter().any(|member| {
+                let candidate = &member.subject.candidate;
+                let submission = &member.subject.attribution.submission;
+                !submission.matches_story(candidate.project, &candidate.story_id)
+                    || submission.generation != candidate.verifying_generation
+            }) {
+                return Err(StoreError::Corrupt(
+                    "host status subject project, story or generation differs from retained attribution".into(),
+                ));
+            }
+            Ok(state)
+        }) {
             Ok(state) => state,
             Err(error) => {
                 result.push(HostRecoveryStatus { fault: None, retained_submissions: Vec::new(), id: record.id, phase: "invalid".into(), started_at: None, elapsed_milliseconds: None, submissions: Vec::new(), pauses_admission: true, next_action: format!("Native host owner evidence is invalid; admission remains closed until custody is reconciled: {error}") });

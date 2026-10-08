@@ -860,3 +860,76 @@ fn host_recovery_status_exposes_exact_fault_and_only_selected_project_admissions
         "status mutated retained owners"
     );
 }
+
+#[test]
+fn host_recovery_status_refuses_mixed_candidate_and_attribution_binding() {
+    let f = Fixture::new();
+    let owner = HostRecoveryService::new(&f.ctx())
+        .enroll(&HostFaultEvidence {
+            live: f.proof(false),
+        })
+        .unwrap();
+    let original = f
+        .store
+        .read(|tx| tx.host_recoveries())
+        .unwrap()
+        .into_iter()
+        .find(|r| r.id == owner.id)
+        .unwrap();
+    for field in ["project", "story", "generation"] {
+        let mut subject = f.subject.clone();
+        match field {
+            "project" => {
+                subject.attribution.submission.project =
+                    ProjectId::new(f.subject.candidate.project.get() + 100)
+            }
+            "story" => subject.attribution.submission.story_id = "PRIVATE-999".into(),
+            "generation" => {
+                subject.attribution.submission.generation = Some(GlobalSeq::new(
+                    f.subject.candidate.verifying_generation.unwrap().get() + 1,
+                ))
+            }
+            _ => unreachable!(),
+        }
+        f.store
+            .write(|tx| {
+                let mut record = tx
+                    .host_recoveries()?
+                    .into_iter()
+                    .find(|r| r.id == owner.id)
+                    .unwrap();
+                let expected = record.revision;
+                record.state = original.state.clone();
+                record.state["members"][0]["subject"] = serde_json::to_value(&subject).unwrap();
+                record.revision += 1;
+                assert!(tx.update_host_recovery(&record, expected)?);
+                Ok(())
+            })
+            .unwrap();
+        let before = f.store.read(|tx| tx.host_recoveries()).unwrap();
+        let statuses = f
+            .store
+            .read(|tx| {
+                crate::service::host_recovery::status_snapshot(tx, f.subject.candidate.project)
+            })
+            .unwrap();
+        let status = statuses.iter().find(|s| s.id == owner.id).unwrap();
+        assert_eq!(status.phase, "invalid", "{field}");
+        assert!(
+            status
+                .next_action
+                .contains("subject project, story or generation"),
+            "{field}: {}",
+            status.next_action
+        );
+        assert!(status.fault.is_none());
+        assert!(status.retained_submissions.is_empty());
+        assert!(status.submissions.is_empty());
+        assert!(
+            !serde_json::to_string(status)
+                .unwrap()
+                .contains("PRIVATE-999")
+        );
+        assert_eq!(f.store.read(|tx| tx.host_recoveries()).unwrap(), before);
+    }
+}
