@@ -101,7 +101,7 @@ fn managed_publication_intents_are_ordered_once_and_survive_restart() {
 }
 
 #[test]
-fn managed_publication_rechecks_manual_control_and_original_deadline_before_intent() {
+fn managed_publication_rechecks_manual_control_and_cancellation_before_intent() {
     for cancelled in [false, true] {
         let f = OwnedFixture::new(true);
         let proof = proof(&f);
