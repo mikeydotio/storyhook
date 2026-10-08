@@ -163,15 +163,30 @@ impl OwnedFixture {
     }
 
     fn proof(&self) -> BoundIntegrationProposal {
-        let Inspection::Proposed(proposal) = self.native.inspect() else {
+        self.proof_until(
+            Instant::now()
+                + storyhook_test_support::load_grace::graced_now(Duration::from_secs(30)),
+        )
+    }
+
+    fn proof_until(&self, deadline: Instant) -> BoundIntegrationProposal {
+        let cancellation = Cancellation::default();
+        let Inspection::Proposed(proposal) = inspect(
+            self.native.root.path(),
+            &self.native.base,
+            &self.native.head,
+            deadline,
+            cancellation.clone(),
+        )
+        .unwrap() else {
             panic!("real Git conflict was not smoothable")
         };
         // Only the native metadata adapter is substituted by this in-module fixture;
         // the resolution capability comes from real private Git inspection.
         BoundIntegrationProposal {
             proposal,
-            deadline: Instant::now() + Duration::from_secs(30),
-            cancellation: Cancellation::default(),
+            deadline,
+            cancellation,
             submission: SubmissionObservation {
                 checkout: self.candidate.checkout.clone(),
                 repository: "github.com/acme/widgets".into(),
@@ -597,7 +612,13 @@ fn integration_native_claim_cannot_outlive_proposal_deadline_or_cancellation() {
             1,
             "freshness refusal reset uncertain effect custody"
         );
-        proof.settle().unwrap();
+        if cancelled {
+            assert_cancelled_inspection_cleanup(proof.settle());
+        } else {
+            // This negative case shortens only the outer admission deadline;
+            // native inspection still closes under its original live lifetime.
+            proof.settle().unwrap();
+        }
     }
 }
 
@@ -705,6 +726,22 @@ fn integration_claim_rechecks_cancellation_after_transaction_admission() {
             );
         }
         assert_eq!(normal.show(&record.id).unwrap().0, before);
-        proof.settle().unwrap();
+        assert_cancelled_inspection_cleanup(proof.settle());
     }
+}
+
+// The native implementation emits this only after explicit known-quiescent
+// cleanup succeeds. Cancellation still prevents a successful proof receipt.
+fn assert_cancelled_inspection_cleanup(
+    result: Result<(IntegrationPlan, SubmissionObservation), AppError>,
+) {
+    let error = result
+        .err()
+        .expect("cancelled native inspection returned a proof receipt");
+    assert!(
+        error
+            .to_string()
+            .contains("expired or cancelled after explicit cleanup"),
+        "expected post-cleanup lifetime refusal, got {error}"
+    );
 }

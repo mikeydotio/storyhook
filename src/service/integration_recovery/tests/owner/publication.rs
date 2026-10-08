@@ -59,10 +59,9 @@ impl Drop for FixtureProof {
 }
 
 fn proof(f: &OwnedFixture) -> FixtureProof {
-    let mut proof = f.proof();
-    proof.deadline =
+    let deadline =
         Instant::now() + storyhook_test_support::load_grace::graced_now(Duration::from_secs(90));
-    FixtureProof(Some(proof))
+    FixtureProof(Some(f.proof_until(deadline)))
 }
 
 #[test]
@@ -164,7 +163,11 @@ fn managed_publication_rechecks_manual_control_and_cancellation_before_intent() 
         );
         assert_eq!(service.show(claim.id()).unwrap(), before);
         assert!(claim.effects().is_empty());
-        proof.settle().unwrap();
+        if cancelled {
+            assert_cancelled_inspection_cleanup(proof.settle());
+        } else {
+            proof.settle().unwrap();
+        }
     }
 }
 
@@ -218,7 +221,7 @@ fn fresh_native_inspection_cannot_renew_cancelled_publication_operation() {
             .is_err()
     );
     assert_eq!(service.show(claim.id()).unwrap(), before);
-    initial.settle().unwrap();
+    assert_cancelled_inspection_cleanup(initial.settle());
     fresh.settle().unwrap();
 }
 
@@ -1013,10 +1016,8 @@ fn managed_landing_restart_mints_only_fresh_read_only_observation() {
     fresh.cancel();
     assert!(restarted.landing_observation_permitted(&query).is_err());
     assert_eq!(restarted.show(&id).unwrap(), before);
-    assert!(
-        proof.settle().is_err(),
-        "cancelled proof retained its lifetime refusal"
-    );
+    assert!(proof.check_live().is_err());
+    assert_cancelled_inspection_cleanup(proof.settle());
 }
 
 #[test]
@@ -1184,7 +1185,7 @@ fn managed_native_completion_preserves_original_pr_status_after_operator_stop() 
     let path = native.observation_path().to_path_buf();
     native.settle().unwrap();
     assert!(!path.exists());
-    proof.settle().unwrap();
+    assert_cancelled_inspection_cleanup(proof.settle());
 }
 
 #[test]
