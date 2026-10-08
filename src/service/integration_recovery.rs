@@ -19,7 +19,8 @@ use std::{path::Path, time::Instant};
 mod assembly;
 mod owner;
 mod submission;
-pub use assembly::{NativeAssembly, assemble_owned};
+pub use assembly::{AssemblyEvidence, NativeAssembly, assemble_owned};
+pub use owner::publication::{AssembledIntegration, PublicationClaim, PublicationEffect};
 pub use owner::{AssemblyClaim, IntegrationOwner, IntegrationOwnerService, IntegrationPhase};
 pub use submission::{
     BoundInspection, BoundIntegrationProposal, SubmissionObservation, inspect_submission,

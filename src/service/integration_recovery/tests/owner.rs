@@ -1,4 +1,5 @@
 //! Real local Git proposals and durable store boundaries; no remote effects.
+mod publication;
 use super::*;
 use crate::{
     env::Environment,

@@ -17,7 +17,7 @@ use crate::{
     },
     store::Store,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
@@ -33,7 +33,8 @@ const STAMP: &str = "storyhook-assembly.json";
 const ANSWER_LIMIT: u64 = 8 * 1024 * 1024;
 
 /// Observable filesystem identity; serializing it cannot acquire custody.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssemblyPathIdentity {
     /// Exact original path.
     pub path: PathBuf,
@@ -44,7 +45,8 @@ pub struct AssemblyPathIdentity {
 }
 
 /// Durable evidence to accompany a later, separately authorized publication.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssemblyEvidence {
     /// Evidence format, not an authority envelope.
     pub version: u8,

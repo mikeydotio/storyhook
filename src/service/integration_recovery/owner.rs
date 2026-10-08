@@ -11,6 +11,8 @@ use crate::{
     },
 };
 
+pub(super) mod publication;
+
 /// An integration phase never borrows a batch's identity or authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -19,6 +21,10 @@ pub enum IntegrationPhase {
     Reserved,
     /// Assembly is durably owned; restart must reconcile it before replay.
     Assembling,
+    /// Native assembly is recorded; its live custody is still required.
+    Assembled,
+    /// Remote effects are owned separately and may be uncertain after restart.
+    Publishing,
     /// Authority, semantic ambiguity, or uncertain effects require reconciliation.
     Held,
 }
@@ -61,6 +67,12 @@ pub struct IntegrationOwner {
     pub effect_started_at: Option<String>,
     /// A concrete held reason; no hold itself releases native resource ownership.
     pub hold: Option<String>,
+    /// Native assembly receipt; deserialization does not restore custody.
+    #[serde(default)]
+    pub assembly: Option<AssemblyEvidence>,
+    /// Ordered one-shot remote effect intents, not success receipts.
+    #[serde(default)]
+    pub publication_effects: Vec<publication::PublicationEffect>,
 }
 
 /// One native assembly claim, minted only by the durable compare-and-swap.
@@ -180,6 +192,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
                 started_at: attempt.admitted_at, reserved_at: now.clone(), updated_at: now.clone(),
                 label_revision: crate::service::project_recovery::recovery_label_revision(tx, candidate.project, story)?,
                 control_revision, phase: IntegrationPhase::Reserved, effect_epoch: 0, effect_started_at: None, hold: None,
+                assembly: None, publication_effects: Vec::new(),
             };
             let record = IntegrationRecovery { id, project: candidate.project, story, generation: candidate.verifying_generation.ok_or_else(|| invalid("submission has no generation"))?, revision: 0, active: true, state: encode(&state)? };
             decode(&record)?;
@@ -342,6 +355,7 @@ pub(super) fn decode(record: &IntegrationRecovery) -> Result<IntegrationOwner, S
         return Err(corrupt());
     }
     state.attribution.validate()?;
+    publication::validate_state(record, &state)?;
     Ok(state)
 }
 
@@ -376,6 +390,11 @@ fn check_candidate(tx: &impl ReadOps, candidate: &VerificationCandidate) -> Resu
         .map_err(|e| invalid(&e.to_string()))?;
     let links = tx.open_pr_links_for_story(candidate.project, story)?;
     if crate::service::host_recovery::blocks_admission(tx)?
+        || crate::service::project_recovery::shared_blocks_admission(
+            tx,
+            candidate.project,
+            Some(story),
+        )?
         || !tx.verification_enabled(candidate.project)?
         || crate::domain::is_reserved(&row.snapshot)
         || !crate::service::automations::permits_generation(
