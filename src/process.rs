@@ -178,11 +178,18 @@ pub(crate) fn run_captured_private_until(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Captured, CaptureError> {
     run_captured_until(
-        command, TerminationPolicy::Kill, None,
-        CaptureWait { private_output: true, ..CaptureWait::default() },
-        Some(cancelled), |_| Ok(()),
+        command,
+        TerminationPolicy::Kill,
+        None,
+        CaptureWait {
+            private_output: true,
+            ..CaptureWait::default()
+        },
+        Some(cancelled),
+        |_| Ok(()),
         || Ok(deadline.saturating_duration_since(Instant::now())),
-    ).map_err(|failure| failure.error)
+    )
+    .map_err(|failure| failure.error)
 }
 
 /// Bounded credential-private capture with a regular-file request, never a pipe
@@ -193,6 +200,15 @@ pub(crate) fn run_captured_private_input_until(
     deadline: Instant,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Captured, CaptureError> {
+    if cancelled() {
+        return Err(CaptureError::Cancelled);
+    }
+    if Instant::now() >= deadline {
+        return Err(CaptureError::Wait(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "private input deadline expired before starting a child",
+        )));
+    }
     run_captured_until(
         command,
         TerminationPolicy::Kill,
@@ -1110,6 +1126,20 @@ mod tests {
         assert!(
             pid_disappears(pid),
             "the grandchild {pid} outlived its group's deadline"
+        );
+    }
+
+    #[test]
+    fn sh871_private_host_request_refuses_expired_deadline_before_spawn() {
+        // A nonexistent executable distinguishes preflight refusal from spawning
+        // and terminating a child after discovering an exhausted budget.
+        let command = Command::new("storyhook-sh871-must-not-spawn-expired-host-request");
+        let failure =
+            run_captured_private_input_until(command, None, Instant::now(), &|| false).unwrap_err();
+        assert!(
+            matches!(failure, CaptureError::Wait(ref error) if error.kind() == std::io::ErrorKind::TimedOut),
+            "{}",
+            failure.detail()
         );
     }
 }

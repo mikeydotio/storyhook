@@ -106,6 +106,13 @@ enum Kind {
 /// classification for "git, run from this module" has not changed. A new
 /// program, or a new file, does.
 const INVENTORY: &[(&str, &str, Kind)] = &[
+    // SH-871 host request deadline preflight: the nonexistent executable must
+    // never reach spawn, so this fixture owns no process on the passing path.
+    (
+        "src/process.rs",
+        "\"storyhook-sh871-must-not-spawn-expired-host-request\"",
+        Kind::Waited,
+    ),
     // Publication preflight fixtures refuse before spawn on an expired or
     // cancelled original operation; this nonexistent program never executes.
     (
