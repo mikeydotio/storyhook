@@ -74,7 +74,7 @@ impl ServiceFixture {
     /// Deadline/cancellation proofs leave the default fixture unchanged.
     #[must_use]
     pub fn with_subprocess_patience(mut self) -> Self {
-        self.env = crate::subprocess_patience(self.env);
+        self.env = crate::subprocess_patience(self.env.clone());
         self
     }
 
