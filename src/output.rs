@@ -979,6 +979,8 @@ pub enum Response {
     EngineRun(Box<EngineRunView>),
     /// Internal cleanup authorization; reading it performs no mutation.
     EngineReset(Box<crate::store::EngineReset>),
+    /// Read-only native reset plan.
+    ResetPreview(Box<crate::service::story_reset::ResetPreview>),
     /// Result of `story cleanup`.
     Cleanup(Box<CleanupReport>),
     /// Read-only story resource identity and refusal evidence.
@@ -1353,6 +1355,9 @@ fn render_json(response: &Response) -> String {
             "result": "ok",
             "run": run,
         })),
+        Response::ResetPreview(preview) => serde_json::to_string_pretty(&serde_json::json!({
+            "result": "ok", "dry_run": true, "preview": preview, "message": preview.display()
+        })),
         Response::Resources(report) => {
             serde_json::to_string_pretty(&serde_json::json!({"result":"ok", "resources":report}))
         }
@@ -1704,6 +1709,7 @@ fn render_human(response: &Response) -> String {
             reset.token, reset.run_id, reset.lane_index, reset.lease.story_id
         ),
         Response::EngineRun(run) => render_engine_run(run),
+        Response::ResetPreview(preview) => format!("{}\n", preview.display()),
         Response::Resources(report) => format!(
             "resources {}: {}\n{}\n",
             report.story_id,

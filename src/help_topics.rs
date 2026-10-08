@@ -802,7 +802,7 @@ Related:
 
         m.insert(
             "reset",
-            r#"story reset <id> [--force]
+            r#"story reset <id> [--force] [--dry-run]
 
 The final lever for a wedged story, like git reset --hard. Close the story's
 tmux window, DISCARD its worktree (uncommitted, untracked and locked work
@@ -827,7 +827,17 @@ With --json, the reset field reports the reset this command ran: whether it
 finished, what it removed, what it left in place and why, and the recovery
 record.
 
+--dry-run observes without a reservation, story change, lock, process signal,
+or cleanup. It reports the window, worktree changed/untracked path counts,
+local branch tip and commits on no other branch, tag or remote, awaiting
+reason to clear, and predicted residue. --json puts this under preview.
+Unknown counts are null, not zero. Ignored files are not counted, but removal
+would discard them too. This is a current observation, not permission for a
+later reset: execution rechecks ownership and may leave additional residue.
+An existing unfinished reset is only read; preview does not start or resume it.
+
 Examples:
+  story reset SH-42 --dry-run --json
   story reset SH-42
 "#,
         );

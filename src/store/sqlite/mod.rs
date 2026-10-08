@@ -58,7 +58,7 @@ pub(crate) mod write;
 use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 use std::thread::ThreadId;
 use std::time::Duration;
 
@@ -218,6 +218,10 @@ pub struct SqliteStore {
     config: StoreConfig,
     pool: Mutex<Vec<Connection>>,
     write_lock: Mutex<()>,
+    /// Monotonic observation only: tests must not acquire the writer gate to
+    /// discover whether another thread has attempted SQLite admission.
+    #[cfg(test)]
+    write_admission_attempts: std::sync::atomic::AtomicU64,
     /// The thread holding `write_lock`, if any (SH-838).
     ///
     /// Invariant: this is `Some(t)` exactly while thread `t` holds
@@ -291,6 +295,8 @@ impl SqliteStore {
             config,
             pool: Mutex::new(Vec::new()),
             write_lock: Mutex::new(()),
+            #[cfg(test)]
+            write_admission_attempts: std::sync::atomic::AtomicU64::new(0),
             write_owner: Mutex::new(None),
             change_conn: Mutex::new(Connection::open_in_memory()?),
             access,
@@ -421,6 +427,10 @@ impl SqliteStore {
     /// broken. Propagating the poison would instead turn one panicking request
     /// into a permanently unusable store.
     fn write_guard(&self) -> Result<WriteGuard<'_>, StoreError> {
+        self.write_guard_with_wait(true)
+    }
+
+    fn write_guard_with_wait(&self, wait: bool) -> Result<WriteGuard<'_>, StoreError> {
         // SH-530: the one gate over every write this store can perform. It
         // returns a `Result` rather than consulting `self.access` at each call
         // site precisely so that the compiler, not a reviewer, is what keeps
@@ -438,10 +448,21 @@ impl SqliteStore {
         {
             return Err(StoreError::NestedWrite);
         }
-        let lock = self
-            .write_lock
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let lock = if wait {
+            self.write_lock
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        } else {
+            match self.write_lock.try_lock() {
+                Ok(lock) => lock,
+                Err(TryLockError::Poisoned(error)) => error.into_inner(),
+                Err(TryLockError::WouldBlock) => {
+                    return Err(StoreError::Busy(
+                        "project write admission is occupied".into(),
+                    ));
+                }
+            }
+        };
         *self
             .write_owner
             .lock()
@@ -450,6 +471,34 @@ impl SqliteStore {
             owner: &self.write_owner,
             _lock: lock,
         })
+    }
+
+    fn admitted_write<T>(
+        &self,
+        f: impl FnOnce(&mut SqliteWriteTx<'_>) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        self.explain_corruption((|| {
+            #[cfg(test)]
+            self.write_admission_attempts
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut tx = SqliteWriteTx::begin(self.checkout()?)?;
+            // On the error path `tx` drops here and rolls back — the whole
+            // reason the transaction owns its own teardown rather than relying
+            // on a call to a `rollback` the caller might forget.
+            let value = f(&mut tx)?;
+            tx.commit()?;
+            // Durable but unacknowledged: the point a crash here must not turn
+            // into a false failure that a client retries into a duplicate write.
+            fire(FaultPoint::AfterCommitBeforeAck)?;
+            Ok(value)
+        })())
+    }
+
+    /// Reads a test-only counter without taking any store or SQLite lock.
+    #[cfg(test)]
+    pub(crate) fn write_admission_attempts_for_test(&self) -> u64 {
+        self.write_admission_attempts
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Rewrites a corruption error into a diagnosis and a way back.
@@ -638,6 +687,15 @@ pub struct SqliteReadTx<'a> {
 }
 
 impl<'a> SqliteReadTx<'a> {
+    /// Inspect the connection's effective policy without a wall-clock timeout test.
+    #[cfg(test)]
+    pub(crate) fn busy_timeout_for_test(&self) -> Result<Duration, StoreError> {
+        self.conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
+            .map(Duration::from_millis)
+            .map_err(|error| StoreError::from_sqlite(error, "reading test busy timeout"))
+    }
+
     fn begin(conn: PooledConn<'a>) -> Result<Self, StoreError> {
         conn.execute_batch("BEGIN")
             .map_err(|e| StoreError::from_sqlite(e, "beginning a read"))?;
@@ -794,18 +852,15 @@ impl Store for SqliteStore {
         f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
         let _guard = self.write_guard()?;
-        self.explain_corruption((|| {
-            let mut tx = SqliteWriteTx::begin(self.checkout()?)?;
-            // On the error path `tx` drops here and rolls back — the whole
-            // reason the transaction owns its own teardown rather than relying
-            // on a call to a `rollback` the caller might forget.
-            let value = f(&mut tx)?;
-            tx.commit()?;
-            // Durable but unacknowledged: the point a crash here must not turn
-            // into a false failure that a client retries into a duplicate write.
-            fire(FaultPoint::AfterCommitBeforeAck)?;
-            Ok(value)
-        })())
+        self.admitted_write(f)
+    }
+
+    fn try_write<T>(
+        &self,
+        f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        let _guard = self.write_guard_with_wait(false)?;
+        self.admitted_write(f)
     }
 
     fn migrate(&self) -> Result<MigrationReport, StoreError> {

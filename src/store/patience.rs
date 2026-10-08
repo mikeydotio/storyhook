@@ -13,6 +13,10 @@ use std::time::{Duration, Instant};
 
 use super::StoreError;
 
+/// HTTP write admission shares a budget below the dashboard mutation deadline.
+/// A final SQLite busy wait is bounded separately by the controller.
+pub(crate) const HTTP_WRITE_ADMISSION_PATIENCE: Duration = Duration::from_secs(60);
+
 /// The first pause after contention; later pauses double up to [`MAX_PAUSE`].
 const FIRST_PAUSE: Duration = Duration::from_millis(50);
 

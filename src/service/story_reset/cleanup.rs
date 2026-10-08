@@ -31,14 +31,14 @@ const STEP_PAUSE: Duration = Duration::from_secs(1);
 #[derive(Debug, Default)]
 pub(super) struct Authority {
     /// The repository whose worktree and branch are in scope.
-    repository: Option<PathBuf>,
+    pub(super) repository: Option<PathBuf>,
     /// Remove the registered worktree, including a registration whose
     /// directory is already gone.
-    worktree: bool,
+    pub(super) worktree: bool,
     /// Delete the directory of a worktree that Git no longer registers.
-    orphan_directory: bool,
+    pub(super) orphan_directory: bool,
     /// Delete the local branch.
-    branch: bool,
+    pub(super) branch: bool,
 }
 
 /// Accumulates residue, one entry per resource.
@@ -59,7 +59,11 @@ impl Residue {
     }
 
     /// Marks (or adds) a resource the next dispatch would collide with.
-    fn blocks_dispatch(&mut self, resource: impl Into<String>, reason: impl Into<String>) {
+    pub(super) fn blocks_dispatch(
+        &mut self,
+        resource: impl Into<String>,
+        reason: impl Into<String>,
+    ) {
         let resource = resource.into();
         if let Some(entry) = self.0.iter_mut().find(|entry| entry.resource == resource) {
             entry.blocks_dispatch = true;
@@ -472,6 +476,8 @@ fn installed_artifact_guard(
 }
 
 /// Counts what removal will discard, before anything is removed.
+/// Status cannot refresh the index or start a configured filesystem monitor:
+/// this same observation is used by the read-only reset preview.
 pub(super) fn recovery(report: &ResourceReport, authority: &Authority) -> ResetRecovery {
     let mut record = ResetRecovery::default();
     if let (true, Some(worktree)) = (authority.worktree, &report.worktree)
@@ -836,7 +842,29 @@ pub(super) fn dispatch_overlap(
     env: &crate::env::Environment,
     residue: &mut Residue,
 ) {
-    if let Some(socket) = &report.socket_path {
+    overlap(report, authority, env, residue, false, false);
+}
+
+/// Predicts residue after the proven removals, without performing them.
+pub(super) fn preview_overlap(
+    report: &ResourceReport,
+    authority: &Authority,
+    env: &crate::env::Environment,
+    residue: &mut Residue,
+    window: bool,
+) {
+    overlap(report, authority, env, residue, true, window);
+}
+
+fn overlap(
+    report: &ResourceReport,
+    authority: &Authority,
+    env: &crate::env::Environment,
+    residue: &mut Residue,
+    planned: bool,
+    window: bool,
+) {
+    if !window && let Some(socket) = &report.socket_path {
         let names = BTreeSet::from([report.window_name.clone()]);
         match tmux::panes(env, socket, &names) {
             Ok(panes) if panes.is_empty() => {}
@@ -860,7 +888,9 @@ pub(super) fn dispatch_overlap(
         }
         return;
     };
-    if let Some(worktree) = &report.worktree {
+    if !(planned && (authority.worktree || authority.orphan_directory))
+        && let Some(worktree) = &report.worktree
+    {
         let registered = git::inventory(repository)
             .map(|records| records.iter().any(|record| &record.path == worktree))
             .unwrap_or(true);
@@ -871,7 +901,7 @@ pub(super) fn dispatch_overlap(
     let Some(branch) = &report.branch else {
         return;
     };
-    if git::branch_exists(repository, branch).unwrap_or(true) {
+    if !(planned && authority.branch) && git::branch_exists(repository, branch).unwrap_or(true) {
         residue.blocks_dispatch(branch_resource(branch), "the local branch still exists");
     }
     if let Some(reason) = unmerged_origin_branch(repository, branch) {

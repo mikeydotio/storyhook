@@ -5881,11 +5881,15 @@ cmd_reset() {
   local -a native=(reset "$id")
   [ "$REL_FORCE" = true ] && native+=(--force)
   if [ -n "$DRY_RUN" ]; then
-    jq -n --arg id "$id" --arg cmd "story ${native[*]}" '
-      {
-        ok: true, dry_run: true, id: $id, commands: [$cmd],
-        display: ("[story] DRY RUN reset " + $id + ": would run `" + $cmd + "`, which closes the story window, discards its worktree and local branch, and returns it to todo.")
-      }'
+    local preview
+    preview=$(story_cli "${native[@]}" --dry-run --json) \
+      || fail "story reset $id preview failed: $(printf '%s' "$preview" | jq -r '.error // empty' 2>/dev/null)"
+    printf '%s' "$preview" | jq -e '.result == "ok" and .dry_run == true and
+      (.preview | type == "object") and (.preview.story_id | type == "string") and
+      (.message | type == "string")' >/dev/null \
+      || fail "story reset $id preview did not return a native plan"
+    printf '%s' "$preview" | jq '{ok: true, dry_run: true, id: .preview.story_id,
+      preview: .preview, display: .message}'
     return 0
   fi
   local shown

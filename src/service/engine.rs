@@ -15,6 +15,8 @@ pub(crate) use restoration::reconcile_manual as reconcile_restored_dispatches;
 pub(crate) use dispatch_quiescence::{await_card_reset_dispatch, card_reset_dispatching};
 
 #[cfg(test)]
+mod control_patience_tests;
+#[cfg(test)]
 mod restart_probe_tests;
 #[cfg(test)]
 mod revivify_tests;
@@ -1229,6 +1231,7 @@ pub struct EngineService<'ctx, S: Store, D: Dispatcher> {
     ctx: &'ctx Ctx<'ctx, S>,
     dispatcher: &'ctx D,
     reset_caller: crate::service::reset::ResetCaller,
+    control_deadline: Option<Instant>,
 }
 
 impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
@@ -1238,6 +1241,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             ctx,
             dispatcher,
             reset_caller: Default::default(),
+            control_deadline: None,
         }
     }
 
@@ -1245,6 +1249,52 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     pub fn with_reset_caller(mut self, caller: crate::service::reset::ResetCaller) -> Self {
         self.reset_caller = caller;
         self
+    }
+
+    /// HTTP controls use a private store connection and can meet daemon writes.
+    /// Bound admission retries without replaying a transaction or its effects.
+    pub(crate) fn with_control_deadline(mut self, deadline: Instant) -> Self {
+        self.control_deadline = Some(deadline);
+        self
+    }
+
+    fn control_write<T>(
+        &self,
+        write: impl FnOnce(&mut S::WriteTx<'_>) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        let Some(deadline) = self.control_deadline else {
+            return self.ctx.store().write(write);
+        };
+        let mut write = Some(write);
+        // The outer result controls retries; the inner result is the operation's
+        // answer. Once the closure starts, even Busy is an answer, never a retry.
+        crate::store::patience::patiently(
+            &crate::store::patience::Shutdown::new(),
+            Some(deadline),
+            || {
+                if Instant::now() >= deadline {
+                    return Err(StoreError::Busy(
+                        "engine control write admission deadline elapsed".into(),
+                    ));
+                }
+                let result = self.ctx.store().try_write(|tx| {
+                    // A successful BEGIN can still arrive after the deadline
+                    // after a SQLite busy wait. Local mutex contention is also
+                    // a retryable admission refusal, never an unbounded queue.
+                    // Refuse before consuming the caller's one-shot operation.
+                    if Instant::now() >= deadline {
+                        return Err(StoreError::Busy(
+                            "engine control write admission deadline elapsed".into(),
+                        ));
+                    }
+                    write.take().expect("a transaction is never replayed")(tx)
+                });
+                match result {
+                    Err(error @ StoreError::Busy(_)) if write.is_some() => Err(error),
+                    other => Ok(other),
+                }
+            },
+        )?
     }
 
     /// Starts one run and all of its idle lanes in a single transaction.
@@ -1263,7 +1313,13 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         let project = self.ctx.project();
         let now = self.ctx.now();
         let run_id = uuid::Uuid::new_v4().simple().to_string();
-        let result = self.ctx.store().write(|tx| {
+        let result = self.control_write(|tx| {
+            // Admission may have waited behind a manual-mode change.
+            if !tx.automations_enabled(project)? {
+                return Err(StoreError::from(AppError::Validation(
+                    "Enable project automations before starting Full Auto".into(),
+                )));
+            }
             let project_record = tx
                 .project(project)?
                 .ok_or_else(|| StoreError::NotFound(format!("project {project} does not exist")))?;
@@ -1376,7 +1432,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     ) -> Result<RunView, AppError> {
         let project = self.ctx.project();
         let updated_at = self.ctx.now();
-        self.ctx.store().write(|tx| {
+        self.control_write(|tx| {
             let slug = project_slug(tx, project)?;
             let mut run = run_for_project(tx, &slug, run_id)?;
             require_state(
@@ -1494,7 +1550,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     }
 
     pub fn pause(&self, run_id: &RunId) -> Result<RunView, AppError> {
-        self.transition(run_id, |run, _lanes| {
+        self.transition(run_id, |_tx, run, _lanes| {
             require_state(run, "pause", &[EngineRunState::Running])?;
             run.state = EngineRunState::Paused;
             Ok(())
@@ -1511,7 +1567,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 "Enable project automations before resuming Full Auto".into(),
             ));
         }
-        self.transition(run_id, |run, _lanes| {
+        self.transition(run_id, |tx, run, _lanes| {
+            if !tx.automations_enabled(self.ctx.project())? {
+                return Err(StoreError::from(AppError::Validation(
+                    "Enable project automations before resuming Full Auto".into(),
+                )));
+            }
             require_state(run, "resume", &[EngineRunState::Paused])?;
             run.state = EngineRunState::Running;
             if run.stop_reason.as_deref() == Some("Project automations disabled; resume explicitly")
@@ -1527,7 +1588,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         if now {
             self.stop_now(run_id)
         } else {
-            self.transition(run_id, |run, lanes| {
+            self.transition(run_id, |_tx, run, lanes| {
                 require_state(
                     run,
                     "stop",
@@ -2328,7 +2389,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         // the `run.state == Running` guard is the only place the flip can
         // happen, so this cell is exactly "did this call just do that" (SH-472).
         let just_halted = std::cell::Cell::new(false);
-        let view = self.transition(run_id, |run, _| {
+        let view = self.transition(run_id, |_tx, run, _| {
             if completions > 0 {
                 run.consecutive_hard_stops = 0;
                 run.recent_quarantines.clear();
@@ -2936,16 +2997,20 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     fn transition(
         &self,
         run_id: &RunId,
-        mutate: impl FnOnce(&mut EngineRunRecord, &[EngineLaneRecord]) -> Result<(), StoreError>,
+        mutate: impl FnOnce(
+            &S::WriteTx<'_>,
+            &mut EngineRunRecord,
+            &[EngineLaneRecord],
+        ) -> Result<(), StoreError>,
     ) -> Result<RunView, AppError> {
         let project = self.ctx.project();
         let updated_at = self.ctx.now();
-        self.ctx.store().write(|tx| {
+        self.control_write(|tx| {
             let slug = project_slug(tx, project)?;
             let mut run = run_for_project(tx, &slug, run_id)?;
             let lanes = tx.engine_lanes(run_id)?;
             let before = run.clone();
-            mutate(&mut run, &lanes)?;
+            mutate(tx, &mut run, &lanes)?;
             if run != before {
                 run.updated_at = updated_at;
                 tx.update_engine_run(&run)?;
@@ -2958,7 +3023,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     fn set_acknowledged(&self, run_id: &RunId) -> Result<RunView, AppError> {
         let project = self.ctx.project();
         let at = self.ctx.now();
-        self.ctx.store().write(|tx| {
+        self.control_write(|tx| {
             let slug = project_slug(tx, project)?;
             let mut run = run_for_project(tx, &slug, run_id)?;
             if run.stop_reason.is_none() {

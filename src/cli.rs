@@ -672,8 +672,16 @@ pub enum Invocation {
         caller: crate::service::reset::ResetCaller,
         /// Canonical or project-relative story identifier.
         id: String,
-        /// Explicit permission to discard dirty or locked worktree contents.
+        /// Compatibility flag; reset always discards owned local work.
         force: bool,
+    },
+    /// Read-only reset preview. A separate wire variant ensures an older daemon
+    /// rejects this request rather than ignoring a flag and executing a reset.
+    ResetPreview {
+        /// Canonical or project-relative story identifier.
+        id: String,
+        /// Terminal identity captured by the client.
+        caller: crate::service::reset::ResetCaller,
     },
     /// Revokes unattempted terminal effects before a managed session replacement.
     /// The caller holds workspace exclusion through the replacement itself.
@@ -1049,7 +1057,7 @@ impl Invocation {
                 | ProjectAction::Settings(_) => {}
             },
             Self::Delete { force, .. } => *force = true,
-            Self::Reset { .. } => {}
+            Self::Reset { .. } | Self::ResetPreview { .. } => {}
             // Answers `ConfirmationRequired` too, and until SH-638 was never
             // forced on the re-run: `story archive-state` at a terminal
             // printed its plan twice and archived nothing.
@@ -2009,7 +2017,7 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "reset",
         subcommand: None,
-        flags: &[bare("force")],
+        flags: &[bare("force"), bare("dry-run")],
     },
     VerbFlags {
         verb: "unclaim",
@@ -2614,19 +2622,28 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "reset" => {
             let mut id = None;
             let mut force = false;
+            let mut dry_run = false;
             for arg in &args[1..] {
                 match arg.as_str() {
                     "--force" if !force => force = true,
+                    "--dry-run" if !dry_run => dry_run = true,
                     value if !value.starts_with('-') && id.is_none() => id = Some(value.to_owned()),
-                    _ => return Err(AppError::Usage("usage: story reset <id> [--force]".into())),
+                    _ => {
+                        return Err(AppError::Usage(
+                            "usage: story reset <id> [--force] [--dry-run]".into(),
+                        ));
+                    }
                 }
             }
-            Ok(Invocation::Reset {
-                caller: crate::service::reset::ResetCaller::capture(),
-                id: id
-                    .ok_or_else(|| AppError::Usage("usage: story reset <id> [--force]".into()))?,
-                force,
-            })
+            let id = id.ok_or_else(|| {
+                AppError::Usage("usage: story reset <id> [--force] [--dry-run]".into())
+            })?;
+            let caller = crate::service::reset::ResetCaller::capture();
+            if dry_run {
+                Ok(Invocation::ResetPreview { id, caller })
+            } else {
+                Ok(Invocation::Reset { id, force, caller })
+            }
         }
         "internal" => parse_internal(args),
         "engine" => parse_engine(args),
