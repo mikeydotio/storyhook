@@ -55,7 +55,11 @@ impl Residue {
     }
 
     /// Marks (or adds) a resource the next dispatch would collide with.
-    fn blocks_dispatch(&mut self, resource: impl Into<String>, reason: impl Into<String>) {
+    pub(super) fn blocks_dispatch(
+        &mut self,
+        resource: impl Into<String>,
+        reason: impl Into<String>,
+    ) {
         let resource = resource.into();
         if let Some(entry) = self.0.iter_mut().find(|entry| entry.resource == resource) {
             entry.blocks_dispatch = true;
