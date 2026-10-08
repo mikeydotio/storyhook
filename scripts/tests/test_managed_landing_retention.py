@@ -61,13 +61,17 @@ def session_members(session, boot):
     return found
 
 
-def bounded(args, cwd, env, root, deadline, *, own_session=True, cancel=owner_cancelled):
+def bounded(args, cwd, env, root, deadline, *, own_session=True, cancel_when_exited=None):
     """File capture plus a waitable session leader, including set-m descendants."""
     global CUSTODY_UNCERTAIN
     remaining = min(patience(30, contention()), deadline - time.monotonic())
-    if remaining <= 0 or owner_cancelled() or cancel():
+    if remaining <= 0 or owner_cancelled():
         (root / "preserve").touch()
         raise FixtureAborted("fixture deadline elapsed or owner cancelled before spawn")
+    if own_session and not all(hasattr(os, name) for name in
+                               ("waitid", "P_PID", "WEXITED", "WNOWAIT", "WNOHANG")):
+        (root / "preserve").touch()
+        raise FixtureAborted("Python lacks pinned-child waitid support; no child started")
     deadline = time.monotonic() + remaining
     boot = native.boot_identity() if own_session else None
     with tempfile.TemporaryFile(dir=root) as out, tempfile.TemporaryFile(dir=root) as err:
@@ -82,14 +86,15 @@ def bounded(args, cwd, env, root, deadline, *, own_session=True, cancel=owner_ca
             else:
                 cleanup_deadline = None
                 while True:
-                    if failure is None and (owner_cancelled() or cancel() or time.monotonic() >= deadline):
-                        failure = "fixture command deadline or owner cancellation"
-                        (root / "preserve").touch()
-                        cleanup_deadline = time.monotonic() + patience(5, contention())
                     # WNOWAIT pins the session ID even when macOS can no longer
                     # inspect the exact zombie through proc_pidinfo/getsid.
                     exited = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
                     exited = exited is not None and exited.si_pid == child.pid
+                    detector_cancel = exited and cancel_when_exited is not None and cancel_when_exited(child.pid)
+                    if failure is None and (owner_cancelled() or detector_cancel or time.monotonic() >= deadline):
+                        failure = "fixture command deadline or owner cancellation"
+                        (root / "preserve").touch()
+                        cleanup_deadline = time.monotonic() + patience(5, contention())
                     members = session_members(child.pid, boot)
                     if exited and not members:
                         # A second census AFTER positive direct-root exit proof
@@ -375,15 +380,28 @@ class ManagedLandingRetention(unittest.TestCase):
         marker = self.root / "owned-descendant.json"
         descendant = (
             "import json,os,pathlib,time;"
-            f"pathlib.Path({str(marker)!r}).write_text(json.dumps({{'pid':os.getpid()}}));"
+            f"pathlib.Path({str(marker)!r}).write_text(json.dumps({{'pid':os.getpid(),'session':os.getsid(0)}}));"
             "time.sleep(600)"
         )
         leader = "import subprocess,sys;subprocess.Popen([sys.executable,'-c'," + repr(descendant) + "],process_group=0)"
+        witness = {}
+        def cancel_after_exact_exit(pid):
+            # The helper supplies this direct-child identity only after its own
+            # positive WNOWAIT observation. Independently retain the same proof.
+            observed = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            if marker.exists() and observed is not None and observed.si_pid == pid:
+                witness.update(leader=pid, status=observed.si_status)
+                return True
+            return False
         with self.assertRaisesRegex(FixtureAborted, "owned session settled"):
             bounded([sys.executable, "-c", leader], self.repo, {"PATH": os.environ["PATH"]},
-                    self.root, self.deadline, cancel=marker.exists)
+                    self.root, self.deadline, cancel_when_exited=cancel_after_exact_exit)
         self.assertTrue(marker.exists(), "the detector must observe actual descendant readiness")
-        pid = json.loads(marker.read_text())["pid"]
+        descendant = json.loads(marker.read_text())
+        pid = descendant["pid"]
+        self.assertEqual(witness.get("status"), 0, "cancellation must follow exact successful leader exit")
+        self.assertEqual(witness.get("leader"), descendant["session"])
+        self.assertNotEqual(witness["leader"], pid)
         try:
             value = native.process(pid, native.boot_identity())
         except ProcessLookupError:
