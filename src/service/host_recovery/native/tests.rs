@@ -811,9 +811,33 @@ fn restored_host_status_keeps_history_without_claiming_completed_story_needs_gat
             .len(),
         1
     );
-    StoryService::new(&ctx)
+    let history = f.store.read(|tx| tx.host_recoveries()).unwrap();
+    let stories = StoryService::new(&ctx);
+    // Restoring the host did not certify this submission. This status fixture
+    // models an explicit human completion, not a fabricated central GREEN.
+    let refused = stories
         .set_state(&f.subject.candidate.story_id, "done", None, None, None)
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("requires a reason"),
+        "{refused}"
+    );
+    let reason = "status fixture: explicit manual completion after host restoration; no gate result inferred";
+    let completed = stories
+        .set_state(
+            &f.subject.candidate.story_id,
+            "done",
+            Some(reason),
+            Some("verifying"),
+            None,
+        )
         .unwrap();
+    assert_eq!(completed.state, "done");
+    assert!(completed.comments.iter().any(|comment| comment.text
+        == format!(
+            "{} {reason}",
+            crate::service::VERIFICATION_OVERRIDDEN_PREFIX
+        )));
     assert!(
         f.store
             .read(|tx| crate::service::host_recovery::status_snapshot(
@@ -824,9 +848,9 @@ fn restored_host_status_keeps_history_without_claiming_completed_story_needs_gat
             .is_empty()
     );
     assert_eq!(
-        f.store.read(|tx| tx.host_recoveries()).unwrap().len(),
-        1,
-        "status projection erased recovery history"
+        f.store.read(|tx| tx.host_recoveries()).unwrap(),
+        history,
+        "manual completion or status projection changed retained recovery history"
     );
 }
 
