@@ -36,9 +36,15 @@ impl Drop for FixtureOwner {
 
 #[test]
 fn managed_landing_retains_owned_branch_and_preserves_ordinary_protected_flow() {
+    // The resolver execs the pinned supported interpreter, preserving this
+    // child's owner pipe. PATH may otherwise select Apple's older Python.
     let mut child = ChildGuard::spawn_with_output(
-        Command::new("python3")
-            .arg("-B")
+        Command::new("/bin/bash")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/scripts/python-runtime.sh"
+            ))
+            .args(["--", "python3", "-B"])
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/scripts/tests/test_managed_landing_retention.py"
