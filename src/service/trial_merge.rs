@@ -152,12 +152,12 @@ impl PrivateTrialMerger {
         cancellation: Cancellation,
     ) -> Result<Self, AppError> {
         Ok(Self {
-            objects: PrivateObjects::open_controlled(
+            objects: PrivateObjects::open_native(
                 checkout,
                 LABEL,
                 "storyhook-trial-merge-",
-                Some(deadline),
-                &|| cancellation.is_cancelled(),
+                deadline,
+                cancellation.clone(),
             )?,
             deadline: Some(deadline),
             cancellation: Some(cancellation),

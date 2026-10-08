@@ -376,3 +376,65 @@ fn sh871_clean_evidence_rejects_unknown_wire_authority() {
     wire["certified"] = serde_json::json!(true);
     assert!(serde_json::from_value::<CleanIntegrationEvidence>(wire).is_err());
 }
+
+#[test]
+fn sh871_clean_and_first_inspection_ignore_source_policy_blob_replacements() {
+    let disabled = POINTER.replace("enabled = true", "enabled = false");
+    let fixture = Fixture::new(&disabled, false);
+    let checkout = &fixture.submission.checkout;
+    let original = git(
+        checkout,
+        &[
+            "rev-parse",
+            &format!("{}:.storyhook.toml", fixture.submission.base),
+        ],
+    );
+    fs::write(checkout.join("enabled-policy-fixture"), POINTER).unwrap();
+    let replacement = git(
+        checkout,
+        &["hash-object", "-w", "--", "enabled-policy-fixture"],
+    );
+    git(checkout, &["replace", &original, &replacement]);
+    // Positive control proves the source namespace really substitutes enabled
+    // bytes. Both SH-871 entry points must still read the disabled pinned blob.
+    assert_eq!(
+        git(checkout, &["cat-file", "blob", &original]),
+        POINTER.trim()
+    );
+    let before = snapshot(checkout);
+    assert!(
+        fixture
+            .observe()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("disabled in the pinned base")
+    );
+    let first = crate::service::integration_recovery::inspect(
+        checkout,
+        &fixture.submission.base,
+        &fixture.submission.head,
+        deadline(),
+        Cancellation::default(),
+    )
+    .unwrap();
+    assert!(
+        matches!(first, crate::service::integration_recovery::Inspection::Held { reason }
+        if reason.contains("disabled in the pinned base"))
+    );
+    assert_eq!(snapshot(checkout), before);
+}
+
+#[test]
+fn sh871_clean_private_administration_does_not_inherit_source_grafts() {
+    let fixture = Fixture::new(POINTER, false);
+    fs::write(
+        fixture.submission.checkout.join(".git/info/grafts"),
+        format!("{}\n", fixture.submission.head),
+    )
+    .unwrap();
+    let before = snapshot(&fixture.submission.checkout);
+    let proof = fixture.observe().unwrap();
+    assert_eq!(proof.evidence().tree, fixture.expected_tree);
+    assert_eq!(snapshot(&fixture.submission.checkout), before);
+}
