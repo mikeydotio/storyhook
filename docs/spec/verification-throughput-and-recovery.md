@@ -517,6 +517,77 @@ host faults, overload, conflicts, new detectors, mixed failures, budget
 exhaustion, restart and stale authority. Historical diagnoses are provenance,
 not causal proof; keep provisional findings provisional.
 
+## SH-871 retained submissions and managed integration
+
+Shared recovery keeps the original Verifying generation and submitted head.
+A native shared-failure proof groups matching project faults by retained causal
+inputs, while distinct fault identities remain distinct. Explicit coordination
+can assign one repair owner to several faults; followers do not gain another
+delivery or diagnosis budget. Every active fault must permit the exact repair
+lineage before it can pass admission or delivery. Raw evidence, generation,
+resource custody and current controls are rechecked at effect boundaries.
+Certified repair landing or the existing explicit prerequisite receipt can
+release its own holds. Manual Done, a green unrelated run, and serialized
+assessment text cannot. Fresh ordinary gates retain the original head constraint
+and require certification; unresolved components remain held.
+
+Host recovery is a separate native boundary. The broker supplies an exact
+causal fault receipt tied to authority, host, boot, policy, lease and physical
+execution. Enrollment can hold work during continuing pressure, but cannot
+release it. Restoration additionally requires completed native hysteresis,
+a fresh healthy sample and settled affected descendants. The client checks
+kernel peer and private endpoint identity, nonce and measured policy; the Rust
+consumer rechecks freshness and original failure custody. Saved JSON and
+historical pressure events cannot recreate either capability. This supports
+observation of pressure restoration, not arbitrary host repair commands or
+credential/security configuration changes. Production host policy is not
+installed or enabled by this feature.
+
+Single-submission conflict smoothing requires its own committed base policy:
+`[integration]`, `version = 1`, `enabled = true`,
+`publication = "managed-pr"`, and a nonempty `smooth` allowlist. It defaults to
+disabled and does not inherit `[batch]` permission. Only deterministic pure
+insertions in supported `.md`, `.txt`, `.rst` and `.gitignore` paths qualify;
+code, binary content and semantic choices remain held even if allowlisted.
+The managed commit preserves both pinned parents and the author's original PR
+head. Its unique branch and distinct PR incur real publication, verification,
+landing and cleanup work; they are not an edit to the author's submission.
+
+One central verifier slot owns native inspection, private assembly, protected
+publication, the physical central gate, one-shot protected merge and resource
+settlement. Each native control operation has its own immutable absolute
+deadline and cancellation identity. Preflight expiry cannot be renewed inside
+that operation. Once the actual gate runs, existing progress/idle supervision
+applies rather than a new total gate deadline. Normal identity and pre-push
+hooks remain enforced. A hook refusal or uncertain external result retains
+its phase and diagnostic; it does not authorize a transport workaround or
+replay. Default-disabled source support does not activate production controls.
+
+A successful helper response is not completion authority. Fresh native
+observation must prove the managed PR actually merged, its exact certified
+merge tree, both retained heads' ancestry and reachability from the current
+target branch. Dedicated completion records the original submitted work as
+landed without inventing an original-PR merged event. The strict managed landing
+format is rejected by older ordinary landing readers. After restart only a
+fresh read-only observation can resolve an existing managed merge intent;
+historical paths and serialized claims never recreate mutation custody.
+
+Private cleanup consumes original live filesystem ownership only after effect
+drain. Uncertainty retains named residue; post-completion cleanup diagnostics
+do not extend the completed submission's elapsed time or reactivate effects.
+Managed remote branches are retained by the bundled merge path. Server-side
+auto-deletion may still occur. Branch absence, an unchanged tip, a moved tip or
+an unreadable ref is merely a separate resource observation, never proof of
+landing. The current protected transport has no approved atomic exact-tip
+delete primitive; no force option or hook override is inferred.
+
+Interrupted intermediate assembly/publication/gate ownership remains held
+without replay until its exact custody can be reconciled. A conflict that has
+become clean still needs a fresh ordinary-readmission proof; clean-looking
+metadata alone cannot discard the original diagnostic. These conservative
+holds must remain visible rather than being silently closed or assigned back
+to the author as a new generation.
+
 ## SH-868 host admission contract
 
 The host authority is a cooperative resource scheduler, separate from the
