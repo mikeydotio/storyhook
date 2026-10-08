@@ -229,6 +229,9 @@ impl NativeObjects {
         // internal termination may have succeeded; no AppError guesses custody.
         self.uncertain.set(false);
         self.validate().map_err(|e| self.retained(e))?;
+        if cancelled() || Instant::now() >= deadline {
+            return Err(self.retained("native inspection expired or cancelled after capture"));
+        }
         if result.stdout_truncated
             || (!result.status.success()
                 && !result
