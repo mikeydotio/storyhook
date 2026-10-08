@@ -143,11 +143,13 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
         }
         let now = self.ctx.now();
         self.ctx.write_stories(|tx| {
+            proof.check_live().map_err(StoreError::from)?;
             let prefix = crate::service::project_prefix(tx, candidate.project)?;
             let story = StoryNo::parse_id(&prefix, &candidate.story_id)?;
             for record in tx.integration_recoveries(candidate.project)?.into_iter().filter(|record| record.active && record.story == story) {
                 let state = decode(&record)?;
                 if state.candidate == *candidate && state.attribution.id == attribution && state.component == component && state.plan == *proof.plan() && state.submission == *proof.submission() {
+                    proof.check_live().map_err(StoreError::from)?;
                     return Ok(record);
                 }
                 return Err(invalid("the original story already has an integration owner; reconcile it before replacing source"));
@@ -186,6 +188,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
             let states = tx.state_map(candidate.project)?;
             append_and_fold(tx, candidate.project, story, &prefix, &states, ExpectedSeq::Exact(row.head_seq),
                 &[StoryEvent::StoryCommentAdded { at: now.clone(), text: format!("INTEGRATION RECOVERY {}: retain this Verifying submission and original head {}. A separately managed integration branch/PR owns the deterministic non-code proposal; publication and exact-tree certification are still required. No author resubmission or branch rewrite is authorized.", record.id, state.plan.head) }], self.ctx.provenance())?;
+            proof.check_live().map_err(StoreError::from)?;
             Ok(record)
         }).map_err(Into::into)
     }
@@ -211,6 +214,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
         self.ctx
             .store()
             .write(|tx| {
+                proof.check_live().map_err(StoreError::from)?;
                 let (mut record, mut state) = find(tx, self.ctx.project(), id)?;
                 if !record.active
                     || record.revision != expected
@@ -228,6 +232,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
                 state.effect_started_at = Some(now.clone());
                 state.updated_at = now.clone();
                 save(tx, &mut record, &state)?;
+                proof.check_live().map_err(StoreError::from)?;
                 Ok(Some(AssemblyClaim {
                     record,
                     owner: state,
@@ -250,6 +255,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
         self.ctx
             .store()
             .read(|tx| {
+                proof.check_live().map_err(StoreError::from)?;
                 let (record, state) = find(tx, self.ctx.project(), claim.id())?;
                 if record != claim.record
                     || state != claim.owner
@@ -259,6 +265,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
                 }
                 check_authority(tx, &record, &state, proof)?;
                 settled_attempt(tx, &state)?;
+                proof.check_live().map_err(StoreError::from)?;
                 Ok(true)
             })
             .map_err(Into::into)

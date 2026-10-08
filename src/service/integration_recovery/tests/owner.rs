@@ -456,3 +456,111 @@ fn integration_native_claim_cannot_outlive_proposal_deadline_or_cancellation() {
         proof.settle().unwrap();
     }
 }
+
+// Cancel after a real transaction begins, before handing it to the operation.
+// No wall-clock sleep or thread scheduling assumption is involved.
+struct CancelAtAdmission {
+    inner: SqliteStore,
+    cancellation: Cancellation,
+}
+impl Store for CancelAtAdmission {
+    fn access(&self) -> crate::store::Access {
+        self.inner.access()
+    }
+    type ReadTx<'a> = <SqliteStore as Store>::ReadTx<'a>;
+    type WriteTx<'a> = <SqliteStore as Store>::WriteTx<'a>;
+    fn read<T>(
+        &self,
+        f: impl FnOnce(&Self::ReadTx<'_>) -> Result<T, crate::store::StoreError>,
+    ) -> Result<T, crate::store::StoreError> {
+        self.inner.read(|tx| {
+            self.cancellation.cancel();
+            f(tx)
+        })
+    }
+    fn write<T>(
+        &self,
+        f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, crate::store::StoreError>,
+    ) -> Result<T, crate::store::StoreError> {
+        self.inner.write(|tx| {
+            self.cancellation.cancel();
+            f(tx)
+        })
+    }
+    fn try_write<T>(
+        &self,
+        f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, crate::store::StoreError>,
+    ) -> Result<T, crate::store::StoreError> {
+        self.inner.try_write(|tx| {
+            self.cancellation.cancel();
+            f(tx)
+        })
+    }
+    fn migrate(&self) -> Result<crate::store::MigrationReport, crate::store::StoreError> {
+        self.inner.migrate()
+    }
+    fn change_token(&self) -> Result<u64, crate::store::StoreError> {
+        self.inner.change_token()
+    }
+    fn snapshot(
+        &self,
+        dir: &Path,
+        label: &str,
+    ) -> Result<std::path::PathBuf, crate::store::StoreError> {
+        self.inner.snapshot(dir, label)
+    }
+    fn write_with_snapshot<T>(
+        &self,
+        dir: &Path,
+        label: &str,
+        f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, crate::store::StoreError>,
+    ) -> Result<crate::store::WriteWithSnapshot<T>, crate::store::StoreError> {
+        self.inner.write_with_snapshot(dir, label, |tx| {
+            self.cancellation.cancel();
+            f(tx)
+        })
+    }
+}
+
+#[test]
+fn integration_claim_rechecks_cancellation_after_transaction_admission() {
+    for effect in [false, true] {
+        let f = OwnedFixture::new(true);
+        let proof = f.proof();
+        let record = f.reserve(&proof);
+        let normal_ctx = f.ctx();
+        let normal = IntegrationOwnerService::new(&normal_ctx);
+        let claim = if effect {
+            normal.claim_assembly(&record.id, 0, &proof).unwrap()
+        } else {
+            None
+        };
+        let before = normal.show(&record.id).unwrap().0;
+        let interrupted = CancelAtAdmission {
+            inner: SqliteStore::open(f.store.path()).unwrap(),
+            cancellation: proof.cancellation.clone(),
+        };
+        let ctx = Ctx::new(
+            &interrupted,
+            f.candidate.project,
+            f.native.root.path(),
+            Environment::at(f.fixture.cwd()),
+        )
+        .no_hooks(true);
+        let service = IntegrationOwnerService::new(&ctx);
+        assert!(!proof.cancellation.is_cancelled());
+        if let Some(claim) = claim {
+            assert!(
+                service.assembly_permitted(&claim, &proof).is_err(),
+                "read admission renewed a cancelled effect capability"
+            );
+        } else {
+            assert!(
+                service.claim_assembly(&record.id, 0, &proof).is_err(),
+                "write admission minted a cancelled claim"
+            );
+        }
+        assert_eq!(normal.show(&record.id).unwrap().0, before);
+        proof.settle().unwrap();
+    }
+}
