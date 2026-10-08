@@ -10783,7 +10783,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     cancelAnimationFrame(drag.frame);
     drag.card.classList.remove("dragging");
     if (drag.column) drag.column.classList.remove("drag-over");
-    if (drag.preview) drag.preview.remove();
+    if (drag.preview) detach(drag.preview);
     if (drag.active) touchClickGuard = { id: drag.id, repo: drag.repo, until: Date.now() + 800 };
   }
 
@@ -10898,7 +10898,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }, true);
     window.addEventListener("blur", cancelTouchDrag);
     document.addEventListener("visibilitychange", function() { if (document.hidden) cancelTouchDrag(); });
-    document.addEventListener("keydown", function(e) { if (e.key === "Escape") cancelTouchDrag(); });
+    bindTypedKeys(document, function(e) { if (e.key === "Escape") cancelTouchDrag(); });
   }
 
   function bindColumnDrop(column, targetSlug, isClosed) {
