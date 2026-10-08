@@ -3,7 +3,7 @@
 //! Keep those operations under the prefix they accepted. Both preview and the
 //! final rename call this inside their existing transaction; a preview is not
 //! permission to rename after another writer has admitted an owner.
-use crate::store::{EngineRunState, ProjectRecord, ReadOps, StoreError, StoryQuery};
+use crate::store::{EngineRunState, ProjectRecord, ReadOps, StoreError, StoryQuery, StoryRow};
 
 pub(super) fn require_quiescent(
     tx: &impl ReadOps,
@@ -57,6 +57,9 @@ pub(super) fn require_quiescent(
         }
     }
     for row in tx.stories(project.id, &StoryQuery::all())? {
+        if let Some(owner) = verification_owner(tx, project, &row)? {
+            return Err(refuse(owner));
+        }
         if let Some(reset) = tx.story_reset(project.id, row.story_no)?
             && !reset.completed
         {
@@ -113,4 +116,51 @@ pub(super) fn require_quiescent(
         }
     }
     Ok(())
+}
+
+/// A held queue is still a handoff. Returned repair work and unreaped closed
+/// generations also retain the minted lease; execution eligibility is not release.
+fn verification_owner(
+    tx: &impl ReadOps,
+    project: &ProjectRecord,
+    row: &StoryRow,
+) -> Result<Option<String>, StoreError> {
+    use crate::domain::{StoryEvent, SuperState};
+    use crate::service::{ReapMarker, VERIFYING_STATE, latest_generation};
+    let events = tx.events_for(project.id, row.story_no)?;
+    let Some(generation) = latest_generation(&events) else {
+        return Ok(None);
+    };
+    let Some(lease) = generation.lease else {
+        return Ok(None);
+    };
+    let submitted = events
+        .iter()
+        .rev()
+        .find(|event| {
+            matches!(event.known(), Some(StoryEvent::StoryStateChanged { state, .. })
+            if state == VERIFYING_STATE)
+        })
+        .expect("latest_generation requires a verifying transition")
+        .global_seq;
+    let retired = generation.reap_marker == Some(ReapMarker::Complete)
+        || tx
+            .closure_cleanup(project.id, row.story_no)?
+            .is_some_and(|cleanup| {
+                cleanup.completed
+                    && cleanup.generation > submitted
+                    && cleanup.lease.as_ref() == Some(&lease)
+            });
+    // A current Verifying candidate consumes its lease even if a reap marker
+    // was manually added. Other states retain only repair or cleanup authority;
+    // Todo after a finished reset is no longer a verifier handoff.
+    let owns = row.state == VERIFYING_STATE
+        || (!retired && (row.state == "in-progress" || row.superstate == SuperState::Closed));
+    Ok(owns.then(|| {
+        format!(
+            "verification generation `{submitted}` retains cleanup lease for `{}` ({})",
+            lease.story_id,
+            lease.worktree_path.display()
+        )
+    }))
 }

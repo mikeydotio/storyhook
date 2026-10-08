@@ -38,3 +38,13 @@ evidence keyed by numeric story/generation; they do not grant execution authorit
 
 The guard neither stops runs nor retires owners. It performs no resource cleanup,
 changes no automation policy, and grants no broader reset or landing authority.
+
+Single-story verification handoffs also own their minted cleanup lease without
+an engine run, batch or landing intent. A current leased Verifying generation
+blocks rename even when the queue is held or stopped. Unreaped In Progress
+repair/publication work and closed leased generations remain owners too. The
+latest generation's cleanup-complete marker or a completed, newer closure
+receipt for the exact same lease retires historical cleanup authority; an older
+generation's marker cannot release a new submission. A current Verifying
+submission still blocks even if a cleanup marker was manually added. Todo after
+a finished reset carries history, rather than a current verifier handoff.

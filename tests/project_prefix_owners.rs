@@ -546,3 +546,209 @@ fn sh853_attempting_delivery_blocks_but_pending_numeric_delivery_allows_rename()
         );
     }
 }
+
+fn leased_submission(f: &ServiceFixture) -> (String, storyhook::domain::StoryCleanupLease) {
+    let id = story(f, "todo");
+    StoryService::new(&f.ctx().no_hooks(true))
+        .set_state(&id, "verifying", None, None, None)
+        .unwrap();
+    let worktree = f.cwd().join("leased-workspace");
+    std::fs::create_dir_all(&worktree).unwrap();
+    std::fs::write(worktree.join("preserved.txt"), "unpublished work").unwrap();
+    let lease = storyhook::domain::StoryCleanupLease {
+        version: storyhook::domain::CLEANUP_LEASE_VERSION,
+        project_slug: "fixture".into(),
+        story_id: id.clone(),
+        repository_path: f.cwd().into(),
+        worktree_path: worktree,
+        branch: format!("worktree-{id}"),
+        tmux: storyhook::domain::TmuxCleanupTarget {
+            revivify: None,
+            socket_path: f.cwd().join("leased-socket"),
+        },
+    };
+    f.append_cleanup_lease(&id, lease.clone());
+    (id, lease)
+}
+
+#[test]
+fn sh853_standalone_leased_handoff_blocks_rename_even_when_held_or_stopped() {
+    for mode in ["queued", "held", "stopped", "returned-repair"] {
+        let f = ServiceFixture::new();
+        let (id, lease) = leased_submission(&f);
+        let ctx = f.ctx().no_hooks(true);
+        let service = StoryService::new(&ctx);
+        match mode {
+            "held" => {
+                service.set_awaiting(&id, "operator review").unwrap();
+            }
+            "stopped" => {
+                f.store()
+                    .write(|tx| tx.put_verification_enabled(f.project(), false))
+                    .unwrap();
+            }
+            "returned-repair" => {
+                service
+                    .set_state(&id, "in-progress", None, None, None)
+                    .unwrap();
+            }
+            _ => {}
+        }
+        let events = f
+            .store()
+            .read(|tx| tx.events_for(f.project(), StoryNo::new(1)))
+            .unwrap();
+        assert!(
+            f.store()
+                .read(|tx| tx.engine_runs("fixture"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            f.store()
+                .read(|tx| tx.landing_intents())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            f.store()
+                .read(|tx| tx.verification_batches(f.project()))
+                .unwrap()
+                .is_empty()
+        );
+        refused(&f, "retains cleanup lease for `SH-1`");
+        let after = f
+            .store()
+            .read(|tx| tx.events_for(f.project(), StoryNo::new(1)))
+            .unwrap();
+        assert_eq!(after, events);
+        assert_eq!(
+            storyhook::service::latest_generation(&after).unwrap().lease,
+            Some(lease.clone())
+        );
+        assert_eq!(
+            std::fs::read_to_string(lease.worktree_path.join("preserved.txt")).unwrap(),
+            "unpublished work"
+        );
+    }
+}
+
+#[test]
+fn sh853_reaped_generation_history_allows_rename_without_rewriting_its_lease() {
+    let f = ServiceFixture::new();
+    let (id, lease) = leased_submission(&f);
+    let ctx = f.ctx().no_hooks(true);
+    let service = StoryService::new(&ctx);
+    service
+        .set_state(&id, "in-progress", None, None, None)
+        .unwrap();
+    std::fs::remove_dir_all(&lease.worktree_path).unwrap();
+    // This is the same durable generation-scoped retirement proof consumed by
+    // the cleanup queue; an idle/stopped queue alone is not that proof.
+    service
+        .comment(
+            &id,
+            &format!(
+                "{} verified absent.",
+                storyhook::service::VERIFICATION_CLEANUP_COMPLETE_PREFIX
+            ),
+        )
+        .unwrap();
+    let before = f
+        .store()
+        .read(|tx| tx.events_for(f.project(), StoryNo::new(1)))
+        .unwrap();
+    let old = storyhook::service::latest_generation(&before).unwrap();
+    assert_eq!(
+        old.reap_marker,
+        Some(storyhook::service::ReapMarker::Complete)
+    );
+    ProjectService::new(f.store(), f.cwd())
+        .set_prefix(f.project(), "NW", scratch_dir().path())
+        .unwrap();
+    let after = f
+        .store()
+        .read(|tx| tx.events_for(f.project(), StoryNo::new(1)))
+        .unwrap();
+    assert_eq!(storyhook::service::latest_generation(&after), Some(old));
+    assert_eq!(lease.story_id, "SH-1");
+    assert!(!lease.worktree_path.exists());
+}
+
+#[test]
+fn sh853_completed_exact_closure_retires_lease_but_unreaped_closure_does_not() {
+    let f = ServiceFixture::new();
+    let (id, lease) = leased_submission(&f);
+    StoryService::new(&f.ctx().no_hooks(true))
+        .set_state(&id, "done", None, None, None)
+        .unwrap();
+    let mut closure = f
+        .store()
+        .read(|tx| tx.closure_cleanup(f.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    // The cleanup worker pins the lease before completing this exact closure.
+    closure.lease = Some(lease.clone());
+    f.store()
+        .write(|tx| tx.update_closure_cleanup(&closure))
+        .unwrap();
+    refused(&f, &closure.token);
+    closure.completed = true;
+    f.store()
+        .write(|tx| tx.update_closure_cleanup(&closure))
+        .unwrap();
+    ProjectService::new(f.store(), f.cwd())
+        .set_prefix(f.project(), "NW", scratch_dir().path())
+        .unwrap();
+    assert_eq!(
+        f.store()
+            .read(|tx| tx.closure_cleanup(f.project(), StoryNo::new(1)))
+            .unwrap(),
+        Some(closure)
+    );
+    let events = f
+        .store()
+        .read(|tx| tx.events_for(f.project(), StoryNo::new(1)))
+        .unwrap();
+    assert_eq!(
+        storyhook::service::latest_generation(&events)
+            .unwrap()
+            .lease,
+        Some(lease)
+    );
+}
+
+#[test]
+fn sh853_old_reap_proof_cannot_retire_a_new_leased_generation() {
+    let f = ServiceFixture::new();
+    let (id, lease) = leased_submission(&f);
+    let ctx = f.ctx().no_hooks(true);
+    let service = StoryService::new(&ctx);
+    service
+        .set_state(&id, "in-progress", None, None, None)
+        .unwrap();
+    service
+        .comment(
+            &id,
+            &format!(
+                "{} verified absent.",
+                storyhook::service::VERIFICATION_CLEANUP_COMPLETE_PREFIX
+            ),
+        )
+        .unwrap();
+    service
+        .set_state(&id, "verifying", None, None, None)
+        .unwrap();
+    f.append_cleanup_lease(&id, lease);
+    let events = f
+        .store()
+        .read(|tx| tx.events_for(f.project(), StoryNo::new(1)))
+        .unwrap();
+    assert_eq!(
+        storyhook::service::latest_generation(&events)
+            .unwrap()
+            .reap_marker,
+        None
+    );
+    refused(&f, "retains cleanup lease for `SH-1`");
+}
