@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gate_measurement_bounds import Deadline
 from gate_measurement_campaign import begin_window, campaign_environment, competing_work, owned_resources
 from gate_measurement_cohorts import Cohort
-from gate_measurement_inputs import snapshot, observe, WORKERS, cargo_config_paths, git_config_origins
+from gate_measurement_inputs import snapshot, observe, WORKERS, cargo_config_paths, git_config_origins, supported_compiler_profile
 from gate_measurement_targets import TargetPool, remove_exact
 from gate_measurement_storage import directory_identity
 from gate_measurement_runtime import records
@@ -127,6 +127,16 @@ class Inputs(Fixture):
                                 env=env, capture_output=True, text=True, timeout=5, check=True)
         self.assertEqual(git_config_origins(result.stdout, self.root), sorted([str(self.config), str(include)]))
         self.assertNotIn('false', result.stdout)
+
+    def test_tracked_compiler_wrappers_are_supported_but_unknown_inputs_refuse(self):
+        self.config.write_text('[build]\nrustc-wrapper="compiler"\n')
+        supported_compiler_profile([self.config], self.root, {}, lambda argv: argv[-1])
+        with self.assertRaises(Refusal):
+            supported_compiler_profile([self.config], self.root, {'RUSTFLAGS': '@external-response-file'}, lambda _: '')
+        for content in ['[env]\nINJECTED="value"\n', '[alias]\nclippy="custom"\n',
+                        '[build]\nrustflags=["-L/unknown"]\n']:
+            self.config.write_text(content)
+            with self.assertRaises(Refusal): supported_compiler_profile([self.config], self.root, {}, lambda _: '')
 
 
 class Windows(Fixture):

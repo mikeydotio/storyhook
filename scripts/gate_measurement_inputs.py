@@ -12,6 +12,7 @@ import shutil
 import stat
 import sys
 import sysconfig
+import tomllib
 
 from gate_measurement_cohorts import canonical, fingerprint
 from gate_measurement_runtime import capture, resource_limits
@@ -143,6 +144,40 @@ def git_config_origins(raw, worktree):
     return sorted(result)
 
 
+def supported_compiler_profile(config_paths, worktree, env, query):
+    """Do not claim closure over an arbitrary external compiler/runner program."""
+    if env.get('RUSTFLAGS') or env.get('RUSTDOCFLAGS'):
+        raise Refusal('custom compiler flags require an explicit reviewed input inventory')
+    worktree = Path(worktree)
+    for path in config_paths:
+        if not Path(path).exists():
+            continue
+        with open(path, 'rb') as stream:
+            config = tomllib.load(stream)
+        if config.get('include') or config.get('env'):
+            raise Refusal('Cargo include/env overrides need explicit dependency review')
+        aliases = config.get('alias', {})
+        if any(name in aliases for name in ('fmt', 'clippy', 'build', 'test', 'fetch', 'metadata')):
+            raise Refusal('Cargo gate command aliases are not part of the pinned standard profile')
+        tables = [config.get('build', {}), *config.get('target', {}).values()]
+        for table in tables:
+            if table.get('rustflags') or table.get('rustdocflags'):
+                raise Refusal('configured compiler flags need explicit dependency review')
+            for name in ('rustc', 'rustc-wrapper', 'rustc-workspace-wrapper', 'linker', 'runner'):
+                command = table.get(name)
+                if not command:
+                    continue
+                executable = command[0] if isinstance(command, list) else command
+                if not isinstance(executable, str) or not executable:
+                    raise Refusal('configured tool command is malformed')
+                resolved = (worktree / executable).resolve(strict=True)
+                if worktree not in resolved.parents:
+                    raise Refusal('external configured compiler/runner needs dependency review')
+                relative = str(resolved.relative_to(worktree))
+                if query(['git', 'ls-files', '--error-unmatch', '--', relative]).strip() != relative:
+                    raise Refusal('configured compiler/runner is not tracked by the pinned source')
+
+
 def inventory(worktree, env, *, query=capture):
     """Resolve mandatory tools and mutable dependency roots before pinning.
 
@@ -195,6 +230,7 @@ def inventory(worktree, env, *, query=capture):
     common = (Path(worktree) / common).resolve(strict=True)
     private = Path(query(['git', 'rev-parse', '--absolute-git-dir'])).resolve(strict=True)
     configs = cargo_config_paths(worktree, env)
+    supported_compiler_profile(configs, worktree, env, query)
     configs.extend([Path(env['HOME']) / '.gitconfig', Path(env['HOME']) / '.config/git/config',
                     common / 'config', private / 'config.worktree'])
     origins = git_config_origins(query(['git', 'config', '--show-origin', '--name-only', '--list']), worktree)

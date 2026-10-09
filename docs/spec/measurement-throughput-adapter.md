@@ -48,6 +48,11 @@ resolve inside declared dependencies; unknown types, escaping/cyclic links,
 unsupported Git origin escaping, unavailable sensors and more than 250,000
 inventory entries refuse execution. Do not weaken checks to obtain data.
 Actual inventory cost and platform compatibility require the integration window.
+The standard profile permits tracked source wrappers such as rustc-slot and
+host-admit. Arbitrary external compiler/runner programs, compiler flags with
+unreviewed dependencies, Cargo include/env injection and gate command aliases
+are refused until their input closure is explicitly reviewed; they are never
+silently dropped or treated as equivalent.
 
 SH-801 uses the same capture and pins one identity across its entire matched
 comparison. Each gate also requires complete applicable-leg progress and actual
