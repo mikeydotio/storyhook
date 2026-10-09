@@ -169,8 +169,8 @@ class Preparation(unittest.TestCase):
         with mock.patch.object(setup, 'capture', side_effect=capture), \
              mock.patch.object(setup, 'normal_class', return_value=True), \
              mock.patch.object(setup, 'scheduling', return_value={}), \
-             mock.patch.object(setup, 'tools_identity', return_value={}),
-             mock.patch.object(setup, 'check_storage', return_value={}),
+             mock.patch.object(setup, 'tools_identity', return_value={}), \
+             mock.patch.object(setup, 'check_storage', return_value={}), \
              mock.patch.object(setup, 'pressure_level', return_value=1), \
              mock.patch.object(setup.fcntl, 'flock', side_effect=lock), \
              mock.patch.object(setup.os, 'chdir'), \
