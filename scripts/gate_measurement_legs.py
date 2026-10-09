@@ -107,8 +107,11 @@ def main():
         identity = validate(path)
         directory = os.environ['STORYHOOK_MEASUREMENT_SLOT']
         cohort, slot = current_slot(identity, path, directory)
-        if operation == 'prepare':
-            print(prepare(cohort, slot, directory, leg, argv, os.environ))
+        if operation in ('prepare', 'prepare-status'):
+            action = prepare(cohort, slot, directory, leg, argv, os.environ)
+            if operation == 'prepare-status':
+                return 10 if action == 'reused' else 0
+            print(action)
         elif operation == 'finish' and argv:
             status, *argv = argv
             finish(slot, directory, leg, argv, os.environ, int(status))

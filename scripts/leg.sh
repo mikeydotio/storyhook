@@ -67,14 +67,18 @@ receipt=""
 if [ "$gate_measurement" = 1 ]; then
     reuse=0
     if [ "${STORYHOOK_MEASUREMENT_SLOT+x}" = x ]; then
-        measurement_action="$("$STORYHOOK_PYTHON" "$script_dir/gate_measurement_legs.py" prepare "$label" "$@")" || exit 2
-        case "$measurement_action" in
-        reused)
+        # Command substitution can change SHLVL for this one child. Keep the
+        # exact detector environment for both boundaries and use status for the
+        # internal run/reuse decision instead of excluding shell input variables.
+        measurement_status=0
+        "$STORYHOOK_PYTHON" "$script_dir/gate_measurement_legs.py" prepare-status "$label" "$@" || measurement_status=$?
+        case "$measurement_status" in
+        10)
             echo "leg $label: REUSED — exact preceding measurement warm execution" >&2
             gate_progress_emit_item "release gate/$label" reused
             exit 0
             ;;
-        run) ;;
+        0) measurement_action=run ;;
         *) echo "leg.sh: invalid measurement decision" >&2; exit 2 ;;
         esac
     fi
