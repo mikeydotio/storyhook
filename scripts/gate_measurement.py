@@ -15,7 +15,7 @@ sys.dont_write_bytecode = True
 from gate_measurement_exposure import PROTOCOL, annotate_processes
 from gate_measurement_context import manifest, validate
 from gate_measurement_data import parse_wall, schedule, summarize
-from gate_measurement_runtime import capture, execution_active, journal, mirror_progress, normal_class, pending_sample, pressure, records, require_resource_limits, scheduling
+from gate_measurement_runtime import capture, execution_active, observation_deadline, journal, mirror_progress, normal_class, pending_sample, pressure, records, require_resource_limits, scheduling
 from gate_measurement_setup import immutable, prepare, tools_identity
 from verifier_state import Refusal, atomic, paths, read, save
 from gate_measurement_bounds import Deadline, LIMITS, require_same_day, start_slot, validate_policy
@@ -55,8 +55,9 @@ def admission(directory, cohort):
     limit.require('representative admission')
     if today() != cohort['day']:
         raise Refusal('local day changed during representative admission')
-    observed = annotate_processes(pressure(), os.getpid())
-    journal(directory / 'pressure.jsonl', dict(observed, kind='admission'))
+    with observation_deadline(limit.end):
+        observed = annotate_processes(pressure(), os.getpid())
+        journal(directory / 'pressure.jsonl', dict(observed, kind='admission'))
     limit.require('representative admission observation')
     # No watchdog heartbeat: host activity does not prove gate progress.
     return observed
@@ -136,11 +137,12 @@ def run_sample(identity, cohort, index, directory, probes, warmup=False):
                     journal(directory / 'probes.jsonl', result)
                 now = time.monotonic()
                 if now - last_pressure >= LIMITS['sample_seconds']:
-                    observed = annotate_processes(pressure(), os.getpid())
-                    if 'storage' in identity:
-                        observed['storage'] = check_storage(identity['storage'])
-                        observed['native_memory_pressure'] = pressure_level()
-                    journal(directory / 'pressure.jsonl', dict(observed, kind='running'))
+                    with observation_deadline(limit.end):
+                        observed = annotate_processes(pressure(), os.getpid())
+                        if 'storage' in identity:
+                            observed['storage'] = check_storage(identity['storage'])
+                            observed['native_memory_pressure'] = pressure_level()
+                        journal(directory / 'pressure.jsonl', dict(observed, kind='running'))
                     last_pressure = now
                 time.sleep(.5)
         except BaseException:

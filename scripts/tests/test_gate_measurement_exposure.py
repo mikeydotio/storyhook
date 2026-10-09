@@ -101,4 +101,99 @@ class RepresentativeLoad(unittest.TestCase):
         with self.assertRaises(Refusal): cpu_interval(before, before)
 
 
+
+class ObservationDeadlines(unittest.TestCase):
+    def test_nested_capture_receives_remaining_budget_and_restores_parent(self):
+        from types import SimpleNamespace
+        import gate_measurement_runtime as runtime
+        now = [10]
+        with mock.patch.dict(os.environ, STORYHOOK_MEASUREMENT_END='100.000', STORYHOOK_MEASUREMENT_OPERATIONS='/unused'), \
+             mock.patch.object(runtime.time, 'monotonic', side_effect=lambda: now[0]), \
+             mock.patch('gate_measurement_command.bounded', return_value=SimpleNamespace(returncode=0, stdout='ok')) as command:
+            with runtime.observation_deadline(20):
+                self.assertEqual(os.environ['STORYHOOK_MEASUREMENT_END'], '20')
+                now[0] = 19
+                self.assertEqual(runtime.capture(['fixture-sensor']), 'ok')
+                self.assertEqual(command.call_args.kwargs['seconds'], 1)
+                with runtime.observation_deadline(90):
+                    self.assertEqual(os.environ['STORYHOOK_MEASUREMENT_END'], '20.0')
+            self.assertEqual(os.environ['STORYHOOK_MEASUREMENT_END'], '100.000')
+
+    def test_late_observation_is_preserved_but_refused_and_environment_restored(self):
+        import gate_measurement_runtime as runtime
+        now = [10]
+        with tempfile.TemporaryDirectory() as scratch, \
+             mock.patch.dict(os.environ, STORYHOOK_MEASUREMENT_END='100'), \
+             mock.patch.object(runtime.time, 'monotonic', side_effect=lambda: now[0]):
+            path = Path(scratch) / 'pressure.jsonl'
+            with self.assertRaisesRegex(Refusal, 'original allowance'):
+                with runtime.observation_deadline(20):
+                    runtime.journal(path, dict(exposure(), kind='late-observation'))
+                    now[0] = 21
+            self.assertEqual(records(path)[0]['kind'], 'late-observation')
+            self.assertEqual(os.environ['STORYHOOK_MEASUREMENT_END'], '100')
+
+    def test_sensor_exception_and_missing_parent_restore_environment(self):
+        from gate_measurement_runtime import observation_deadline
+        with mock.patch.dict(os.environ):
+            os.environ.pop('STORYHOOK_MEASUREMENT_END', None)
+            with self.assertRaisesRegex(OSError, 'sensor failed'):
+                with observation_deadline(20, clock=lambda: 10):
+                    raise OSError('sensor failed')
+            self.assertNotIn('STORYHOOK_MEASUREMENT_END', os.environ)
+        for value in [True, float('nan'), float('inf')]:
+            with self.subTest(value=value), self.assertRaises(Refusal):
+                with observation_deadline(value, clock=lambda: 10): pass
+
+    def owned_health_expiry(self, *, before_launch, cleanup_timeout=False):
+        import signal
+        import subprocess
+        import gate_measurement_execution as execution
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch).resolve()
+            directory = root / 'measurement-results-v1' / 'baseline' / 'slot-00'
+            directory.mkdir(parents=True)
+            identity = dict(kind='gate-throughput-measurement', gate={'argv': ['make', 'test']},
+                            commit='a', tree='b', campaign_root=str(root), common=str(root), worktree=str(root / 'source'))
+            slot = {'identity': {'source_commit': 'a', 'source_tree': 'b'}}
+            now = [10]; health_calls = []
+            def health():
+                health_calls.append(float(os.environ['STORYHOOK_MEASUREMENT_END']))
+                if before_launch or len(health_calls) == 2: now[0] = 21
+            child = mock.Mock()
+            child.poll.return_value = None
+            if cleanup_timeout: child.wait.side_effect = subprocess.TimeoutExpired('fixture', 35)
+            def spawn(*_args, **_kwargs):
+                now[0] = max(now[0], 16)
+                return child
+            gate = execution.OwnedGate(str(root / 'manifest.json'), ['make', 'test'], health=health)
+            with mock.patch.object(execution, 'validate', return_value=identity), \
+                 mock.patch.object(execution.time, 'monotonic', side_effect=lambda: now[0]), \
+                 mock.patch.object(execution.subprocess, 'Popen', side_effect=spawn) as start, \
+                 mock.patch.dict(os.environ, STORYHOOK_VERIFIER_OWNER='fixture',
+                    STORYHOOK_GATE_PROGRESS=str(root / 'outer.jsonl'), STORYHOOK_MEASUREMENT_END='100'):
+                with self.assertRaises(Refusal) as failure:
+                    gate(slot, directory, 20)
+                if before_launch:
+                    start.assert_not_called()
+                    self.assertFalse((directory / 'execution.json').exists())
+                else:
+                    start.assert_called_once()
+                    child.send_signal.assert_called_once_with(signal.SIGTERM)
+                    child.wait.assert_called_once_with(timeout=35)
+                    import json
+                    self.assertEqual(json.loads((directory / 'execution.json').read_text())['state'], 'pending')
+                self.assertTrue(all(end == 20 for end in health_calls))
+                self.assertEqual(os.environ['STORYHOOK_MEASUREMENT_END'], '100')
+                self.assertIn('cleanup observation expired' if cleanup_timeout else 'original allowance', str(failure.exception))
+
+    def test_health_expiry_before_launch_never_starts_gate(self):
+        self.owned_health_expiry(before_launch=True)
+
+    def test_health_expiry_during_gate_requests_owned_cleanup(self):
+        self.owned_health_expiry(before_launch=False)
+
+    def test_health_expiry_with_cleanup_timeout_keeps_pending_evidence(self):
+        self.owned_health_expiry(before_launch=False, cleanup_timeout=True)
+
 if __name__ == '__main__': unittest.main()

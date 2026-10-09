@@ -72,3 +72,10 @@ The proposed 15-attempt/20-hour exploratory paired gate design is pending review
 it does not replace the executable 18-slot policy. No expensive campaign begins
 from this source task. Fresh binary/input capture, design review and coordinated
 start are required. No automation/provider setting or release order changes.
+
+
+Nested sensor commands inherit the smaller observation/gate deadline, rather
+than the wider campaign end. An observation returning after its deadline is
+retained but refused. Expired health checks cannot start a new gate; expiry
+inside a running gate requests the existing owned-supervisor cleanup. Cleanup
+keeps its independent allowance and unresolved cleanup retains pending evidence.

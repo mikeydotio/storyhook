@@ -14,7 +14,7 @@ import time
 
 from gate_measurement_cohorts import fingerprint
 from gate_measurement_context import validate
-from gate_measurement_runtime import journal, mirror_progress, records
+from gate_measurement_runtime import journal, mirror_progress, observation_deadline, records
 from verifier_result import EXECUTION_FILE, execution
 from verifier_state import Refusal, paths, read, save
 
@@ -114,7 +114,8 @@ class OwnedGate:
                 or slot['identity']['source_commit'] != identity['commit']
                 or slot['identity']['source_tree'] != identity['tree']):
             raise Refusal('owned throughput gate does not match the pinned manifest')
-        self.health()
+        with observation_deadline(deadline):
+            self.health()
         directory = Path(directory)
         if directory.resolve() != directory:
             raise Refusal('measurement attempt directory was substituted')
@@ -145,6 +146,8 @@ class OwnedGate:
         offset = 0
         last_health = time.monotonic()
         with (directory / 'supervisor.log').open('x') as log:
+            if time.monotonic() >= deadline:
+                raise Refusal('measurement gate admission exhausted its allowance')
             process = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
             try:
                 while process.poll() is None:
@@ -152,7 +155,8 @@ class OwnedGate:
                         raise Refusal('measurement gate exhausted its allowance')
                     now = time.monotonic()
                     if now - last_health >= 5:
-                        self.health()
+                        with observation_deadline(deadline):
+                            self.health()
                         last_health = now
                     offset = mirror_progress(progress_path, outer_progress, offset)
                     time.sleep(.5)
