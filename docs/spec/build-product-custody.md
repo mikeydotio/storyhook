@@ -122,7 +122,10 @@ refusal. Records remain for audit after successful removal. Retired verifier
 worktrees without equivalent exact enrollment and custody remain untouched.
 
 A returned story runs the same managed Cargo entry: Cargo creates its absent
-output directory normally. Reclamation does not delete sources, Git state,
+output directory normally. Builds wait up to 30 seconds, cancellably and before
+launch, for a short detachment lock; reclamation itself never waits for a live
+build. This closes the brief return/rebuild overlap without holding Reset behind
+a long purge. Reclamation does not delete sources, Git state,
 provider/session evidence, global caches, or shared verifier caches, and does not
 enable host admission, project automation, provider enrollment on existing lanes,
 or production rollout. Those are separate operator actions.

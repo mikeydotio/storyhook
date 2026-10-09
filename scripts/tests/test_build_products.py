@@ -40,6 +40,67 @@ class ProductOwnershipTests(unittest.TestCase):
     def custody(self):
         return products.ProductCustody(self.root, [sys.executable, "fixture"])
 
+    def test_shared_wait_has_bounded_refusal_without_launching(self):
+        with products.ProductLease(self.root, reclaim=True):
+            with self.assertRaisesRegex(Refusal, "timed out waiting"):
+                products.ProductLease(self.root, wait_seconds=0.02)
+        self.assertEqual([p.name for p in self.root.iterdir()], ["products.lock"])
+
+    def test_real_managed_rebuild_waits_for_short_detach_guard(self):
+        repo = self.root / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=10)
+        root = products.namespace(repo)
+        marker = repo / "products" / "rebuilt"
+        script = ("import sys;sys.path.insert(0," + repr(str(SCRIPTS)) + ");"
+                  "import build_products;print('waiting',flush=True);"
+                  "raise SystemExit(build_products.run_managed([sys.executable,'-c',"
+                  + repr("from pathlib import Path;p=Path('products');p.mkdir();(p/'rebuilt').write_text('new')")
+                  + "],cwd=" + repr(str(repo)) + "))")
+        with products.ProductLease(root, reclaim=True):
+            child = subprocess.Popen([sys.executable, "-B", "-c", script],
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                import select
+                self.assertTrue(select.select([child.stdout], [], [], 10)[0])
+                self.assertEqual(child.stdout.readline(), b"waiting\n")
+                self.assertIsNone(child.poll())
+                self.assertFalse(marker.exists())
+            except BaseException:
+                child.kill(); child.communicate(timeout=10)
+                raise
+        try:
+            stdout, stderr = child.communicate(timeout=15)
+            self.assertEqual(child.returncode, 0, (stdout, stderr))
+            self.assertEqual(marker.read_text(), "new")
+        finally:
+            if child.poll() is None:
+                child.kill(); child.communicate(timeout=10)
+
+    def test_cancel_waiting_managed_build_leaves_no_reserved_owner(self):
+        repo = self.root / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=10)
+        root = products.namespace(repo)
+        script = ("import sys;sys.path.insert(0," + repr(str(SCRIPTS)) + ");"
+                  "import build_products;print('waiting',flush=True);"
+                  "build_products.run_managed([sys.executable,'-c','raise SystemExit(91)'],cwd="
+                  + repr(str(repo)) + ")")
+        with products.ProductLease(root, reclaim=True):
+            child = subprocess.Popen([sys.executable, "-B", "-c", script], stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE)
+            try:
+                import select
+                self.assertTrue(select.select([child.stdout], [], [], 10)[0])
+                self.assertEqual(child.stdout.readline(), b"waiting\n")
+                child.terminate()
+                child.communicate(timeout=10)
+                self.assertEqual(child.returncode, -signal.SIGTERM)
+                self.assertFalse(list(root.glob("build-*")))
+            finally:
+                if child.poll() is None:
+                    child.kill(); child.communicate(timeout=10)
+
     def test_live_build_excludes_reclaim_even_without_host_policy(self):
         with products.ProductLease(self.root):
             with self.assertRaises(BlockingIOError):

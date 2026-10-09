@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import time
 import uuid
 
 from host_admission import native
@@ -79,12 +80,24 @@ class ProductLease:
     a wait whose owner is guessed from a PID or a pane snapshot.
     """
 
-    def __init__(self, root, *, reclaim=False):
+    def __init__(self, root, *, reclaim=False, wait_seconds=0):
         self.root = directory(root)
         self.fd = open_private(self.root / "products.lock", create=True)
         try:
             mode = fcntl.LOCK_EX if reclaim else fcntl.LOCK_SH
-            fcntl.flock(self.fd, mode | fcntl.LOCK_NB)
+            deadline = time.monotonic() + wait_seconds
+            while True:
+                try:
+                    fcntl.flock(self.fd, mode | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if reclaim or not wait_seconds:
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise Refusal("managed build timed out waiting for short product detachment") from None
+                    # No build has launched and no journal was reserved yet.
+                    # SIGINT/TERM can cancel this wait without stranding an owner.
+                    time.sleep(min(0.05, max(0, deadline - time.monotonic())))
             if reclaim:
                 self.require_settled()
             os.set_inheritable(self.fd, True)
@@ -215,7 +228,7 @@ def run_managed(command, *, cwd=None, env=None):
     env = dict(os.environ if env is None else env)
     if inherited_lease(root, env) is not None:
         os.execvpe(command[0], command, env)
-    with ProductLease(root) as lease:
+    with ProductLease(root, wait_seconds=30) as lease:
         env.update({PRODUCT_FD: str(lease.fd), PRODUCT_ROOT: str(root)})
         custody = ProductCustody(root, command)
         process = ManagedProcess(custody, custody.lease, command, env=env,

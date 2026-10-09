@@ -1,5 +1,4 @@
 //! SH-835: real store generations, private Git worktrees and configured hooks.
-use fs4::FileExt;
 use serde_json::{Value, json};
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::{
@@ -345,6 +344,7 @@ fn real_managed_entry_record_is_accepted_by_native_reclaimer() {
     .unwrap();
     let mut command = Command::new("bash");
     command.arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/python-runtime.sh")).arg("--")
+        .arg("python3")
         .arg("-c").arg(format!("import sys;sys.path.insert(0,{:?});import build_products;raise SystemExit(build_products.run_managed([sys.executable,'-c','print(123)'],cwd={:?}))",Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts").display().to_string(),f.lane.display().to_string()));
     let result = run_bounded(
         command,
@@ -439,4 +439,44 @@ fn ordinary_move_handoff_runs_configured_detachment() {
         .unwrap();
     assert!(!f.original().exists());
     assert!(f.journal().parent().unwrap().join("products/old").exists());
+}
+
+#[test]
+fn replayed_generation_retains_a_recreated_original() {
+    let f = Fixture::new(no_purge());
+    f.reclaim().unwrap();
+    fs::create_dir(f.original()).unwrap();
+    fs::write(f.original().join("replacement"), "keep").unwrap();
+    assert!(
+        f.reclaim()
+            .unwrap_err()
+            .to_string()
+            .contains("already has a detachment job")
+    );
+    assert_eq!(
+        fs::read_to_string(f.original().join("replacement")).unwrap(),
+        "keep"
+    );
+    assert_eq!(
+        fs::read_dir(f.private.join("storyhook-detached-products-v1"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+#[test]
+fn absent_managed_build_evidence_retains_existing_products() {
+    let f = Fixture::new(no_purge());
+    fs::remove_dir_all(
+        f.private
+            .join("storyhook-build-products-v1/build-0123456789abcdef0123456789abcdef"),
+    )
+    .unwrap();
+    assert!(
+        f.reclaim()
+            .unwrap_err()
+            .to_string()
+            .contains("no completed managed build")
+    );
+    assert!(f.original().exists());
 }

@@ -265,6 +265,7 @@ pub fn reclaim_handoff<S: Store>(
     }
     let lock_identity = Identity::of(&product_lock.metadata()?);
     // This is the same permanent inode and journal contract as managed-cargo.
+    let mut owners = 0;
     for entry in fs::read_dir(&custody)? {
         let entry = entry?;
         if entry.file_name() == "products.lock" {
@@ -273,6 +274,7 @@ pub fn reclaim_handoff<S: Store>(
         if !entry.file_name().to_string_lossy().starts_with("build-") {
             return Err(refusal("unknown custody record"));
         }
+        owners += 1;
         Identity::directory(&entry.path())?;
         let row: serde_json::Value = read_json(&entry.path().join("record.json"))?;
         let token = entry
@@ -283,6 +285,9 @@ pub fn reclaim_handoff<S: Store>(
         if !settled_record(&row, &token) {
             return Err(refusal("unfinished or unknown whole-build owner"));
         }
+    }
+    if owners == 0 {
+        return Err(refusal("no completed managed build owns these products"));
     }
     let original = worktree.join(&config.path);
     if !original.try_exists()? {
@@ -297,14 +302,26 @@ pub fn reclaim_handoff<S: Store>(
     }
     let quarantine = private.join(QUARANTINE);
     match fs::create_dir(&quarantine) {
-        Ok(()) => fs::set_permissions(&quarantine, fs::Permissions::from_mode(0o700))?,
+        Ok(()) => {
+            fs::set_permissions(&quarantine, fs::Permissions::from_mode(0o700))?;
+            open_directory(&private)?.sync_all()?;
+        }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(e.into()),
     }
     let quarantine_identity = Identity::directory(&quarantine)?;
-    let job = quarantine.join(uuid::Uuid::new_v4().to_string());
-    fs::create_dir(&job)?;
+    let job = quarantine.join(format!("generation-{seq}"));
+    match fs::create_dir(&job) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(refusal(
+                "this generation already has a detachment job; recover its exact journal, never detach replacement products",
+            ));
+        }
+        Err(error) => return Err(error.into()),
+    }
     fs::set_permissions(&job, fs::Permissions::from_mode(0o700))?;
+    open_directory(&quarantine)?.sync_all()?;
     let journal_path = job.join("journal.json");
     let mut journal = Journal {
         version: 1,
@@ -348,7 +365,8 @@ pub fn reclaim_handoff<S: Store>(
             let fresh: Enrollment = read_json(&enrollment_path)?;
             let marker: StoryCleanupLease =
                 read_json(&private.join(crate::domain::CLEANUP_LEASE_MARKER))?;
-            if fresh.lease != *lease
+            if fresh.version != 1
+                || fresh.lease != *lease
                 || fresh.config != config
                 || fresh.worktree != enrollment.worktree
                 || fresh.private_git != enrollment.private_git
