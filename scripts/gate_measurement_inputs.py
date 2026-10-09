@@ -5,6 +5,7 @@ executed. Missing optional config files remain part of the identity. Unknown fil
 types, symlinks inside roots, concurrent writes or a deadline refuse measurement.
 """
 
+from contextlib import contextmanager
 import hashlib
 import os
 from pathlib import Path
@@ -47,24 +48,122 @@ def stamp(path):
             value.st_mtime_ns, value.st_ctime_ns)
 
 
+def ca_source(path, target):
+    """Require the one physical, versioned certifi layout for the public bundle."""
+    path, target = Path(path), Path(target)
+    prefix = target.parent.parent.parent
+    try:
+        parts = path.relative_to(prefix / 'Cellar').parts
+        valid = (target == prefix / 'etc/ca-certificates/cert.pem'
+                 and len(parts) == 7 and parts[0] == 'certifi'
+                 and re.fullmatch(r'[0-9][a-zA-Z0-9._+-]*', parts[1])
+                 and parts[2] == 'lib' and re.fullmatch(r'python[0-9]+\.[0-9]+', parts[3])
+                 and parts[4:] == ('site-packages', 'certifi', 'cacert.pem')
+                 and path.is_absolute() and path.parent.resolve(strict=True) == path.parent
+                 and path.is_symlink() and path.resolve(strict=True) == target)
+    except (ValueError, OSError, RuntimeError):
+        valid = False
+    if not valid:
+        raise Refusal('public CA bundle requires its physical versioned certifi source')
+
+
+def ca_fields(value):
+    """Retain file identity, content-change metadata and the single-link invariant."""
+    return [value.st_dev, value.st_ino, value.st_mode, value.st_size,
+            value.st_mtime_ns, value.st_ctime_ns, value.st_nlink]
+
+
+@contextmanager
+def open_ca_bundle(path):
+    """Pin each ancestor descriptor without following links, including races."""
+    descriptors = []
+    try:
+        path = Path(path)
+        if not path.is_absolute() or '..' in path.parts:
+            raise Refusal('public CA bundle path must be absolute and physical')
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        descriptors.append(fd)
+        ancestors = []
+        for component in path.parts[1:-1]:
+            value = os.fstat(fd)
+            ancestors.append([value.st_dev, value.st_ino, value.st_mode])
+            fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            descriptors.append(fd)
+        value = os.fstat(fd)
+        ancestors.append([value.st_dev, value.st_ino, value.st_mode])
+        before = os.stat(path.name, dir_fd=fd, follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise Refusal('public CA bundle must be a regular file with one link')
+        leaf = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        descriptors.append(leaf)
+        value = os.fstat(leaf)
+        if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1:
+            raise Refusal('public CA bundle must be a regular file with one link')
+        if ca_fields(before) != ca_fields(value):
+            raise Refusal('public CA bundle changed while opening')
+        yield leaf, [ancestors, ca_fields(value)]
+    except OSError as error:
+        raise Refusal('public CA bundle cannot be opened without following links') from error
+    finally:
+        for fd in reversed(descriptors):
+            os.close(fd)
+
+
+def snapshot_ca_bundle(path, declaration, deadline, audit):
+    """Hash one declared public bundle through pinned, validated file descriptors."""
+    if (declaration.get('kind') != 'public-ca-bundle'
+            or not declaration.get('sources')):
+        raise Refusal('public CA bundle declaration is incomplete')
+    for source in declaration['sources']:
+        ca_source(source, path)
+    with open_ca_bundle(path) as (fd, before):
+        expected = {'public-ca-bundle': before}
+        if path in audit and audit[path] != expected:
+            raise Refusal('public CA bundle changed between inventory references')
+        if path not in audit and len(audit) >= 250000:
+            raise Refusal('input inventory exceeded its 250000-entry memory bound')
+        audit[path] = expected
+        h = hashlib.sha256()
+        while True:
+            deadline.require('public CA bundle hashing')
+            block = os.read(fd, 1024 * 1024)
+            if not block:
+                break
+            h.update(block)
+        if ca_fields(os.fstat(fd)) != before[1]:
+            raise Refusal('public CA bundle changed while hashing')
+        with open_ca_bundle(path) as (_, after):
+            if before != after:
+                raise Refusal('public CA bundle ancestry or file changed while hashing')
+    return {'kind': 'file', 'sha256': h.hexdigest(), 'mode': stat.S_IMODE(before[1][2])}
+
+
 def check_audit(audit, deadline):
     for path, expected in audit.items():
         deadline.require('measurement input stability check')
+        if isinstance(expected, dict) and 'public-ca-bundle' in expected:
+            with open_ca_bundle(path) as (_, current):
+                if current != expected['public-ca-bundle']:
+                    raise Refusal('public CA bundle changed during complete inventory capture')
+            continue
         if stamp(path) != expected:
             raise Refusal('input changed during the complete inventory capture')
 
 
-def snapshot(path, deadline, *, allowed=(), trail=()):
+def snapshot(path, deadline, *, allowed=(), trail=(), external_files=None):
     audit = {}
-    result = _snapshot(path, deadline, allowed=allowed, trail=trail, audit=audit)
+    result = _snapshot(path, deadline, allowed=allowed, trail=trail, audit=audit, external_files=external_files)
     check_audit(audit, deadline)
     return result
 
 
-def _snapshot(path, deadline, *, allowed, trail=(), audit):
+def _snapshot(path, deadline, *, allowed, trail=(), audit, external_files=None):
     """Hash exact regular-file bytes and modes; never follow a substituted link."""
     path = Path(path)
     deadline.require('measurement input capture')
+    external_files = external_files or {}
+    if str(path) in external_files:
+        return snapshot_ca_bundle(path, external_files[str(path)], deadline, audit)
     if not path.is_absolute() or path.parent.resolve() != path.parent:
         raise Refusal('input path is not physical and absolute')
     observed_stamp = stamp(path)
@@ -78,10 +177,17 @@ def _snapshot(path, deadline, *, allowed, trail=(), audit):
     except FileNotFoundError:
         return {'kind': 'absent'}
     if stat.S_ISLNK(before.st_mode):
+        for declared_path, declaration in external_files.items():
+            if str(path) in declaration['sources']:
+                ca_source(path, declared_path)
         try:
             target = path.resolve(strict=True)
         except (OSError, RuntimeError) as error:
             raise Refusal(f'input symlink cannot be resolved: {path}') from error
+        if str(target) in external_files:
+            ca_source(path, target)
+            if str(path) not in external_files[str(target)]['sources']:
+                raise Refusal('public CA bundle source was not declared')
         if not any(target == root or root in target.parents for root in allowed):
             raise Refusal(f'input symlink escapes its declared dependencies: {path} -> {target}')
         link = os.readlink(path)
@@ -94,7 +200,7 @@ def _snapshot(path, deadline, *, allowed, trail=(), audit):
                 raise Refusal('input reference lacks an observed ancestor directory')
             value = {'kind': 'ancestor-directory-reference', 'path': str(target)}
         else:
-            value = _snapshot(target, deadline, allowed=allowed, trail=(*trail, path), audit=audit)
+            value = _snapshot(target, deadline, allowed=allowed, trail=(*trail, path), audit=audit, external_files=external_files)
         after = path.lstat()
         if (before.st_dev, before.st_ino, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_ctime_ns) or os.readlink(path) != link:
             raise Refusal('input symlink changed during observation')
@@ -122,7 +228,7 @@ def _snapshot(path, deadline, *, allowed, trail=(), audit):
     if not stat.S_ISDIR(before.st_mode):
         raise Refusal('input contains a symlink or nonregular entry: ' + str(path))
     names = sorted(os.listdir(path))
-    children = {name: _snapshot(path / name, deadline, allowed=allowed, trail=(*trail, path), audit=audit) for name in names}
+    children = {name: _snapshot(path / name, deadline, allowed=allowed, trail=(*trail, path), audit=audit, external_files=external_files) for name in names}
     after = path.lstat()
     if ((before.st_dev, before.st_ino, before.st_mtime_ns, before.st_ctime_ns)
             != (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_ctime_ns)
@@ -234,15 +340,17 @@ def python_distribution(prefix):
     return prefix
 
 
-def python_linked_packages(runtime, libraries, *, deadline=None, entry_limit=250000):
+def python_linked_packages(runtime, libraries, *, deadline=None, entry_limit=250000, external_files=None):
     """Close installed Homebrew Python links over versioned Cellar packages.
 
     Linked files are not enough: include the complete selected package and walk
     its links too. Only packages in this interpreter's physical Cellar can be
-    added. External configuration, another prefix, broken links and unknown
-    package layouts refuse; this never installs or reads arbitrary link targets.
+    added, plus certifi's exact regular public CA bundle in that prefix. Its
+    typed file declaration follows all recursive reads and the final audit.
+    Other external configuration, prefixes and unknown package layouts refuse.
     """
     deadline = deadline or Deadline(30)
+    external_files = external_files if external_files is not None else {}
     runtime = Path(runtime).resolve(strict=True)
     cellar = runtime.parent.parent
     if cellar.name != 'Cellar':
@@ -265,6 +373,16 @@ def python_linked_packages(runtime, libraries, *, deadline=None, entry_limit=250
                 target = path.resolve(strict=True)
             except (OSError, RuntimeError) as error:
                 raise Refusal(f'Python dependency link cannot be resolved: {path}') from error
+            bundle = cellar.parent / 'etc/ca-certificates/cert.pem'
+            nominal_target = Path(os.path.abspath(path.parent / os.readlink(path)))
+            if target == bundle or nominal_target == bundle:
+                ca_source(path, bundle)
+                with open_ca_bundle(target):
+                    pass
+                declaration = external_files.setdefault(str(target), {'kind': 'public-ca-bundle', 'sources': []})
+                declaration['sources'] = sorted(set([*declaration['sources'], str(path)]))
+                result['python-public-ca-bundle'] = str(target)
+                continue
             if any(target == root or root in target.parents for root in roots):
                 continue
             if cellar not in target.parents:
@@ -322,8 +440,10 @@ def inventory(worktree, env, *, query=capture):
     roots['python-runtime'] = str(python_distribution(sys.base_prefix))
     for kind in ('purelib', 'platlib'):
         roots['python-' + kind] = str(Path(sysconfig.get_path(kind)).resolve(strict=True))
+    external_files = {}
     roots.update(python_linked_packages(roots['python-runtime'],
-                 [roots['python-standard-library'], roots['python-purelib'], roots['python-platlib']]))
+                 [roots['python-standard-library'], roots['python-purelib'], roots['python-platlib']],
+                 external_files=external_files))
     tools['selected-clang'] = str(clang)
     for name in ('xcrun', 'xcodebuild'):
         found = shutil.which(name, path=env.get('PATH'))
@@ -353,7 +473,7 @@ def inventory(worktree, env, *, query=capture):
                     common / 'config', private / 'config.worktree'])
     origins = git_config_origins(query(['git', 'config', '--show-origin', '--name-only', '--list']), worktree)
     configs.extend(Path(p) for p in origins if Path(p) not in configs)
-    return {'version': 1, 'tools': tools, 'dependency_roots': roots,
+    return {'version': 1, 'tools': tools, 'dependency_roots': roots, 'external_files': external_files,
             'cargo_configs': [str(p) for p in configs]}
 
 
@@ -369,12 +489,13 @@ def observe(manifest, inventory_record, env, target, deadline, *, validate_sourc
                                      *inventory_record['dependency_roots'].values(),
                                      *inventory_record['cargo_configs']])
     audit = {}
-    tools = {name: _snapshot(path, deadline, allowed=allowed, audit=audit) for name, path in inventory_record['tools'].items()}
+    external_files = inventory_record.get('external_files', {})
+    tools = {name: _snapshot(path, deadline, allowed=allowed, audit=audit, external_files=external_files) for name, path in inventory_record['tools'].items()}
     if not tools or any(row['kind'] != 'file' for row in tools.values()):
         raise Refusal('measurement executable inventory is incomplete')
-    dependencies = {name: _snapshot(path, deadline, allowed=allowed, audit=audit)
+    dependencies = {name: _snapshot(path, deadline, allowed=allowed, audit=audit, external_files=external_files)
                     for name, path in inventory_record['dependency_roots'].items()}
-    configs = [_snapshot(path, deadline, allowed=allowed, audit=audit) for path in inventory_record['cargo_configs']]
+    configs = [_snapshot(path, deadline, allowed=allowed, audit=audit, external_files=external_files) for path in inventory_record['cargo_configs']]
     workers = {}
     for name in WORKERS:
         raw = env.get(name)

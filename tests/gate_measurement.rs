@@ -13,6 +13,7 @@ fn throughput_cohort_and_execution_evidence_regressions() {
         "scripts/tests/test_gate_measurement_campaign.py",
         "scripts/tests/test_gate_measurement_native.py",
         "scripts/tests/test_gate_measurement_python_inputs.py",
+        "scripts/tests/test_gate_measurement_ca_bundle.py",
     ] {
         let result =
             Command::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/python-bin/python3"))
