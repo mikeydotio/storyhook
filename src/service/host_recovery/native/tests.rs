@@ -951,7 +951,7 @@ fn host_recovery_status_exposes_exact_fault_and_only_selected_project_admissions
         fault.key,
         before.iter().find(|r| r.id == owner.id).unwrap().fault_key
     );
-    assert_eq!(status.submissions, [original.story_id.clone()]);
+    assert_eq!(status.submissions, std::slice::from_ref(&original.story_id));
     assert_eq!(status.retained_submissions.len(), 1);
     assert_eq!(status.retained_submissions[0].submission, original);
     assert_eq!(status.retained_submissions[0].admission_count, Some(2));

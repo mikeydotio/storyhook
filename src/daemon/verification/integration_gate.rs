@@ -47,8 +47,8 @@ pub(crate) fn fixture_certification(
 }
 
 pub(super) enum ManagedGateResult {
-    Certified(NativeIntegrationCertification),
-    Uncertified(VerificationOutcome),
+    Certified(Box<NativeIntegrationCertification>),
+    Uncertified(Box<VerificationOutcome>),
 }
 
 // Only the serialized central worker can call this; the borrowed guard stays
@@ -129,15 +129,15 @@ pub(super) fn run_with_inputs<S: Store>(
         },
     )?;
     if !current? || !service.gate_permitted(claim)? {
-        return Ok(ManagedGateResult::Uncertified(
+        return Ok(ManagedGateResult::Uncertified(Box::new(
             VerificationOutcome::Cancelled,
-        ));
+        )));
     }
     let VerificationOutcome::Certified {
         head, tree, gate, ..
     } = &outcome
     else {
-        return Ok(ManagedGateResult::Uncertified(outcome));
+        return Ok(ManagedGateResult::Uncertified(Box::new(outcome)));
     };
     // Native control observation is separately bounded; the progressing test
     // runner above retains its existing idle supervision with no new total cap.
@@ -158,5 +158,5 @@ pub(super) fn run_with_inputs<S: Store>(
         inputs: observed,
     };
     certified.validate_for(claim)?;
-    Ok(ManagedGateResult::Certified(certified))
+    Ok(ManagedGateResult::Certified(Box::new(certified)))
 }

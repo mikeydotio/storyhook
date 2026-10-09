@@ -1350,7 +1350,7 @@ fn nothing_outside_real_store_rs_re_infers_a_real_store_from_the_checkout() {
 /// only satisfy by asking the environment, and must come back holding exactly it.
 ///
 /// The `--serve` spellings are checked separately from the `start` ones because
-/// they arrive by a different route — `main::foreground_serve_port` rather than
+/// they arrive by a different route — `cli::model::before_environment` rather than
 /// `daemon::commands::start` — and that is the route a later refactor is most
 /// likely to break silently, since no user-facing test runs it.
 #[test]
