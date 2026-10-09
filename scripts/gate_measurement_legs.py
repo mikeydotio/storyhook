@@ -1,0 +1,127 @@
+"""Per-leg execution/reuse records inside a live SH-872 measurement owner."""
+
+import hashlib
+import os
+import stat
+from pathlib import Path
+import sys
+
+from gate_measurement_cohorts import Cohort, canonical
+from gate_measurement_context import validate, VARIABLE
+from gate_measurement_runtime import journal, records
+from verifier_state import Refusal
+
+# These name the enclosing attempt's telemetry or authority, not detector input.
+# Every other inherited variable is hashed, including unknown variables. A
+# differing incidental value conservatively refuses R rather than weakening it.
+ATTEMPT_ENV = {
+    'STORYHOOK_MEASUREMENT_SLOT', 'STORYHOOK_GATE_PROGRESS',
+    'STORYHOOK_GATE_EXECUTION_FILE', 'STORYHOOK_MEASUREMENT_GATE_DEADLINE',
+    'STORYHOOK_GATE_BUILD_OUTCOME',
+    '_',
+}
+
+
+def environment_identity(env):
+    """Retain per-key hashes so an input mismatch is diagnosable without values."""
+    return {k: hashlib.sha256(v.encode()).hexdigest() for k, v in env.items() if k not in ATTEMPT_ENV}
+
+
+def current_slot(identity, manifest_path, directory):
+    directory = Path(directory)
+    root = Path(identity.get('campaign_root', Path(manifest_path).parent))
+    if (not directory.is_absolute() or directory.resolve() != directory
+            or directory.parent.parent != root / 'measurement-results-v1'
+            or identity.get('kind') != 'gate-throughput-measurement'):
+        raise Refusal('measurement slot is not in its live manifest namespace')
+    cohort = Cohort(root, directory.parent.name)
+    _, pending, _ = cohort.history()
+    if (pending is None or directory.name != f"slot-{pending['slot']:02}"
+            or pending['identity']['source_commit'] != identity['commit']
+            or pending['identity']['source_tree'] != identity['tree']
+            or pending['identity']['gate_argv'] != identity['gate']['argv']):
+        raise Refusal('measurement slot does not match its current source/gate identity')
+    return cohort, pending
+
+
+def command_key(slot, leg, argv, env):
+    if leg not in slot['identity']['applicable_legs'] or not argv:
+        raise Refusal('measurement command is not an applicable detector')
+    if any(not isinstance(arg, str) or '\x00' in arg for arg in argv):
+        raise Refusal('measurement detector has invalid arguments')
+    inputs = {'identity': slot['key'], 'leg': leg, 'argv': argv,
+              'build_outcome_channel': 'STORYHOOK_GATE_BUILD_OUTCOME' in env,
+              'environment': {k: v for k, v in env.items() if k not in ATTEMPT_ENV}}
+    return hashlib.sha256(canonical(inputs).encode()).hexdigest()
+
+
+def prepare(cohort, slot, directory, leg, argv, env):
+    """Run C/W even if ordinary receipts exist; R needs this exact W command."""
+    if 'STORYHOOK_GATE_BUILD_OUTCOME' in env:
+        # gate_run creates an empty feedback channel for each Rust detector.
+        # Its random pathname is output routing, not an input to the detector.
+        info = Path(env['STORYHOOK_GATE_BUILD_OUTCOME']).lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_size != 0
+                or info.st_uid != os.getuid() or info.st_nlink != 1):
+            raise Refusal('measurement build-outcome channel is not a fresh regular file')
+    key = command_key(slot, leg, argv, env)
+    path = Path(directory) / 'legs.jsonl'
+    if any(row.get('leg') == leg for row in records(path)):
+        raise Refusal('measurement leg has already started; no retry is allowed')
+    if slot['mode'] == 'reuse':
+        cohort.reuse_key(slot['identity'], leg)
+        warm = cohort.root / f"slot-{slot['slot'] - 1:02}" / 'legs.jsonl'
+        evidence = [row for row in records(warm) if row.get('leg') == leg]
+        if (len(evidence) != 2 or evidence[0].get('kind') != 'start'
+                or evidence[1].get('kind') != 'finish'
+                or any(row.get('key') != key for row in evidence)
+                or type(evidence[1].get('exit_code')) is not int
+                or evidence[1]['exit_code'] != 0):
+            raise Refusal('warm command/environment evidence is missing, changed or failed')
+        journal(path, {'kind': 'reused', 'leg': leg, 'key': key})
+        return 'reused'
+    journal(path, {'kind': 'start', 'leg': leg, 'key': key,
+                   'environment': environment_identity(env)})
+    return 'run'
+
+
+def finish(slot, directory, leg, argv, env, exit_code):
+    key = command_key(slot, leg, argv, env)
+    path = Path(directory) / 'legs.jsonl'
+    evidence = [row for row in records(path) if row.get('leg') == leg]
+    if (slot['mode'] == 'reuse' or len(evidence) != 1
+            or evidence[0].get('kind') != 'start' or evidence[0].get('key') != key
+            or type(exit_code) is not int or not 0 <= exit_code <= 255):
+        before = evidence[0].get('environment', {}) if evidence else {}
+        after = environment_identity(env)
+        changed = sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k))
+        journal(path, {'kind': 'input-mismatch', 'leg': leg, 'changed_environment_keys': changed})
+        raise Refusal('measurement leg has no identical unfinished execution; changed environment keys: ' + ', '.join(changed))
+    journal(path, {'kind': 'finish', 'leg': leg, 'key': key, 'exit_code': exit_code})
+
+
+def main():
+    try:
+        operation, leg, *argv = sys.argv[1:]
+        path = os.environ[VARIABLE]
+        identity = validate(path)
+        directory = os.environ['STORYHOOK_MEASUREMENT_SLOT']
+        cohort, slot = current_slot(identity, path, directory)
+        if operation in ('prepare', 'prepare-status'):
+            action = prepare(cohort, slot, directory, leg, argv, os.environ)
+            if operation == 'prepare-status':
+                return 10 if action == 'reused' else 0
+            print(action)
+        elif operation == 'finish' and argv:
+            status, *argv = argv
+            finish(slot, directory, leg, argv, os.environ, int(status))
+        else:
+            raise Refusal('invalid measurement leg operation')
+    except (Refusal, OSError, ValueError, KeyError) as error:
+        print(f'measurement leg: {error}', file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -192,4 +192,5 @@ def pressure():
             'at': datetime.datetime.now().astimezone().isoformat(),
             'load': list(os.getloadavg()), 'cores': os.cpu_count(),
             'memory': capture(['/usr/bin/memory_pressure', '-Q']),
-            'processes': capture(['ps', '-axo', 'pid=,ppid=,pcpu=,comm='])}
+            'processes': capture(['ps', '-axo', 'pid=,ppid=,pcpu=,comm=']),
+            'resource_processes': capture(['ps', '-axo', 'pid=,ppid=,pcpu=,rss=,comm='])}

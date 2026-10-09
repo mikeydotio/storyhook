@@ -19,6 +19,7 @@ from gate_measurement_setup import immutable, prepare, tools_identity
 from verifier_state import Refusal, atomic, paths, read, save
 from gate_measurement_bounds import Deadline, LIMITS, require_same_day, start_slot, validate_policy
 from gate_measurement_storage import check_storage, pressure_level
+from gate_measurement_inputs import inventory, observe
 
 SCRIPTS = Path(__file__).resolve().parent
 
@@ -56,7 +57,12 @@ def idle(directory, cohort):
         if today() != cohort['day']:
             raise Refusal('local day changed during idle admission')
         observed = pressure()
+        from gate_measurement_campaign import competing_work, owned_resources
+        observed['competing_pids'] = competing_work(observed['processes'], os.getpid())
+        observed['owned_resources'] = owned_resources(observed['resource_processes'], os.getpid())
         journal(directory / 'pressure.jsonl', dict(observed, kind='idle'))
+        if observed['competing_pids']:
+            raise Refusal('competing external work prevents quiet scheduling admission')
         progress({'kind': 'activity', 'path': 'measurement/idle', 'status': 'running',
                   'label': f"observed load/core {observed['load'][0] / observed['cores']:.3f}", 'at': observed['at']})
         if window.observe(time.monotonic(), observed['load'][0], observed['cores']):
@@ -93,6 +99,15 @@ def run_sample(identity, cohort, index, directory, probes, warmup=False):
     if float(os.environ.get('STORYHOOK_MEASUREMENT_END', 'inf')) - time.monotonic() < LIMITS['gate_seconds']:
         raise Refusal('gate admission exceeds remaining campaign allowance')
     require_same_day(cohort['day'], LIMITS['gate_seconds'])
+    def observe_inputs():
+        return observe(identity, identity['input_inventory'], os.environ,
+                       identity['storage']['targets'][0], limit,
+                       validate_source=lambda: validate(os.environ['STORYHOOK_GATE_MEASUREMENT']),
+                       versions=tools_identity,
+                       resolve_inventory=lambda: inventory(identity['worktree'], os.environ))
+    inputs_before = observe_inputs()
+    if inputs_before != identity.get('pinned_inputs'):
+        raise Refusal('scheduling inputs changed between matched samples')
     if 'storage' in identity:
         check_storage(identity['storage'])
         pressure_level()
@@ -130,10 +145,15 @@ def run_sample(identity, cohort, index, directory, probes, warmup=False):
                 now = time.monotonic()
                 if now - last_pressure >= LIMITS['sample_seconds']:
                     observed = pressure()
+                    from gate_measurement_campaign import competing_work, owned_resources
+                    observed['competing_pids'] = competing_work(observed['processes'], os.getpid())
+                    observed['owned_resources'] = owned_resources(observed['resource_processes'], os.getpid())
                     if 'storage' in identity:
                         observed['storage'] = check_storage(identity['storage'])
                         observed['native_memory_pressure'] = pressure_level()
                     journal(directory / 'pressure.jsonl', dict(observed, kind='running'))
+                    if observed['competing_pids']:
+                        raise Refusal('competing external work invalidates the scheduling sample')
                     last_pressure = now
                 time.sleep(.5)
         except BaseException:
@@ -161,6 +181,11 @@ def run_sample(identity, cohort, index, directory, probes, warmup=False):
         raise Refusal(f'gate has no observed command exit; supervisor={process.returncode}; evidence={directory}')
     wall = parse_wall((directory / 'time.txt').read_text())
     reasons = []
+    from gate_measurement_execution import coverage
+    try:
+        coverage(records(gate_progress), identity['applicable_legs'], 'warm')
+    except Refusal as error:
+        reasons.append(str(error))
     if process.returncode != exit_record['exit_code'] or cleanup != 'complete':
         reasons.append('supervision or cleanup failed')
     if today() != cohort['day']:
@@ -168,6 +193,8 @@ def run_sample(identity, cohort, index, directory, probes, warmup=False):
     if not warmup and (len(measured) != 2 or not all(p['ok'] and p['overlap'] for p in measured)):
         reasons.append('interactive probes failed or did not overlap active tests')
     validate(path)
+    if observe_inputs() != inputs_before:
+        reasons.append('measurement inputs changed during execution')
     return {'kind': 'warmup' if warmup else 'sample', 'index': index, 'condition': condition,
             'tree': cohort['tree'], 'day': cohort['day'], 'wall_seconds': wall,
             'admission_to_settlement_seconds': elapsed,
@@ -213,11 +240,24 @@ def owned(path):
         raise Refusal('bounded campaign deadline is missing')
     Deadline(LIMITS['campaign_seconds'], end=float(os.environ['STORYHOOK_MEASUREMENT_END'])).require('campaign')
     output = Path(path).parent
+    campaign_end = float(os.environ['STORYHOOK_MEASUREMENT_END'])
+    preparation = Deadline(LIMITS['preparation_seconds'], end=identity['preparation_end'])
+    preparation.require('initial scheduling preparation')
+    os.environ['STORYHOOK_MEASUREMENT_END'] = str(preparation.end)
     worktree = Path(identity['worktree'])
     if not worktree.exists():
         capture(['git', '-C', identity['source'], 'worktree', 'add', '--detach', str(worktree), identity['commit']])
     os.chdir(worktree)
     validate(path)
+    capture(['bash', 'scripts/managed-cargo.sh', 'fetch', '--locked', '--offline'])
+    identity['input_inventory'] = inventory(worktree, os.environ)
+    immutable(output / 'inputs.json', identity['input_inventory'])
+    identity['pinned_inputs'] = observe(identity, identity['input_inventory'], os.environ,
+                                      identity['storage']['targets'][0],
+                                      Deadline(2400, end=float(os.environ['STORYHOOK_MEASUREMENT_END'])),
+                                      validate_source=lambda: validate(path), versions=tools_identity,
+                                      resolve_inventory=lambda: inventory(worktree, os.environ))
+    immutable(output / 'pinned-inputs.json', identity['pinned_inputs'])
     require_resource_limits(identity)
     if tools_identity() != identity['tools'] or not normal_class(scheduling()):
         raise Refusal('toolchain or collector class changed before collection')
@@ -234,6 +274,8 @@ def owned(path):
     save(directory / 'cleanup.json', {'version': 1, 'ok': False, 'stage': 'running'})
     try:
         probes.start()
+        preparation.require('initial scheduling preparation')
+        os.environ['STORYHOOK_MEASUREMENT_END'] = str(campaign_end)
         warmup = read(directory / 'warmup.json')
         if warmup is None:
             idle(directory, cohort)

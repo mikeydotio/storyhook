@@ -296,6 +296,12 @@ pub const TEST_ENVIRONMENT: &[Parameter] = &[
                  ones an ordinary session gets",
     },
     Parameter {
+        name: "STORYHOOK_MEASUREMENT_SLOT",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "measurement slot authority belongs only to the owned collector",
+    },
+    Parameter {
         name: "STORYHOOK_MEASUREMENT_GATE_DEADLINE",
         disposition: Disposition::Clear,
         scope: Scope::Anywhere,

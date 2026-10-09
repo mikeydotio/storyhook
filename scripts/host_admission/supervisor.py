@@ -118,7 +118,7 @@ class ManagedProcess:
         members = []
         for pid in native.session_members(self.child.pid):
             try:
-                if native.process(pid, self.boot)["live"]:
+                if native.session_member_is_live(pid, self.child.pid, self.boot):
                     members.append(pid)
             except ProcessLookupError:
                 continue

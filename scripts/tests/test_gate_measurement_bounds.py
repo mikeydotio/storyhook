@@ -73,8 +73,8 @@ class Observation(unittest.TestCase):
         process.boot = 'fixture'
         process.observation_failure = None
         with mock.patch('host_admission.supervisor.native.session_members', return_value=[101, 102]), \
-                mock.patch('host_admission.supervisor.native.process',
-                           side_effect=[PermissionError(errno.EPERM, 'denied'), {'live': True}]):
+                mock.patch('host_admission.supervisor.native.session_member_is_live',
+                           side_effect=[PermissionError(errno.EPERM, 'denied'), True]):
             self.assertEqual(process._members(), [101, 102])
         self.assertIn('101', process.observation_failure)
         with mock.patch('host_admission.supervisor.os.getsid', side_effect=[999, 100]), \
@@ -140,6 +140,26 @@ class Storage(unittest.TestCase):
         for value in [2, 4, 0, None, True]:
             with self.subTest(value=value), self.assertRaises(Refusal):
                 storage.pressure_level(lambda: value)
+
+    def test_remaining_growth_allowance_is_preserved_after_initial_admission(self):
+        required = storage.SYSTEM_HEADROOM + storage.TARGET_CAP + storage.EVIDENCE_CAP
+        with self.assertRaises(Refusal):
+            storage.check_storage(self.description, size=lambda *_a, **_k: 0,
+                                  disk=lambda _: SimpleNamespace(free=required - 1))
+        result = storage.check_storage(self.description, size=lambda *_a, **_k: 0,
+                                       disk=lambda _: SimpleNamespace(free=required))
+        self.assertEqual(result['required_free_bytes'], required)
+        allocated = 1024
+        result = storage.check_storage(self.description,
+            size=lambda p, **_k: 0 if Path(p) == self.root else allocated,
+            disk=lambda _: SimpleNamespace(free=required - allocated))
+        self.assertEqual(result['required_free_bytes'], required - allocated)
+        self.assertFalse(result['disk_reserved'])
+
+    def test_invalid_size_observations_cannot_reduce_remaining_allowance(self):
+        for value in (None, True, -1):
+            with self.subTest(value=value), self.assertRaises(Refusal):
+                self.check(size=lambda *_a, **_k: value)
 
 
 if __name__ == '__main__':

@@ -19,10 +19,16 @@ def manifest(path):
     if not file.is_absolute() or file.resolve() != file or file.name != "manifest.json":
         raise Refusal(f"measurement manifest must be a physical absolute manifest.json: {path}")
     value = read(file)
-    if not value or value.get("version") != 1 or value.get("kind") != "gate-class-measurement":
-        raise Refusal("not a gate-class measurement manifest")
+    if (not value or value.get("version") != 1
+            or value.get("kind") not in ("gate-class-measurement", "gate-throughput-measurement")):
+        raise Refusal("not a supported measurement manifest")
     if value.get("worktree") != str(file.parent / "worktree"):
         raise Refusal("measurement workspace is not bound to the output directory")
+    if value['kind'] == 'gate-throughput-measurement':
+        if (value.get('campaign_root') != str(file.parent.parent)
+                or value.get('revision') != file.parent.name
+                or value['revision'] not in ('baseline', 'optimization')):
+            raise Refusal('throughput manifest is not bound to its campaign revision')
     for field in ("commit", "tree"):
         if not isinstance(value.get(field), str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value[field]):
             raise Refusal(f"measurement {field} is not a pinned object ID")

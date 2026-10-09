@@ -434,6 +434,7 @@ class OwnedExecution(unittest.TestCase):
 
     def owned(self, body, mode='measurement-run', prefix=()):
         """Run a script within the real lifecycle's durable session."""
+        self.env['STORYHOOK_MEASUREMENT_GATE_DEADLINE'] = str(time.monotonic() + 300)
         return subprocess.run([*prefix, sys.executable, '-B', str(SCRIPTS / 'verifier-owner.py'), mode,
                                str(self.common), str(self.worktree), '--', sys.executable, '-B', '-c', body],
                               cwd=self.worktree, env=self.env, text=True, capture_output=True)
@@ -482,6 +483,8 @@ deadline = time.monotonic() + {allowance!r}
 while not probes.exists() or len(probes.read_text().splitlines()) != 2:
     if time.monotonic() >= deadline: raise SystemExit(6)
     time.sleep(.05)
+with progress.open('a') as stream:
+    stream.write(json.dumps(dict(kind='item',path='release gate/rust-suite',status='passed'))+'\\n')
 '''
         value = json.loads(self.path.read_text())
         value['gate'] = {'argv': [sys.executable, '-c', gate]}
@@ -492,15 +495,21 @@ while not probes.exists() or len(probes.read_text().splitlines()) != 2:
         body = f'''
 import sys, os, json
 from pathlib import Path
+from unittest import mock
 sys.path.insert(0, {str(SCRIPTS)!r})
 from gate_measurement import run_sample, today
 from gate_measurement_probes import Probes
 identity=json.loads(Path({str(self.path)!r}).read_text())
+identity.update(input_inventory={{}}, pinned_inputs={{'fixture': True}}, storage={{'targets':[{{}}]}}, applicable_legs=['rust-suite'])
 os.environ['STORYHOOK_GATE_PROGRESS']={str(self.output / 'progress.jsonl')!r}
 probes=Probes({str(self.output)!r}, {{'worktree':{str(SCRIPTS.parent)!r},'binary_sha256':{runtime.sha256(binary)!r}}})
 try:
     probes.start()
-    result=run_sample(identity,dict(tree=identity['tree'],day=today(),pairs=10),{index},Path({str(sample_dir)!r}),probes)
+    with mock.patch('gate_measurement.observe',return_value={{'fixture': True}}), \
+         mock.patch('gate_measurement.check_storage',return_value={{}}), \
+         mock.patch('gate_measurement.pressure_level',return_value=1), \
+         mock.patch('gate_measurement.pressure',return_value={{'processes':f'{{os.getpid()}} 1 0.0 python\\n','resource_processes':f'{{os.getpid()}} 1 0.0 10 python\\n'}}):
+        result=run_sample(identity,dict(tree=identity['tree'],day=today(),pairs=10),{index},Path({str(sample_dir)!r}),probes)
     print(json.dumps(result))
 finally:
     probes.stop()
@@ -546,7 +555,8 @@ subprocess.run([sys.executable, '-B', {str(SCRIPTS / 'verifier-owner.py')!r},
  sys.executable, '-c', {gate!r}], check=True)
 '''
         allowance = load_grace.patience(30, load_grace.contention())
-        env = dict(self.env, STORYHOOK_VERIFIER_CLEANUP_GRACE_MS=str(int(allowance * 1000)))
+        env = dict(self.env, STORYHOOK_VERIFIER_CLEANUP_GRACE_MS=str(int(allowance * 1000)),
+                   STORYHOOK_MEASUREMENT_GATE_DEADLINE=str(time.monotonic() + 300))
         child = subprocess.Popen([sys.executable, '-B', str(SCRIPTS / 'verifier-owner.py'),
                                   'measurement-run', str(self.common), str(self.worktree), '--',
                                   sys.executable, '-c', body], cwd=self.worktree, env=env,
@@ -554,8 +564,11 @@ subprocess.run([sys.executable, '-B', {str(SCRIPTS / 'verifier-owner.py')!r},
         try:
             patience = load_grace.Patience(allowance, 1, 30, time.monotonic())
             while not ready.exists():
-                if child.poll() is not None or patience.expired(time.monotonic()):
-                    self.fail(f'owned gate did not start: exit={child.poll()} fixture={self.root}')
+                if child.poll() is not None:
+                    out, err = child.communicate()
+                    self.fail(f'owned gate did not start: exit={child.returncode} fixture={self.root}: {out}\n{err}')
+                if patience.expired(time.monotonic()):
+                    self.fail(f'owned gate did not start before its allowance: fixture={self.root}')
                 time.sleep(.05)
             conflict = self.owned('pass')
             self.assertNotEqual(conflict.returncode, 0)
@@ -571,7 +584,7 @@ subprocess.run([sys.executable, '-B', {str(SCRIPTS / 'verifier-owner.py')!r},
         finally:
             if child.poll() is None:
                 child.terminate()
-                child.communicate(timeout=allowance * 2)
+            child.communicate(timeout=allowance * 2)
 
     @unittest.skipUnless(sys.platform == 'darwin', 'macOS timed command')
     def test_changed_resource_limits_refuse_before_timed_command(self):
@@ -607,9 +620,15 @@ from pathlib import Path
 sys.path.insert(0, {str(SCRIPTS)!r})
 from gate_measurement import run_sample, today
 identity = json.loads(Path({str(self.path)!r}).read_text())
+from unittest import mock
+identity.update(input_inventory={{}}, pinned_inputs={{'fixture': True}}, storage={{'targets':[{{}}]}}, applicable_legs=['rust-suite'])
 os.environ['STORYHOOK_GATE_PROGRESS'] = {str(self.output / 'progress.jsonl')!r}
 cohort = dict(version=1, tree=identity['tree'], pairs=10, day=today())
-sample = run_sample(identity, cohort, 1, Path({str(self.output / 'sample')!r}), None)
+with mock.patch('gate_measurement.observe', return_value={{'fixture': True}}), \
+     mock.patch('gate_measurement.check_storage', return_value={{}}), \
+     mock.patch('gate_measurement.pressure_level', return_value=1), \
+     mock.patch('gate_measurement.pressure', return_value={{'processes':f'{{os.getpid()}} 1 0.0 python\\n','resource_processes':f'{{os.getpid()}} 1 0.0 10 python\\n'}}):
+    sample = run_sample(identity, cohort, 1, Path({str(self.output / 'sample')!r}), None)
 print(json.dumps(sample))
 '''
         result = self.owned(body)

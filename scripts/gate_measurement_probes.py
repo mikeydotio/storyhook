@@ -86,4 +86,9 @@ class Probes:
 
     def stop(self):
         """Stop only the isolated daemon; cleanup failure is evidence, never ignored."""
-        self.cli('daemon', 'stop')
+        # Cleanup retains its own bounded allowance after campaign admission
+        # expires; the expired capture budget cannot strand the private daemon.
+        result = bounded([self.story, 'daemon', 'stop'], root=self.root / 'operations',
+                         seconds=LIMITS['cleanup_seconds'], cwd=self.project, env=self.env)
+        if result.returncode:
+            raise Refusal('isolated probe daemon cleanup failed: ' + result.stderr)

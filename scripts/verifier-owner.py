@@ -460,11 +460,17 @@ def run(mode, common, worktree, key, command, cancellation, output=None):
         run_deadline = None
         if mode == "measurement-gate":
             from gate_measurement_context import validate
-            validate()
+            measurement_identity = validate()
             from gate_measurement_bounds import LIMITS
+            gate_ceiling = LIMITS['gate_seconds']
+            if measurement_identity['kind'] == 'gate-throughput-measurement':
+                from gate_measurement_legs import current_slot
+                _, slot = current_slot(measurement_identity, os.environ['STORYHOOK_GATE_MEASUREMENT'],
+                                       os.environ.get('STORYHOOK_MEASUREMENT_SLOT', ''))
+                gate_ceiling = slot['ceiling_seconds']
             now = time.monotonic()
-            run_deadline = float(os.environ.get("STORYHOOK_MEASUREMENT_GATE_DEADLINE", now + LIMITS['gate_seconds']))
-            if not math.isfinite(run_deadline) or not now < run_deadline <= now + LIMITS['gate_seconds']:
+            run_deadline = float(os.environ.get("STORYHOOK_MEASUREMENT_GATE_DEADLINE", 'nan'))
+            if not math.isfinite(run_deadline) or not now < run_deadline <= now + gate_ceiling:
                 raise Refusal("measurement gate deadline is missing, expired or exceeds containment policy")
             if len(command) < 2 or command[0] not in ("control", "utility"):
                 raise Refusal("measurement gate requires control or utility")
