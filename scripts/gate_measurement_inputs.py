@@ -252,6 +252,7 @@ def inventory(worktree, env, *, query=capture):
     clang = Path(query(['xcrun', '--find', 'clang'])).resolve(strict=True)
     roots['apple-toolchain'] = str(clang.parent.parent)
     roots['python-standard-library'] = str(Path(sysconfig.get_path('stdlib')).resolve(strict=True))
+    roots['python-runtime'] = str(Path(sys.base_prefix).resolve(strict=True))
     for kind in ('purelib', 'platlib'):
         roots['python-' + kind] = str(Path(sysconfig.get_path(kind)).resolve(strict=True))
     tools['selected-clang'] = str(clang)
