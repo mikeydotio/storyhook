@@ -65,6 +65,8 @@ def _snapshot(path, deadline, *, allowed, trail=(), audit):
     if not path.is_absolute() or path.parent.resolve() != path.parent:
         raise Refusal('input path is not physical and absolute')
     observed_stamp = stamp(path)
+    if path not in audit and len(audit) >= 250000:
+        raise Refusal('input inventory exceeded its 250000-entry memory bound')
     if path in audit and audit[path] != observed_stamp:
         raise Refusal('input changed between references in the same inventory')
     audit[path] = observed_stamp
@@ -124,6 +126,23 @@ def cargo_config_paths(worktree, env):
     return sorted(set(paths))
 
 
+def git_config_origins(raw, worktree):
+    """Names-only Git discovery includes active include/includeIf files.
+
+    Quoted/non-file origins are deliberately unsupported instead of guessing at
+    Git's filename escaping. No configuration value is requested or persisted.
+    """
+    result = set()
+    for line in raw.splitlines():
+        fields = line.split('\t')
+        if (len(fields) != 2 or not fields[0].startswith('file:')
+                or '"' in fields[0] or not fields[1]):
+            raise Refusal('Git configuration origin is unsupported or unreadable')
+        path = Path(fields[0][5:])
+        result.add(str((Path(worktree) / path).resolve(strict=True)))
+    return sorted(result)
+
+
 def inventory(worktree, env, *, query=capture):
     """Resolve mandatory tools and mutable dependency roots before pinning.
 
@@ -134,7 +153,9 @@ def inventory(worktree, env, *, query=capture):
     """
     home = Path(env.get('CARGO_HOME') or str(Path(env['HOME']) / '.cargo')).resolve()
     roots = {'cargo-registry-source': str(home / 'registry' / 'src'),
-             'cargo-git-checkouts': str(home / 'git' / 'checkouts')}
+             'cargo-registry-index': str(home / 'registry' / 'index'),
+             'cargo-git-checkouts': str(home / 'git' / 'checkouts'),
+             'cargo-git-databases': str(home / 'git' / 'db')}
     tools = {}
     for name in ('rustc', 'cargo', 'git', 'make', 'node', 'bash', 'sh', 'cc', 'ar'):
         found = shutil.which(name, path=env.get('PATH'))
@@ -159,8 +180,27 @@ def inventory(worktree, env, *, query=capture):
     # Node modules are mutable, ignored dependency input, independently of locks.
     roots['node-modules'] = str(Path(worktree) / 'node_modules')
     roots['browser-node-modules'] = str(Path(worktree) / 'e2e' / 'node_modules')
+    if env.get('SDKROOT'):
+        roots['sdkroot-override'] = str(Path(env['SDKROOT']).resolve(strict=True))
+    import json
+    metadata = json.loads(query(['cargo', 'metadata', '--locked', '--offline', '--format-version', '1']))
+    for package in metadata['packages']:
+        package_root = Path(package['manifest_path']).resolve(strict=True).parent
+        if package_root == Path(worktree) or Path(worktree) in package_root.parents:
+            continue  # complete tracked workspace source has its own Git identity
+        if any(package_root == Path(root) or Path(root) in package_root.parents for root in roots.values()):
+            continue
+        roots['external-package-' + digest(str(package_root))] = str(package_root)
+    common = Path(query(['git', 'rev-parse', '--git-common-dir']))
+    common = (Path(worktree) / common).resolve(strict=True)
+    private = Path(query(['git', 'rev-parse', '--absolute-git-dir'])).resolve(strict=True)
+    configs = cargo_config_paths(worktree, env)
+    configs.extend([Path(env['HOME']) / '.gitconfig', Path(env['HOME']) / '.config/git/config',
+                    common / 'config', private / 'config.worktree'])
+    origins = git_config_origins(query(['git', 'config', '--show-origin', '--name-only', '--list']), worktree)
+    configs.extend(Path(p) for p in origins if Path(p) not in configs)
     return {'version': 1, 'tools': tools, 'dependency_roots': roots,
-            'cargo_configs': [str(p) for p in cargo_config_paths(worktree, env)]}
+            'cargo_configs': [str(p) for p in configs]}
 
 
 def observe(manifest, inventory_record, env, target, deadline, *, validate_source,

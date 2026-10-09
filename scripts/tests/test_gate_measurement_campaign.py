@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -15,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gate_measurement_bounds import Deadline
 from gate_measurement_campaign import begin_window, campaign_environment, competing_work, owned_resources
 from gate_measurement_cohorts import Cohort
-from gate_measurement_inputs import snapshot, observe, WORKERS, cargo_config_paths
+from gate_measurement_inputs import snapshot, observe, WORKERS, cargo_config_paths, git_config_origins
 from gate_measurement_targets import TargetPool, remove_exact
 from gate_measurement_storage import directory_identity
 from gate_measurement_runtime import records
@@ -108,6 +109,24 @@ class Inputs(Fixture):
             observe(self.manifest, self.plan, self.env, self.target, Deadline(30),
                     validate_source=lambda: None, versions=versions,
                     resolve_inventory=lambda: copy.deepcopy(self.plan), limits=lambda: {})
+
+    def test_git_include_origins_are_discovered_without_config_values(self):
+        self.config.write_text('[core]\n bare = false\n')
+        raw = f'file:{self.config}\tcore.bare\nfile:{self.config}\tinclude.path\n'
+        self.assertEqual(git_config_origins(raw, self.root), [str(self.config)])
+        for raw in ['command line:\tcore.bare', 'file:"escaped name"\tcore.bare', 'unreadable']:
+            with self.assertRaises(Refusal): git_config_origins(raw, self.root)
+
+    def test_real_local_git_names_only_output_tracks_included_configuration(self):
+        include = self.root / 'included'; include.write_text('[core]\n bare = false\n')
+        self.config.write_text('[include]\n path = included\n')
+        env = {'PATH': '/usr/bin:/bin', 'HOME': str(self.root), 'GIT_CONFIG_NOSYSTEM': '1',
+               'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_SYSTEM': '/dev/null'}
+        result = subprocess.run(['/usr/bin/git', 'config', '--file', str(self.config),
+                                 '--includes', '--show-origin', '--name-only', '--list'],
+                                env=env, capture_output=True, text=True, timeout=5, check=True)
+        self.assertEqual(git_config_origins(result.stdout, self.root), sorted([str(self.config), str(include)]))
+        self.assertNotIn('false', result.stdout)
 
 
 class Windows(Fixture):
@@ -233,6 +252,29 @@ class HelperCustody(Fixture):
             self.assertEqual(execute(self.root), 0)
         self.assertEqual(run.call_args.kwargs['pass_fds'], (9, 12))
 
+    def test_private_probe_stop_still_runs_after_admission_deadline(self):
+        from gate_measurement_probes import Probes
+        probe = Probes.__new__(Probes)
+        probe.story, probe.root, probe.project, probe.env = '/fixture/story', self.root, self.root, {}
+        with mock.patch.dict(os.environ, {'STORYHOOK_MEASUREMENT_END': '0'}), \
+             mock.patch('gate_measurement_probes.bounded', return_value=SimpleNamespace(returncode=0)) as run:
+            probe.stop()
+        self.assertEqual(run.call_args.args[0], ['/fixture/story', 'daemon', 'stop'])
+        self.assertEqual(run.call_args.kwargs['seconds'], 35)
+        with mock.patch('gate_measurement_probes.bounded', return_value=SimpleNamespace(returncode=7, stderr='fixture refusal')):
+            with self.assertRaises(Refusal): probe.stop()
+
+    def test_class_sample_refuses_changed_inputs_before_starting_a_gate(self):
+        import gate_measurement as measurement
+        value = {'input_inventory': {}, 'worktree': str(self.root), 'storage': {'targets': [{}]},
+                 'pinned_inputs': {'fixture': 'original'}}
+        directory = self.root / 'sample'
+        with mock.patch.object(measurement, 'observe', return_value={'fixture': 'changed'}), \
+             mock.patch.object(measurement, 'require_same_day'):
+            with self.assertRaisesRegex(Refusal, 'between matched samples'):
+                measurement.run_sample(value, {'day': 'fixture'}, 0, directory, None)
+        self.assertFalse(directory.exists())
+
 
 class Controller(Fixture):
     def setUp(self):
@@ -247,7 +289,8 @@ class Controller(Fixture):
                       'worktree': str(self.worktree), 'commit': 'a'*40, 'tree': 'b'*40,
                       'gate': {'argv': ['make', 'test']}, 'applicable_legs': ['fmt'],
                       'policy': campaign_module.POLICY,
-                      'window': {'end': now + 36000}, 'campaign': {'end': now + 72000}}
+                      'window': {'end': now + 36000}, 'campaign': {'end': now + 72000},
+                      'preparation_end': now + 2400}
         self.path.write_text(json.dumps(self.value))
         self.slots = []
 

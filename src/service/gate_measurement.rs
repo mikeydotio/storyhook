@@ -38,8 +38,22 @@ pub fn command(checkout: &Path, commit: &str, output: &Path) -> Result<Command, 
             }
         } else {
             fs::create_dir(&output)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&output, fs::Permissions::from_mode(0o700))?;
+            }
         }
         let output = fs::canonicalize(output)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if fs::metadata(&output)?.permissions().mode() & 0o077 != 0 {
+                return Err(AppError::Validation(
+                    "measurement output must be a private directory (mode 0700)".into(),
+                ));
+            }
+        }
         let request = serde_json::to_vec(&serde_json::json!({"version":1,
             "checkout":checkout, "commit":commit}))?;
         let marker = output.join("request.json");

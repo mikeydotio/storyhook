@@ -21,6 +21,9 @@ class TargetPool:
     def __init__(self, root):
         self.root = Path(root)
         self.identity = directory_identity(root)
+        info = self.root.stat()
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise Refusal('campaign output must be private and owned by this account')
         self.targets = self.root / 'targets'
         self.targets.mkdir(mode=0o700, exist_ok=True)
         self.container = directory_identity(self.targets)

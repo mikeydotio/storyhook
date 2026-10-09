@@ -1,39 +1,98 @@
-# Throughput measurement adapter — work in progress
+# Throughput measurement collector
 
-SH-872's cohort controller now has an execution bridge and a per-leg path in
-`leg.sh`. These are source prerequisites, not a supported campaign entry point.
-No before/after measurements or production performance claims exist yet.
+SH-872's collector source supplies the C/W/R controller, input observer, owned
+execution bridge, per-leg reuse path, bounded setup and disposable target pool.
+It is awaiting native integration validation. No actual baseline/optimization
+measurement or production performance claim is implied by source tests.
 
-`run_observation` requires a complete identity observer and a supervised gate
-launcher. It persists a slot before launch, compares observed identity afterward,
-and requires complete top-level detector progress plus exact exit/settlement
-evidence. Exceptions retain the pending slot and append a diagnostic. They do not
-create an exit observation, free an unresolved owner, or permit a replacement.
+## Entry and containment
 
-`OwnedGate` calls the current verifier owner with its existing host reservation,
-session custody and execution-result channel. It checks the command against the
-owner-bound manifest and mirrors progress. Deadline or health refusal signals
-only its direct supervisor, which retains descendant cleanup ownership. A cleanup
-observation timeout preserves the owner and all evidence. The outer campaign
-still needs to supply the complete identity and health observers.
+The internal operator entry is `gate_measurement_campaign.py prepare` with six
+arguments: an existing empty private output root, source checkout, exact source
+revision, validated current StoryHook binary, `baseline` or `optimization`, and
+an external coordinated-start receipt. There is no daemon/automation entry.
+The receipt must carry version 1, kind `coordinated-measurement-start`, story
+`SH-872`, the exact campaign root and revision, and the actual coordination
+authority. A receipt records a real start decision; do not invent one to pass
+the check. Source-preparation permission is not a measurement start decision.
 
-The owner-bound throughput mode has its own result namespace. Cold and warm
-legs execute even when ordinary receipts exist. Reuse requires the immediately
-preceding successful warm slot and each leg's matching command and inherited
-environment digest. Unknown environment inputs participate in that digest.
-Only attempt telemetry paths, the gate deadline and the shell's `_` value are
-excluded. Unexpected environment drift therefore refuses reuse. Measured legs
-never read or write ordinary gate-leg receipts; existing measurement receipt
-boundaries suppress production gate and tree certification.
+Each window is durably consumed before preparation. The implementation uses
+one continuous, same-boot 20-hour campaign deadline, including the gap used to
+choose and implement the optimization, with two windows of at most 10 hours.
+This is a conservative containment interpretation; it never grants extra time.
+Each revision gets exactly three C/W/R blocks. Cold/warm ceilings are 75 minutes,
+reuse is 10 minutes, initial preparation is 40 minutes, lock wait is 60 seconds,
+and quiet admission requires 60 consecutive seconds below load/core 0.5 within
+five minutes. Interrupted windows/slots cannot silently restart or be replaced.
+The optimization window requires a complete accepted baseline and unchanged
+controls apart from source and fresh targets. Every duration at or above 900
+seconds remains a production-target breach.
 
-Remaining work before any campaign starts:
+Setup strips unrelated credentials and authority from the environment, uses
+offline Cargo, and fixes Cargo/test/plugin/browser worker controls to one. It
+uses the current complete `make test` gate and serial legs. It neither enables
+host admission nor raises a resource limit. Limits must be reviewed with the
+frozen manifest before an actual start.
 
-- Complete and validate source, toolchain, external configuration, environment,
-  worker-limit and target identity capture. The supplied observer is a required
-  integration contract, not proof those inputs have already been captured.
-- Prepare the throughput manifest and coordinate revision/window lifetimes,
-  fresh cold targets, exact-owned settled target turnover and competing work.
-- Validate the real owner, gate, shell-leg and receipt boundaries together in
-  the coordinated quiet host window, including cancellation and failed sensors.
-- Collect the approved matched observations. No source test substitutes for
-  measurement acceptance, and no draft PR authorizes production activation.
+## Inputs and evidence
+
+Every boundary re-observes committed source, selected tools, dependency bytes,
+active Cargo/Git configuration, inherited environment, actual resource/worker
+limits and exact target identity. The inventory includes selected Rust/Apple
+toolchains and SDK, Python standard library, Cargo registry/Git sources and
+metadata, external Cargo packages and Node modules. Git config discovery asks
+for names/origins, never values; raw environment values are hashed, not stored.
+Files are hashed without an mtime digest cache and rechecked for concurrent
+mutation. Optional missing files are part of the fingerprint. Symlinks may only
+resolve inside declared dependencies; unknown types, escaping/cyclic links,
+unsupported Git origin escaping, unavailable sensors and more than 250,000
+inventory entries refuse execution. Do not weaken checks to obtain data.
+Actual inventory cost and platform compatibility require the integration window.
+
+SH-801 uses the same capture and pins one identity across its entire matched
+comparison. Each gate also requires complete applicable-leg progress and actual
+exit/settlement. Its existing same-day, 21-gate and 22.25-hour ceilings remain;
+individual maxima can exceed that reservation, so an incomplete cohort is a
+possible honest outcome.
+
+The execution bridge persists each slot before launch and compares identity
+afterward. Missing progress, exit or cleanup leaves an incomplete attempt.
+`OwnedGate` uses current verifier admission, session custody and the execution
+result channel. Cancellation signals only its direct supervisor; an expired
+cleanup observation retains ownership. Private probe shutdown has a separate
+bounded cleanup allowance after admission expires.
+
+Cold and warm legs execute regardless of ordinary receipts. R needs the
+immediately preceding successful W and matching per-leg command/environment
+records. Attempt telemetry and the verified empty build-feedback output channel
+are excluded from detector-input comparison; unknown environment changes refuse
+reuse. Measurement records cannot publish ordinary gate/tree certification.
+
+## Targets, monitoring and reports
+
+The pool creates at most two new targets beneath its exact private root. Each
+cold slot has a never-reused name and directory identity. Removal requires a
+settled live verifier owner, exclusive existing `ProductLease(reclaim=True)`, an
+exact pending removal record, and a bounded child that inherits lifetime locks.
+Symlinks, substituted/shared/unknown targets and unfinished custody are retained.
+A partial deletion blocks further admission. Existing caches are never adopted,
+enrolled or swept. All logs and custody journals remain.
+
+Admission checks require 130 GiB initially free, two targets of at most 40 GiB
+each, 10 GiB evidence and 40 GiB system headroom. Disk is not reserved. Health
+observations retain native memory pressure, load, process census, detected
+competing builds/tests and observed aggregate descendant CPU/RSS. Five-second
+sampled RSS can count shared pages more than once; it is not a calibrated host
+memory cap. Sensor failure or contamination stops admission. Summary JSON keeps
+all attempt denominators, distributions, breaches, pending slots, failures and
+resource peaks; per-slot journals retain detailed cost boundaries.
+
+## Required integration before measurement
+
+Build the exact source and run the story-added native CLI/owner/receipt/probe
+regressions in the reserved lane. Validate actual tool/config inventory, input
+capture cost, source/binary correspondence, pressure/census sensors and cold
+target peak storage. Exercise real cancellation, descriptor inheritance, R
+coverage and target turnover using disposable fixtures. Freeze and review the
+actual manifest, then obtain the separate coordinated start. Draft publication
+does not authorize merging, measuring, activation or a production release.

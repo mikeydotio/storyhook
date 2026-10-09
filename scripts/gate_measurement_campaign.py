@@ -137,6 +137,9 @@ def owned_resources(raw, owner_pid):
 
 def prepare(root, checkout, revision_commit, binary, revision, authorization):
     root, checkout, binary = map(lambda p: Path(p).resolve(strict=True), (root, checkout, binary))
+    info = root.stat()
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise Refusal('campaign output must be an owned private directory')
     if not normal_class(scheduling()) or root == checkout or checkout in root.parents:
         raise Refusal('campaign requires a normal collector and separate physical output')
     # ROOT must be explicitly created empty by the operator. Never adopt data.
@@ -147,7 +150,7 @@ def prepare(root, checkout, revision_commit, binary, revision, authorization):
     campaign, window = begin_window(root, revision, authorization)
     environment = campaign_environment(os.environ)
     os.environ.clear(); os.environ.update(environment)
-    end = min(window['end'], time.monotonic() + 2400)
+    end = min(window['end'], window['started'] + 2400)
     os.environ['STORYHOOK_MEASUREMENT_END'] = str(end)
     os.environ['STORYHOOK_MEASUREMENT_OPERATIONS'] = str(root / 'operations')
     if not revision_commit or revision_commit.startswith('-'):
@@ -174,6 +177,7 @@ def prepare(root, checkout, revision_commit, binary, revision, authorization):
              'campaign': campaign, 'source': str(checkout), 'commit': commit, 'tree': tree,
              'common': common, 'worktree': str(directory / 'worktree'), 'gate': gate,
              'applicable_legs': LEGS, 'binary_sha256': sha256(binary), 'policy': POLICY}
+    value['preparation_end'] = end
     immutable(manifest_path, value)
     prepare_progress(root / 'progress.jsonl')
     os.environ[VARIABLE] = str(manifest_path)
@@ -194,6 +198,9 @@ def collect(path):
         raise Refusal('throughput containment policy differs from the approved protocol')
     window = Deadline(WINDOW_SECONDS, end=value['window']['end'])
     campaign = Deadline(CAMPAIGN_SECONDS, end=value['campaign']['end'])
+    preparation = Deadline(2400, end=value['preparation_end'])
+    preparation.require('initial throughput preparation')
+    os.environ['STORYHOOK_MEASUREMENT_END'] = str(preparation.end)
     worktree = Path(value['worktree'])
     if worktree.exists():
         raise Refusal('campaign worktree already exists; no silent resume or adoption')
@@ -205,6 +212,8 @@ def collect(path):
     pool = TargetPool(root); cohort = Cohort(root, revision)
     inputs = inventory(worktree, os.environ)
     immutable(Path(path).parent / 'inputs.json', inputs)
+    preparation.require('initial throughput preparation')
+    os.environ['STORYHOOK_MEASUREMENT_END'] = str(window.end)
     initial = True
 
     def health():

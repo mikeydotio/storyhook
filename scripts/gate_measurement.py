@@ -106,6 +106,8 @@ def run_sample(identity, cohort, index, directory, probes, warmup=False):
                        versions=tools_identity,
                        resolve_inventory=lambda: inventory(identity['worktree'], os.environ))
     inputs_before = observe_inputs()
+    if inputs_before != identity.get('pinned_inputs'):
+        raise Refusal('scheduling inputs changed between matched samples')
     if 'storage' in identity:
         check_storage(identity['storage'])
         pressure_level()
@@ -179,6 +181,11 @@ def run_sample(identity, cohort, index, directory, probes, warmup=False):
         raise Refusal(f'gate has no observed command exit; supervisor={process.returncode}; evidence={directory}')
     wall = parse_wall((directory / 'time.txt').read_text())
     reasons = []
+    from gate_measurement_execution import coverage
+    try:
+        coverage(records(gate_progress), identity['applicable_legs'], 'warm')
+    except Refusal as error:
+        reasons.append(str(error))
     if process.returncode != exit_record['exit_code'] or cleanup != 'complete':
         reasons.append('supervision or cleanup failed')
     if today() != cohort['day']:
@@ -233,6 +240,10 @@ def owned(path):
         raise Refusal('bounded campaign deadline is missing')
     Deadline(LIMITS['campaign_seconds'], end=float(os.environ['STORYHOOK_MEASUREMENT_END'])).require('campaign')
     output = Path(path).parent
+    campaign_end = float(os.environ['STORYHOOK_MEASUREMENT_END'])
+    preparation = Deadline(LIMITS['preparation_seconds'], end=identity['preparation_end'])
+    preparation.require('initial scheduling preparation')
+    os.environ['STORYHOOK_MEASUREMENT_END'] = str(preparation.end)
     worktree = Path(identity['worktree'])
     if not worktree.exists():
         capture(['git', '-C', identity['source'], 'worktree', 'add', '--detach', str(worktree), identity['commit']])
@@ -241,6 +252,12 @@ def owned(path):
     capture(['bash', 'scripts/managed-cargo.sh', 'fetch', '--locked', '--offline'])
     identity['input_inventory'] = inventory(worktree, os.environ)
     immutable(output / 'inputs.json', identity['input_inventory'])
+    identity['pinned_inputs'] = observe(identity, identity['input_inventory'], os.environ,
+                                      identity['storage']['targets'][0],
+                                      Deadline(2400, end=float(os.environ['STORYHOOK_MEASUREMENT_END'])),
+                                      validate_source=lambda: validate(path), versions=tools_identity,
+                                      resolve_inventory=lambda: inventory(worktree, os.environ))
+    immutable(output / 'pinned-inputs.json', identity['pinned_inputs'])
     require_resource_limits(identity)
     if tools_identity() != identity['tools'] or not normal_class(scheduling()):
         raise Refusal('toolchain or collector class changed before collection')
@@ -257,6 +274,8 @@ def owned(path):
     save(directory / 'cleanup.json', {'version': 1, 'ok': False, 'stage': 'running'})
     try:
         probes.start()
+        preparation.require('initial scheduling preparation')
+        os.environ['STORYHOOK_MEASUREMENT_END'] = str(campaign_end)
         warmup = read(directory / 'warmup.json')
         if warmup is None:
             idle(directory, cohort)

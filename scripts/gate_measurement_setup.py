@@ -65,7 +65,8 @@ def prepare(checkout, revision, output, binary):
     if state.get('boot') != boot():
         raise Refusal('measurement campaign cannot resume across a reboot')
     end = state['started'] + LIMITS['campaign_seconds']
-    preparation = Deadline(LIMITS['preparation_seconds'], end=end)
+    preparation_end = min(state['started'] + LIMITS['preparation_seconds'], end)
+    preparation = Deadline(LIMITS['preparation_seconds'], end=preparation_end)
     preparation.require('measurement preparation')
     os.environ['STORYHOOK_MEASUREMENT_END'] = str(preparation.end)
     os.environ['STORYHOOK_MEASUREMENT_OPERATIONS'] = str(output / 'operations')
@@ -111,6 +112,7 @@ def prepare(checkout, revision, output, binary):
                 'gate': gate, 'binary_sha256': digest, 'tools': tools_identity(),
                 'applicable_legs': ['fmt', 'clippy', 'rust-suite', 'rust-contracts', 'build', 'plugin'],
                 'resource_limits': resource_limits(), 'limits': LIMITS, 'storage': storage,
+                'preparation_end': preparation_end,
                 'fixture': {'prefix': 'MB', 'stories': 10, 'title': 'Measurement fixture'},
                 'protocol': {'pairs': 10, 'idle_seconds': 60, 'max_load_per_core': 0.5}}
     path = output / 'manifest.json'
