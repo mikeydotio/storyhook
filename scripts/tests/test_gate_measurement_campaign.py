@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gate_measurement_bounds import Deadline
 from gate_measurement_campaign import begin_window, campaign_environment, competing_work, owned_resources
 from gate_measurement_cohorts import Cohort
-from gate_measurement_inputs import snapshot, observe, WORKERS, cargo_config_paths, git_config_origins, supported_compiler_profile, rust_linked_components
+from gate_measurement_inputs import snapshot, observe, WORKERS, cargo_config_paths, git_config_origins, supported_compiler_profile, rust_linked_components, python_distribution
 from gate_measurement_targets import TargetPool, remove_exact
 from gate_measurement_storage import directory_identity
 from gate_measurement_runtime import records
@@ -33,6 +33,14 @@ class Fixture(unittest.TestCase):
 
 
 class Inputs(Fixture):
+    def test_python_framework_is_bound_to_its_selected_distribution(self):
+        package = self.root / 'Cellar/python@3.14/3.14.7'
+        prefix = package / 'Frameworks/Python.framework/Versions/3.14'
+        prefix.mkdir(parents=True)
+        self.assertEqual(python_distribution(prefix), package)
+        ordinary = self.root / 'python'; ordinary.mkdir()
+        self.assertEqual(python_distribution(ordinary), ordinary)
+
     def test_selected_homebrew_llvm_package_is_included_as_input(self):
         cellar = self.root / 'Cellar'
         sysroot = cellar / 'rust/1.98.0'

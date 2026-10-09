@@ -223,6 +223,16 @@ def rust_linked_components(sysroot):
     return result
 
 
+def python_distribution(prefix):
+    """Homebrew's framework links into files in the same selected package."""
+    prefix = Path(prefix).resolve(strict=True)
+    for candidate in (prefix, *prefix.parents):
+        if (candidate.parent.parent.name == 'Cellar'
+                and re.fullmatch(r'python(?:@[0-9.]+)?', candidate.parent.name)):
+            return candidate
+    return prefix
+
+
 def inventory(worktree, env, *, query=capture):
     """Resolve mandatory tools and mutable dependency roots before pinning.
 
@@ -252,7 +262,7 @@ def inventory(worktree, env, *, query=capture):
     clang = Path(query(['xcrun', '--find', 'clang'])).resolve(strict=True)
     roots['apple-toolchain'] = str(clang.parent.parent)
     roots['python-standard-library'] = str(Path(sysconfig.get_path('stdlib')).resolve(strict=True))
-    roots['python-runtime'] = str(Path(sys.base_prefix).resolve(strict=True))
+    roots['python-runtime'] = str(python_distribution(sys.base_prefix))
     for kind in ('purelib', 'platlib'):
         roots['python-' + kind] = str(Path(sysconfig.get_path(kind)).resolve(strict=True))
     tools['selected-clang'] = str(clang)
