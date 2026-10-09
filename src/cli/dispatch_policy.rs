@@ -29,12 +29,10 @@ pub enum PolicyAction {
 }
 
 pub(super) fn parse(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story dispatch-policy show|set|reset|resolve [<story-id>] [--global] [--agent codex|claude] [--complexity low|medium|high] [--model <id>] [--effort <id>]. For reset, --model and --effort take no value. See story help dispatch-policy";
+    let usage = crate::cli::model::usage::DISPATCH_POLICY_1;
     let fail = || AppError::Usage(usage.into());
-    let verb = args.get(1).map(String::as_str).unwrap_or("show");
-    if !matches!(verb, "show" | "set" | "reset" | "resolve") {
-        return Err(fail());
-    }
+    use super::model::DispatchPolicyVerb as Verb;
+    let verb = Verb::find(args.get(1).map(String::as_str).unwrap_or("show")).ok_or_else(fail)?;
     let mut global = false;
     let mut agent = None;
     let mut complexity = None;
@@ -50,9 +48,9 @@ pub(super) fn parse(args: &[String]) -> Result<Invocation, AppError> {
             "--complexity" if complexity.is_none() => {
                 complexity = Some(Complexity::parse(iter.next().ok_or_else(fail)?)?);
             }
-            "--model" | "--effort" if matches!(verb, "set" | "reset") => {
+            "--model" | "--effort" if matches!(verb, Verb::Set | Verb::Reset) => {
                 let key = arg.trim_start_matches("--");
-                let value = if verb == "reset" {
+                let value = if verb == Verb::Reset {
                     serde_json::Value::Null
                 } else {
                     serde_json::Value::String(
@@ -66,21 +64,21 @@ pub(super) fn parse(args: &[String]) -> Result<Invocation, AppError> {
                     return Err(fail());
                 }
             }
-            value if verb == "resolve" && !value.starts_with('-') && id.is_none() => {
+            value if verb == Verb::Resolve && !value.starts_with('-') && id.is_none() => {
                 id = Some(value.to_string())
             }
             _ => return Err(fail()),
         }
     }
     let action = match verb {
-        "show" if agent.is_none() && complexity.is_none() => PolicyAction::Show,
-        "resolve" if !global && complexity.is_none() => PolicyAction::Resolve {
+        Verb::Show if agent.is_none() && complexity.is_none() => PolicyAction::Show,
+        Verb::Resolve if !global && complexity.is_none() => PolicyAction::Resolve {
             id: id.ok_or_else(fail)?,
             agent: agent.ok_or_else(fail)?,
         },
-        "set" | "reset" => {
+        Verb::Set | Verb::Reset => {
             if fields.is_empty() {
-                if verb == "set" {
+                if verb == Verb::Set {
                     return Err(fail());
                 }
                 fields.insert("model".into(), serde_json::Value::Null);
@@ -92,7 +90,7 @@ pub(super) fn parse(args: &[String]) -> Result<Invocation, AppError> {
                 fields,
             }
         }
-        _ => return Err(fail()),
+        Verb::Show | Verb::Resolve => return Err(fail()),
     };
     Ok(Invocation::DispatchPolicy { global, action })
 }

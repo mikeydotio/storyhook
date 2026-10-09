@@ -36,11 +36,13 @@ pub enum ContinuationAction {
     },
 }
 pub(super) fn parse(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = || {
-        AppError::Usage("usage: story continuation request <id> --stdin | status <id> | receipt <id> <request> --stdin | retry <id> <request> | ack <id> <request> --reviewed-seq <n> --head <sha> --provider <codex|claude> --session-id <id> | capabilities".into())
-    };
-    let action = args.get(1).map(String::as_str).ok_or_else(usage)?;
-    if action == "capabilities" && args.len() == 2 {
+    let usage = || AppError::Usage(crate::cli::model::usage::CONTINUATION_1.into());
+    let action = args
+        .get(1)
+        .and_then(|word| super::model::ContinuationVerb::find(word))
+        .ok_or_else(usage)?;
+    use super::model::ContinuationVerb;
+    if action == ContinuationVerb::Capabilities && args.len() == 2 {
         return Ok(Invocation::Continuation {
             id: String::new(),
             action: ContinuationAction::Capabilities,
@@ -48,15 +50,19 @@ pub(super) fn parse(args: &[String]) -> Result<Invocation, AppError> {
     }
     let id = args.get(2).ok_or_else(usage)?.clone();
     let action = match action {
-        "request" if args.len() == 4 && args[3] == "--stdin" => ContinuationAction::Request,
-        "status" if args.len() == 3 => ContinuationAction::Status,
-        "receipt" if args.len() == 5 && args[4] == "--stdin" => ContinuationAction::Receipt {
+        ContinuationVerb::Request if args.len() == 4 && args[3] == "--stdin" => {
+            ContinuationAction::Request
+        }
+        ContinuationVerb::Status if args.len() == 3 => ContinuationAction::Status,
+        ContinuationVerb::Receipt if args.len() == 5 && args[4] == "--stdin" => {
+            ContinuationAction::Receipt {
+                request: args[3].clone(),
+            }
+        }
+        ContinuationVerb::Retry if args.len() == 4 => ContinuationAction::Retry {
             request: args[3].clone(),
         },
-        "retry" if args.len() == 4 => ContinuationAction::Retry {
-            request: args[3].clone(),
-        },
-        "ack" if args.len() == 12 => {
+        ContinuationVerb::Ack if args.len() == 12 => {
             let mut values = std::collections::BTreeMap::new();
             for pair in args[4..].as_chunks::<2>().0 {
                 if values.insert(pair[0].as_str(), pair[1].as_str()).is_some() {
@@ -88,7 +94,12 @@ pub(super) fn parse(args: &[String]) -> Result<Invocation, AppError> {
                 session_id,
             }
         }
-        _ => return Err(usage()),
+        ContinuationVerb::Capabilities
+        | ContinuationVerb::Request
+        | ContinuationVerb::Status
+        | ContinuationVerb::Receipt
+        | ContinuationVerb::Retry
+        | ContinuationVerb::Ack => return Err(usage()),
     };
     Ok(Invocation::Continuation { id, action })
 }
