@@ -29,7 +29,8 @@ def canonical(value):
 
 def fingerprint(identity):
     """Unknown/missing identity components never become a reusable result."""
-    if set(identity) != IDENTITY_FIELDS or any(value is None for value in identity.values()):
+    if (not isinstance(identity, dict) or set(identity) != IDENTITY_FIELDS
+            or any(value is None for value in identity.values())):
         raise Refusal('measurement identity is incomplete or has unknown fields')
     for name in ('source_commit', 'source_tree'):
         if not isinstance(identity[name], str) or not re.fullmatch(r'[a-f0-9]{40}|[a-f0-9]{64}', identity[name]):
@@ -40,13 +41,19 @@ def fingerprint(identity):
     for name in ('toolchain', 'worker_limits', 'target_identity'):
         if not isinstance(identity[name], dict) or not identity[name]:
             raise Refusal(f'measurement {name} must be observed and nonempty')
-    if not isinstance(identity['gate_argv'], list) or not identity['gate_argv']:
+    if (not isinstance(identity['gate_argv'], list) or not identity['gate_argv']
+            or any(not isinstance(arg, str) or not arg or '\x00' in arg
+                   for arg in identity['gate_argv'])):
         raise Refusal('measurement gate argv is missing')
     legs = identity['applicable_legs']
-    if (not isinstance(legs, list) or not legs or len(set(legs)) != len(legs)
-            or any(not isinstance(leg, str) or not re.fullmatch(r'[a-z][a-z0-9-]*', leg) for leg in legs)):
+    if (not isinstance(legs, list) or not legs
+            or any(not isinstance(leg, str) or not re.fullmatch(r'[a-z][a-z0-9-]*', leg) for leg in legs)
+            or len(set(legs)) != len(legs)):
         raise Refusal('measurement applicable legs are missing, duplicated or unsafe')
-    return hashlib.sha256(canonical(identity).encode()).hexdigest()
+    try:
+        return hashlib.sha256(canonical(identity).encode()).hexdigest()
+    except (TypeError, ValueError) as error:
+        raise Refusal('measurement identity contains unsupported values') from error
 
 
 class Cohort:
@@ -69,15 +76,23 @@ class Cohort:
         rows = records(self.path)
         expected = 0
         pending = None
+        failed = False
         for row in rows:
             if row['kind'] == 'start':
-                if pending or row.get('slot') != expected or expected >= len(ORDER):
+                if (pending or failed or type(row.get('slot')) is not int
+                        or row.get('slot') != expected or expected >= len(ORDER)):
                     raise Refusal('duplicate/out-of-order measurement start')
-                if row.get('mode') != ORDER[expected] or fingerprint(row['identity']) != row.get('key'):
+                ceiling = 600 if ORDER[expected] == 'reuse' else 4500
+                if (row.get('mode') != ORDER[expected]
+                        or type(row.get('block')) is not int or row['block'] != expected // 3
+                        or type(row.get('ceiling_seconds')) is not int
+                        or row['ceiling_seconds'] != ceiling
+                        or fingerprint(row.get('identity')) != row.get('key')):
                     raise Refusal('measurement start identity/order is corrupt')
                 pending = row
             elif row['kind'] == 'finish':
-                if not pending or row.get('slot') != pending['slot']:
+                if (not pending or type(row.get('slot')) is not int
+                        or row.get('slot') != pending['slot']):
                     raise Refusal('measurement finish has no matching start')
                 from gate_measurement_data import finite_seconds
                 elapsed = finite_seconds(row.get('admission_to_settlement_seconds'))
@@ -86,9 +101,10 @@ class Cohort:
                 accepted = row.get('exit_code') == 0 and row.get('settled') is True and coverage and elapsed <= pending['ceiling_seconds']
                 if (type(row.get('exit_code')) is not int or type(row.get('settled')) is not bool
                         or row.get('mode') != pending['mode'] or row.get('accepted') is not accepted
-                        or row.get('production_target_breach') != (elapsed >= 900)
+                        or row.get('production_target_breach') is not (elapsed >= 900)
                         or row.get('production_certification') is not False):
                     raise Refusal('measurement terminal evidence is corrupt')
+                failed = not accepted
                 pending = None
                 expected += 1
             else:
@@ -105,6 +121,9 @@ class Cohort:
             raise Refusal('measurement revision exhausted its nine gate slots')
         mode = ORDER[slot]
         ceiling = 600 if mode == 'reuse' else 4500
+        from gate_measurement_data import finite_seconds
+        finite_seconds(remaining_window)
+        finite_seconds(remaining_campaign)
         if not ceiling <= remaining_window <= WINDOW_SECONDS or not ceiling <= remaining_campaign <= CAMPAIGN_SECONDS:
             raise Refusal('measurement allowance does not fit the retained window/campaign')
         key = fingerprint(identity)

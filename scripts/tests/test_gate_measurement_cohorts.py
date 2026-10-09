@@ -1,5 +1,6 @@
 """SH-872 measurement-only C/W/R ordering, invalidation and failure controls."""
 import copy
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -104,6 +105,33 @@ class Cohorts(unittest.TestCase):
         alias = self.root / 'alias'; alias.symlink_to(self.root, target_is_directory=True)
         with self.assertRaises(Refusal): Cohort(alias, 'baseline')
         with self.assertRaises(Refusal): Cohort(self.root, 'second-optimization')
+
+    def test_replayed_start_cannot_expand_ceiling_or_change_slot_shape(self):
+        row = self.start()
+        for field, value in [('ceiling_seconds', 100000), ('block', 1), ('slot', False),
+                             ('identity', None), ('ceiling_seconds', '4500')]:
+            changed = copy.deepcopy(row); changed[field] = value
+            self.cohort.path.write_text(json.dumps(changed) + '\n')
+            with self.subTest(field=field, value=value), self.assertRaises(Refusal):
+                self.finish(elapsed=1000)
+
+    def test_replayed_journal_cannot_continue_after_failed_slot(self):
+        start = self.start(); self.finish(exit=1)
+        next_start = copy.deepcopy(start)
+        next_start.update(slot=1, mode='warm')
+        with self.cohort.path.open('a') as stream:
+            stream.write(json.dumps(next_start) + '\n')
+        with self.assertRaises(Refusal): self.cohort.history()
+
+    def test_malformed_inputs_and_nonfinite_windows_refuse(self):
+        for value in [None, [], 'identity']:
+            with self.subTest(value=value), self.assertRaises(Refusal): fingerprint(value)
+        for field, value in [('gate_argv', [1]), ('gate_argv', ['make', '\x00']),
+                             ('applicable_legs', [{}]), ('toolchain', {'rustc': float('nan')})]:
+            changed = copy.deepcopy(self.identity); changed[field] = value
+            with self.subTest(field=field), self.assertRaises(Refusal): fingerprint(changed)
+        for value in [float('nan'), float('inf'), True, '4500']:
+            with self.subTest(value=value), self.assertRaises(Refusal): self.start(window=value)
 
 
 if __name__ == '__main__': unittest.main()
