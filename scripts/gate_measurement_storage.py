@@ -1,5 +1,6 @@
 """Private measurement storage and pressure admission; never a cache sweeper."""
 
+import errno
 import os
 from pathlib import Path
 import shutil
@@ -30,32 +31,83 @@ def check_identity(expected):
         raise Refusal(f"measurement directory identity changed: {expected['path']}")
 
 
-def usage(path, *, excluded=(), allow_links=False, allow_sockets=False):
-    """Measure allocated bytes without following substituted filesystem entries."""
-    total = 0
-    pending = [Path(path)]
-    while pending:
-        parent = pending.pop()
-        with os.scandir(parent) as scan:
+def usage(path, *, excluded=(), allow_links=False, allow_sockets=False,
+          live=False, expected=None):
+    """Observe allocated bytes; live descendants may vanish, admitted roots may not.
+
+    This is not an atomic snapshot. Settled disposal scans remain strict. Every
+    directory is opened relative to its anchored parent, without following links.
+    """
+    path = Path(path)
+    admitted = directory_identity(path) if expected is None else expected
+    if admitted['path'] != str(path):
+        raise Refusal(f"measurement directory admission differs: {path}")
+    check_identity(admitted)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+    def same_directory(observed, device, inode, child):
+        if (not stat.S_ISDIR(observed.st_mode)
+                or (observed.st_dev, observed.st_ino) != (device, inode)):
+            raise Refusal(f"measurement directory identity changed: {child}")
+
+    def walk(fd, parent):
+        total = 0
+        with os.scandir(fd) as scan:
             entries = list(scan)
         for item in entries:
-            child = Path(item.path)
+            child = parent / item.name
             if child in excluded:
                 continue
-            st = item.stat(follow_symlinks=False)
-            if allow_links and stat.S_ISLNK(st.st_mode):
-                total += st.st_blocks * 512
+            try:
+                observed = os.stat(item.name, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError as error:
+                if not live or error.errno != errno.ENOENT:
+                    raise
                 continue
-            if allow_sockets and stat.S_ISSOCK(st.st_mode):
+            if allow_links and stat.S_ISLNK(observed.st_mode):
+                total += observed.st_blocks * 512
                 continue
-            if stat.S_ISLNK(st.st_mode):
+            if allow_sockets and stat.S_ISSOCK(observed.st_mode):
+                continue
+            if stat.S_ISLNK(observed.st_mode):
                 raise Refusal(f"symlink in measurement storage: {child}")
-            if stat.S_ISDIR(st.st_mode):
-                pending.append(child)
-            elif not stat.S_ISREG(st.st_mode):
+            if stat.S_ISDIR(observed.st_mode):
+                try:
+                    child_fd = os.open(item.name, flags, dir_fd=fd)
+                    try:
+                        same_directory(os.fstat(child_fd), observed.st_dev,
+                                       observed.st_ino, child)
+                        child_bytes = walk(child_fd, child)
+                        same_directory(os.stat(item.name, dir_fd=fd, follow_symlinks=False),
+                                       observed.st_dev, observed.st_ino, child)
+                    finally:
+                        os.close(child_fd)
+                except FileNotFoundError as error:
+                    if not live or error.errno != errno.ENOENT:
+                        raise
+                    # A failed descendant scan is benign only if that directory
+                    # really vanished; an unexplained sensor failure stays loud.
+                    try:
+                        os.stat(item.name, dir_fd=fd, follow_symlinks=False)
+                    except FileNotFoundError as missing:
+                        if missing.errno != errno.ENOENT:
+                            raise
+                        continue
+                    raise
+                total += child_bytes
+            elif not stat.S_ISREG(observed.st_mode):
                 raise Refusal(f"nonregular measurement storage entry: {child}")
-            total += st.st_blocks * 512
-    return total
+            total += observed.st_blocks * 512
+        return total
+
+    root_fd = os.open(path, flags)
+    try:
+        same_directory(os.fstat(root_fd), admitted['device'], admitted['inode'], path)
+        total = walk(root_fd, path)
+        check_identity(admitted)
+        return total
+    finally:
+        os.close(root_fd)
 
 
 def reserve_description(output):
@@ -88,7 +140,7 @@ def check_storage(description, *, initial=False, disk=shutil.disk_usage, size=us
         if path.parent != root / 'targets':
             raise Refusal('measurement target is shared or outside the owned target namespace')
         check_identity(target)
-        sizes[str(path)] = size(path)
+        sizes[str(path)] = size(path, live=True, expected=target)
         if type(sizes[str(path)]) is not int or sizes[str(path)] < 0:
             raise Refusal('measurement target size observation is invalid')
         if sizes[str(path)] > TARGET_CAP:
@@ -96,7 +148,11 @@ def check_storage(description, *, initial=False, disk=shutil.disk_usage, size=us
     # Count source, probe state and logs, without following source/probe links.
     # Live Unix sockets contribute no allocated file bytes and are never removed.
     evidence = size(root, excluded=tuple(Path(x['path']) for x in targets),
-                    allow_links=True, allow_sockets=True)
+                    allow_links=True, allow_sockets=True, live=True,
+                    expected=description['root'])
+    check_identity(description['root'])
+    for target in targets:
+        check_identity(target)
     if type(evidence) is not int or evidence < 0:
         raise Refusal('measurement evidence size observation is invalid')
     if evidence > EVIDENCE_CAP:
