@@ -129,9 +129,9 @@ windows, 75-minute C/W, 10-minute R, or the 900-second production target. Every
 breach, interruption and failed cleanup remains evidence; no failure can be
 replaced. Existing v1 campaigns refuse under v2 rather than being reinterpreted.
 
-A separate 15-attempt/20-hour paired design has been proposed but is not an
-approved executable protocol. Neither that proposal nor this source amendment
-authorizes a broad run. Review the design and coordinate the native build lane,
+The 2026-10-09 follow-up decision retains the 18-slot protocol and defers the
+exploratory 15-attempt design. This source amendment does not authorize a broad
+run. Review the staged plan and coordinate the native build lane,
 then capture fresh inputs and obtain a real start decision. The observed external
 Apple build is natural exposure and also relevant to lane coordination; it is
 never a reason to stop another owner's job. Automations remain off.

@@ -68,8 +68,9 @@ normalise away load post hoc. Small or inconsistent effects, unmatched exposure,
 insufficient pairs or failed samples remain inconclusive. Any accepted optimization
 also requires regression or mutation evidence that detection is preserved.
 
-The proposed 15-attempt/20-hour exploratory paired gate design is pending review;
-it does not replace the executable 18-slot policy. No expensive campaign begins
+The 2026-10-09 follow-up decision retains the executable 18-slot policy and all
+its existing ceilings/counts. The exploratory 15-attempt design is deferred; it
+is not a prerequisite decision for this campaign. No expensive campaign begins
 from this source task. Fresh binary/input capture, design review and coordinated
 start are required. No automation/provider setting or release order changes.
 
