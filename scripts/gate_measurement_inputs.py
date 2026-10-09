@@ -203,6 +203,12 @@ def rust_linked_components(sysroot):
             raise Refusal('external Rust component is not the supported LLVM package')
         package = cellar / relative[0] / relative[1]
         result['rust-linked-llvm-' + digest(str(package))] = str(package)
+        configuration = package / 'etc/clang'
+        if configuration.is_symlink():
+            target_config = configuration.resolve(strict=True)
+            if target_config != cellar.parent / 'etc/clang':
+                raise Refusal('LLVM configuration link is outside its supported Homebrew prefix')
+            result['rust-linked-llvm-clang-config'] = str(target_config)
     return result
 
 

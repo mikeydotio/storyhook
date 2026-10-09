@@ -46,6 +46,13 @@ class Inputs(Fixture):
         before = snapshot(component, Deadline(30), allowed=(sysroot, package))
         executable.write_bytes(b'changed tool')
         self.assertNotEqual(before, snapshot(component, Deadline(30), allowed=(sysroot, package)))
+        config = self.root / 'etc/clang'; config.mkdir(parents=True)
+        (package / 'etc').mkdir()
+        (package / 'etc/clang').symlink_to(config)
+        self.assertEqual(rust_linked_components(sysroot)['rust-linked-llvm-clang-config'], str(config))
+        (package / 'etc/clang').unlink()
+        (package / 'etc/clang').symlink_to(self.root)
+        with self.assertRaises(Refusal): rust_linked_components(sysroot)
 
     def test_unreviewed_rust_component_link_is_not_adopted(self):
         sysroot = self.root / 'Cellar/rust/1.98.0'
