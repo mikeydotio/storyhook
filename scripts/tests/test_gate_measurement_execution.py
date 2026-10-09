@@ -33,7 +33,7 @@ class Execution(unittest.TestCase):
     def run_slot(self, launch=None, observe=None):
         return run_observation(self.cohort, observe=observe or self.observe,
                                launch=launch or self.launch, remaining_window=36000,
-                               remaining_campaign=72000, clock=mock.Mock(side_effect=[10, 910]))
+                               remaining_campaign=72000, clock=mock.Mock(side_effect=[10, 10, 910]))
 
     def launch(self, slot, directory, deadline):
         self.assertEqual(deadline, 10 + slot['ceiling_seconds'])

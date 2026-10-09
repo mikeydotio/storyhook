@@ -68,8 +68,11 @@ def run_observation(cohort, *, observe, launch, remaining_window,
     started = clock()
     before = observe()
     key = fingerprint(before)
-    slot = cohort.begin(before, remaining_window=remaining_window,
-                        remaining_campaign=remaining_campaign)
+    captured = clock() - started
+    if captured < 0:
+        raise Refusal('measurement clock moved backwards during input capture')
+    slot = cohort.begin(before, remaining_window=remaining_window - captured,
+                        remaining_campaign=remaining_campaign - captured)
     attempt = cohort.root / f"slot-{slot['slot']:02}"
     try:
         attempt.mkdir(mode=0o700)  # retained/foreign attempts cannot be replaced

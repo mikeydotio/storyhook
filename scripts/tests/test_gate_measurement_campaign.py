@@ -19,6 +19,7 @@ from gate_measurement_inputs import snapshot, observe, WORKERS, cargo_config_pat
 from gate_measurement_targets import TargetPool, remove_exact
 from gate_measurement_storage import directory_identity
 from gate_measurement_runtime import records
+import gate_measurement_campaign as campaign_module
 from verifier_state import Refusal
 from test_gate_measurement_cohorts import identity
 
@@ -98,6 +99,15 @@ class Inputs(Fixture):
         paths = cargo_config_paths(self.root, {'HOME': str(self.root)})
         self.assertIn(self.root / '.cargo' / 'config.toml', paths)
         self.assertIn(Path('/.cargo/config'), paths)
+
+    def test_late_change_to_an_already_hashed_tool_refuses_complete_inventory(self):
+        def versions():
+            self.tool.write_text('changed after initial byte capture')
+            return {'rustc': 'fixture unchanged version'}
+        with self.assertRaises(Refusal):
+            observe(self.manifest, self.plan, self.env, self.target, Deadline(30),
+                    validate_source=lambda: None, versions=versions,
+                    resolve_inventory=lambda: copy.deepcopy(self.plan), limits=lambda: {})
 
 
 class Windows(Fixture):
@@ -215,6 +225,74 @@ class HelperCustody(Fixture):
              mock.patch('gate_measurement_command.subprocess.run', return_value=SimpleNamespace(returncode=0)) as run:
             self.assertEqual(execute(self.root), 0)
         self.assertEqual(run.call_args.kwargs['pass_fds'], (9, 12))
+
+
+class Controller(Fixture):
+    def setUp(self):
+        super().setUp()
+        self.revision = self.root / 'baseline'; self.revision.mkdir()
+        self.worktree = self.revision / 'worktree'
+        self.path = self.revision / 'manifest.json'
+        now = campaign_module.time.monotonic()
+        self.value = {'version': 1, 'kind': 'gate-throughput-measurement',
+                      'campaign_root': str(self.root), 'revision': 'baseline',
+                      'source': str(self.root), 'common': str(self.root),
+                      'worktree': str(self.worktree), 'commit': 'a'*40, 'tree': 'b'*40,
+                      'gate': {'argv': ['make', 'test']}, 'applicable_legs': ['fmt'],
+                      'policy': campaign_module.POLICY,
+                      'window': {'end': now + 36000}, 'campaign': {'end': now + 72000}}
+        self.path.write_text(json.dumps(self.value))
+        self.slots = []
+
+    def run_controller(self, fail_slot=None):
+        def capture(argv):
+            if 'worktree' in argv: self.worktree.mkdir()
+            return ''
+        def observe(_value, _inputs, _env, target, *_args, **_kwargs):
+            result = identity(); result.update(target_identity=target, applicable_legs=['fmt'])
+            return result
+        def launch(slot, directory, deadline):
+            self.slots.append(slot['mode'])
+            if slot['slot'] == fail_slot: raise InterruptedError('fixture interruption')
+            from test_gate_measurement_execution import progress
+            return dict(exit_code=0, settled=True, progress=progress(['fmt'], slot['mode']))
+        def bounded(argv, **_kwargs):
+            remove_exact(argv[-3], int(argv[-2]), int(argv[-1]))
+            return SimpleNamespace(returncode=0, stderr='')
+        with mock.patch.dict(os.environ), \
+             mock.patch.object(campaign_module, 'capture', side_effect=capture), \
+             mock.patch.object(campaign_module, 'validate', return_value=self.value), \
+             mock.patch.object(campaign_module, 'inventory', return_value={'version': 1}), \
+             mock.patch.object(campaign_module, 'observe', side_effect=observe), \
+             mock.patch.object(campaign_module, 'OwnedGate', return_value=launch), \
+             mock.patch.object(campaign_module, 'IdleWindow') as idle, \
+             mock.patch.object(campaign_module, 'pressure', return_value={'load': [0, 0, 0], 'cores': 10, 'processes': f'{os.getpid()} 1 0.0 python\n'}), \
+             mock.patch.object(campaign_module, 'check_storage', return_value={'free_bytes': 200 * 1024**3}), \
+             mock.patch.object(campaign_module, 'paths', return_value=(None, None, self.root / 'owner')), \
+             mock.patch('build_products.namespace', return_value=self.root), \
+             mock.patch('build_products.ProductLease', return_value=nullcontext()), \
+             mock.patch('gate_measurement_command.bounded', side_effect=bounded):
+            idle.return_value.observe.return_value = True
+            (self.root / 'owner.owner').write_text(json.dumps({'version': 1, 'gate_started': False, 'gate_session': None}))
+            cwd = os.getcwd()
+            try: return campaign_module.owned(str(self.path))
+            finally: os.chdir(cwd)
+
+    def test_complete_controller_runs_exact_nine_slots_and_settled_target_turnover(self):
+        self.assertEqual(self.run_controller(), 0)
+        self.assertEqual(self.slots, ['cold', 'warm', 'reuse'] * 3)
+        self.assertEqual(TargetPool(self.root).state(), {})
+        rows = records(self.root / 'target-lifecycle.jsonl')
+        self.assertEqual(sum(r['kind'] == 'created' for r in rows), 3)
+        self.assertEqual(sum(r['kind'] == 'deleted' for r in rows), 3)
+        self.assertTrue((self.revision / 'complete.json').exists())
+
+    def test_interrupted_warm_stops_before_reuse_and_retains_target(self):
+        with self.assertRaises(InterruptedError): self.run_controller(fail_slot=1)
+        self.assertEqual(self.slots, ['cold', 'warm'])
+        self.assertEqual(set(TargetPool(self.root).state()), {'baseline-0'})
+        self.assertEqual(Cohort(self.root, 'baseline').history()[1]['slot'], 1)
+        self.assertFalse((self.revision / 'complete.json').exists())
 
 
 if __name__ == '__main__': unittest.main()

@@ -34,12 +34,39 @@ def digest(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
+def stamp(path):
+    try:
+        value = Path(path).lstat()
+    except FileNotFoundError:
+        return None
+    return (value.st_dev, value.st_ino, value.st_mode, value.st_size,
+            value.st_mtime_ns, value.st_ctime_ns)
+
+
+def check_audit(audit, deadline):
+    for path, expected in audit.items():
+        deadline.require('measurement input stability check')
+        if stamp(path) != expected:
+            raise Refusal('input changed during the complete inventory capture')
+
+
 def snapshot(path, deadline, *, allowed=(), trail=()):
+    audit = {}
+    result = _snapshot(path, deadline, allowed=allowed, trail=trail, audit=audit)
+    check_audit(audit, deadline)
+    return result
+
+
+def _snapshot(path, deadline, *, allowed, trail=(), audit):
     """Hash exact regular-file bytes and modes; never follow a substituted link."""
     path = Path(path)
     deadline.require('measurement input capture')
     if not path.is_absolute() or path.parent.resolve() != path.parent:
         raise Refusal('input path is not physical and absolute')
+    observed_stamp = stamp(path)
+    if path in audit and audit[path] != observed_stamp:
+        raise Refusal('input changed between references in the same inventory')
+    audit[path] = observed_stamp
     try:
         before = path.lstat()
     except FileNotFoundError:
@@ -50,7 +77,7 @@ def snapshot(path, deadline, *, allowed=(), trail=()):
                                        for root in allowed)):
             raise Refusal('input symlink escapes its declared dependencies or cycles')
         link = os.readlink(path)
-        value = snapshot(target, deadline, allowed=allowed, trail=(*trail, path))
+        value = _snapshot(target, deadline, allowed=allowed, trail=(*trail, path), audit=audit)
         after = path.lstat()
         if (before.st_dev, before.st_ino, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_ctime_ns) or os.readlink(path) != link:
             raise Refusal('input symlink changed during observation')
@@ -78,7 +105,7 @@ def snapshot(path, deadline, *, allowed=(), trail=()):
     if not stat.S_ISDIR(before.st_mode):
         raise Refusal('input contains a symlink or nonregular entry: ' + str(path))
     names = sorted(os.listdir(path))
-    children = {name: snapshot(path / name, deadline, allowed=allowed, trail=(*trail, path)) for name in names}
+    children = {name: _snapshot(path / name, deadline, allowed=allowed, trail=(*trail, path), audit=audit) for name in names}
     after = path.lstat()
     if ((before.st_dev, before.st_ino, before.st_mtime_ns, before.st_ctime_ns)
             != (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_ctime_ns)
@@ -142,12 +169,13 @@ def observe(manifest, inventory_record, env, target, deadline, *, validate_sourc
     allowed = tuple(Path(p) for p in [*inventory_record['tools'].values(),
                                      *inventory_record['dependency_roots'].values(),
                                      *inventory_record['cargo_configs']])
-    tools = {name: snapshot(path, deadline, allowed=allowed) for name, path in inventory_record['tools'].items()}
+    audit = {}
+    tools = {name: _snapshot(path, deadline, allowed=allowed, audit=audit) for name, path in inventory_record['tools'].items()}
     if not tools or any(row['kind'] != 'file' for row in tools.values()):
         raise Refusal('measurement executable inventory is incomplete')
-    dependencies = {name: snapshot(path, deadline, allowed=allowed)
+    dependencies = {name: _snapshot(path, deadline, allowed=allowed, audit=audit)
                     for name, path in inventory_record['dependency_roots'].items()}
-    configs = [snapshot(path, deadline, allowed=allowed) for path in inventory_record['cargo_configs']]
+    configs = [_snapshot(path, deadline, allowed=allowed, audit=audit) for path in inventory_record['cargo_configs']]
     workers = {}
     for name in WORKERS:
         raw = env.get(name)
@@ -162,10 +190,12 @@ def observe(manifest, inventory_record, env, target, deadline, *, validate_sourc
         'source_commit': manifest['commit'], 'source_tree': manifest['tree'],
         'toolchain': {'executables': tools, 'versions': versions(), 'dependencies': dependencies},
         'environment_digest': digest({k: v for k, v in env.items() if k not in CONTEXT_ENV}),
-        'configuration_digest': digest({'external_cargo_configs': configs, 'gate_argv': manifest['gate']['argv']}),
+        'configuration_digest': digest({'external_cargo_configs': configs, 'gate_argv': manifest['gate']['argv'],
+                                        'project_configuration': manifest['gate'].get('configuration')}),
         'worker_limits': workers, 'gate_argv': manifest['gate']['argv'],
         'target_identity': target, 'applicable_legs': manifest['applicable_legs'],
     }
     fingerprint(result)
+    check_audit(audit, deadline)
     validate_source()
     return result

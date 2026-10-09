@@ -36,7 +36,9 @@ def usage(path, *, excluded=(), allow_links=False, allow_sockets=False):
     pending = [Path(path)]
     while pending:
         parent = pending.pop()
-        for item in os.scandir(parent):
+        with os.scandir(parent) as scan:
+            entries = list(scan)
+        for item in entries:
             child = Path(item.path)
             if child in excluded:
                 continue
