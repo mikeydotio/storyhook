@@ -616,9 +616,15 @@ from pathlib import Path
 sys.path.insert(0, {str(SCRIPTS)!r})
 from gate_measurement import run_sample, today
 identity = json.loads(Path({str(self.path)!r}).read_text())
+from unittest import mock
+identity.update(input_inventory={{}}, pinned_inputs={{'fixture': True}}, storage={{'targets':[{{}}]}}, applicable_legs=['rust-suite'])
 os.environ['STORYHOOK_GATE_PROGRESS'] = {str(self.output / 'progress.jsonl')!r}
 cohort = dict(version=1, tree=identity['tree'], pairs=10, day=today())
-sample = run_sample(identity, cohort, 1, Path({str(self.output / 'sample')!r}), None)
+with mock.patch('gate_measurement.observe', return_value={{'fixture': True}}), \
+     mock.patch('gate_measurement.check_storage', return_value={{}}), \
+     mock.patch('gate_measurement.pressure_level', return_value=1), \
+     mock.patch('gate_measurement.pressure', return_value={{'processes':f'{{os.getpid()}} 1 0.0 python\\n','resource_processes':f'{{os.getpid()}} 1 0.0 10 python\\n'}}):
+    sample = run_sample(identity, cohort, 1, Path({str(self.output / 'sample')!r}), None)
 print(json.dumps(sample))
 '''
         result = self.owned(body)
