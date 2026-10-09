@@ -79,9 +79,19 @@ class NativeObservation(unittest.TestCase):
 @unittest.skipUnless(sys.platform == 'darwin', 'native macOS custody')
 class NativeIntegration(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix='sh872-native-', dir='/tmp')
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name).resolve()
+        self.root = Path(tempfile.mkdtemp(prefix='sh872-native-', dir='/tmp')).resolve()
+        self.preserve = False
+        self.addCleanup(lambda: None if self.preserve else shutil.rmtree(self.root))
+
+    def command(self, *args, **kwargs):
+        try:
+            result = bounded(*args, **kwargs)
+        except BaseException:
+            self.preserve = True
+            raise
+        if result.returncode:
+            self.preserve = True
+        return result
 
     def test_bounded_child_inherits_product_exclusion_until_settlement(self):
         custody = self.root / 'products'; custody.mkdir(mode=0o700)
@@ -95,7 +105,7 @@ with open(sys.argv[1], 'a') as lock:
     else: raise SystemExit('inherited product exclusion was lost')
 """
         with ProductLease(custody, reclaim=True) as lease:
-            result = bounded([sys.executable, '-B', '-c', probe, str(custody / 'products.lock'), str(lease.fd)],
+            result = self.command([sys.executable, '-B', '-c', probe, str(custody / 'products.lock'), str(lease.fd)],
                              root=self.root / 'operations', seconds=30)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), 'excluded')
@@ -103,7 +113,7 @@ with open(sys.argv[1], 'a') as lock:
             pass
 
     def test_managed_setuid_ps_is_observable_without_privileged_identity(self):
-        result = bounded(['/bin/ps', '-axo', 'pid=,ppid=,comm='],
+        result = self.command(['/bin/ps', '-axo', 'pid=,ppid=,comm='],
                          root=self.root / 'operations', seconds=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(str(os.getpid()), result.stdout)
@@ -117,7 +127,7 @@ with open(sys.argv[1], 'a') as lock:
         custody = self.root / 'products'; custody.mkdir(mode=0o700)
 
         def remove(target):
-            result = bounded([sys.executable, '-B', str(SCRIPTS / 'gate_measurement_targets.py'),
+            result = self.command([sys.executable, '-B', str(SCRIPTS / 'gate_measurement_targets.py'),
                               'remove', target['path'], str(target['device']), str(target['inode'])],
                              root=self.root / 'operations', seconds=30)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -177,11 +187,16 @@ for _ in range(3):
     assert result['accepted'], result
 print('accepted cold warm reuse')
 """
-        result = bounded([sys.executable, '-B', str(SCRIPTS / 'verifier-owner.py'),
+        result = self.command([sys.executable, '-B', str(SCRIPTS / 'verifier-owner.py'),
                           'measurement-run', str(source / '.git'), str(worktree), '--',
                           sys.executable, '-B', '-c', body],
                          root=self.root / 'operations', seconds=120, cwd=worktree, env=env)
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        diagnostics = ''
+        if result.returncode:
+            for pattern in ('slot-*/supervisor.log', 'slot-*/progress.jsonl', 'slot-*/legs.jsonl'):
+                for path in (campaign / 'measurement-results-v1/baseline').glob(pattern):
+                    diagnostics += f'\n{path}:\n' + path.read_text(errors='replace')[-12000:]
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout + diagnostics)
         self.assertEqual((target / 'executions').read_text(), 'xx')
         self.assertIn('accepted cold warm reuse', result.stdout)
         self.assertFalse((source / '.git/storyhook/gate-leg-receipts').exists())
