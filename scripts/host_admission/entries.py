@@ -34,6 +34,7 @@ class Entry:
 
 ENTRIES = {entry.id: entry for entry in (
     Entry("causal-rust", "repair", "causal-rust"),
+    Entry("cargo-managed", "build", "cargo-managed"),
     Entry("rustc", "build", "rustc"),
     Entry("cargo-test-binary", "test", "rust-test-binary"),
     Entry("rust-pool", "test", "rust-test-thread", "rust-pool", pool=True),

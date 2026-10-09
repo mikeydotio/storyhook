@@ -214,11 +214,11 @@ _test-body _test-changed-body: SHELL := /bin/bash
 _test-body:
 	@bash scripts/python-runtime.sh -- bash scripts/release-status.sh || true
 	@. scripts/gate-legs.sh; gate_init; \
-	gate_run fmt bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check; \
-	gate_run clippy bash scripts/leg.sh --reuse clippy -- "$${STORYHOOK_PYTHON}" scripts/cargo_diagnostics.py -- cargo clippy --workspace --all-targets -- -D warnings; \
+	gate_run fmt bash scripts/leg.sh --reuse fmt -- ./scripts/managed-cargo.sh fmt --all -- --check; \
+	gate_run clippy bash scripts/leg.sh --reuse clippy -- "$${STORYHOOK_PYTHON}" scripts/cargo_diagnostics.py -- ./scripts/managed-cargo.sh clippy --workspace --all-targets -- -D warnings; \
 	gate_run rust-suite bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-rust-battery.sh core; \
 	gate_run rust-contracts bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts; \
-	gate_run build bash scripts/leg.sh --reuse build -- "$${STORYHOOK_PYTHON}" scripts/cargo_diagnostics.py -- cargo build --features test-seam; \
+	gate_run build bash scripts/leg.sh --reuse build -- "$${STORYHOOK_PYTHON}" scripts/cargo_diagnostics.py -- ./scripts/managed-cargo.sh build --features test-seam; \
 	gate_run plugin bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh; \
 	$(if $(E2E),gate_run e2e bash scripts/leg.sh --reuse e2e -- bash scripts/run-e2e.sh,bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true); \
 	gate_finish
@@ -250,11 +250,11 @@ test-changed: check-no-orphan-servers
 _test-changed-body:
 	@bash scripts/python-runtime.sh -- bash scripts/release-status.sh || true
 	@. scripts/gate-legs.sh; gate_init; \
-	gate_run fmt bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check; \
-	gate_run clippy bash scripts/leg.sh --reuse clippy -- "$${STORYHOOK_PYTHON}" scripts/cargo_diagnostics.py -- cargo clippy --workspace --all-targets -- -D warnings; \
+	gate_run fmt bash scripts/leg.sh --reuse fmt -- ./scripts/managed-cargo.sh fmt --all -- --check; \
+	gate_run clippy bash scripts/leg.sh --reuse clippy -- "$${STORYHOOK_PYTHON}" scripts/cargo_diagnostics.py -- ./scripts/managed-cargo.sh clippy --workspace --all-targets -- -D warnings; \
 	gate_run rust-suite bash scripts/leg.sh rust-suite -- bash scripts/run-changed.sh; \
 	gate_run rust-contracts bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts; \
-	gate_run build bash scripts/leg.sh --reuse build -- "$${STORYHOOK_PYTHON}" scripts/cargo_diagnostics.py -- cargo build --features test-seam; \
+	gate_run build bash scripts/leg.sh --reuse build -- "$${STORYHOOK_PYTHON}" scripts/cargo_diagnostics.py -- ./scripts/managed-cargo.sh build --features test-seam; \
 	gate_run plugin bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh; \
 	bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true; \
 	gate_finish
@@ -388,23 +388,23 @@ check-no-orphan-servers:
 
 # Debug build of the `story` binary.
 build:
-	cargo build
+	./scripts/managed-cargo.sh build
 
 # Apply formatting in place.
 fmt:
-	cargo fmt
+	./scripts/managed-cargo.sh fmt
 
 # Lint only (warnings treated as errors).
 lint clippy:
-	cargo clippy --workspace --all-targets -- -D warnings
+	./scripts/managed-cargo.sh clippy --workspace --all-targets -- -D warnings
 
 # Fast type-check without producing a binary.
 check:
-	cargo check --workspace --all-targets
+	./scripts/managed-cargo.sh check --workspace --all-targets
 
 # Optimized build for use; every invocation reserves a BUILD number.
 release-build:
-	python3 scripts/build-number.py -- cargo build --release
+	python3 scripts/build-number.py -- ./scripts/managed-cargo.sh build --release
 
 # A disposable storyhook: this checkout's binary, a throwaway store, a daemon
 # that dies with the shell it drops you into.
@@ -476,7 +476,7 @@ install:
 .PHONY: _install-build
 _install-build:
 	@python3 scripts/build-number.py --check-lock >/dev/null
-	cargo build --release
+	./scripts/managed-cargo.sh build --release
 	@mkdir -p "$(INSTALL_DIR)"
 	install -m 755 target/release/story "$(INSTALL_DIR)/story"
 	@echo "Installed $$("$(INSTALL_DIR)/story" --version) to $(INSTALL_DIR)/story"

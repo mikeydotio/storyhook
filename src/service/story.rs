@@ -597,7 +597,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 }
             })
             .transpose()?;
-        let (before, snapshot) = self.ctx.write_stories(|tx| {
+        let (before, snapshot, product_generation) = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let project_record = tx.project(project)?.ok_or_else(|| {
@@ -695,9 +695,17 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 extra,
                 self.ctx.provenance(),
             )?;
-            Ok((row.snapshot, snapshot))
+            let product_generation = super::build_products::generation(&*tx, project, story_no)?;
+            Ok((row.snapshot, snapshot, product_generation))
         })?;
 
+        if state == VERIFYING_STATE_SLUG
+            && self.ctx.hooks_enabled()
+            && let Some(expected) = product_generation
+            && let Err(error) = super::build_products::reclaim_handoff(self.ctx, id, expected)
+        {
+            eprintln!("warning: {error}");
+        }
         self.fire_transition_hooks(id, &before.title, &before.state, state, &snapshot, &now);
         Ok(snapshot)
     }

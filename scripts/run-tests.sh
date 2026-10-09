@@ -427,27 +427,27 @@ add_to_exact_total() {
 # the complete leg before any pooled case can execute.
 if [ "$pooled_mode" -eq 1 ]; then
     if [ "$run_docs" -eq 1 ]; then
-        add_to_exact_total cargo test --workspace --doc "$@" || {
+        add_to_exact_total "$script_dir/managed-cargo.sh" test --workspace --doc "$@" || {
             gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" failed
             exit 1
         }
     fi
 elif [ -n "$(gate_progress_journal)" ]; then
     if [ "$only_mode" -eq 0 ]; then
-        add_to_exact_total cargo test --workspace "$@" || {
+        add_to_exact_total "$script_dir/managed-cargo.sh" test --workspace "$@" || {
             gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" failed
             exit 1
         }
     else
         if [ "${#storyhook_test_args[@]}" -gt 0 ]; then
-            add_to_exact_total cargo test -p storyhook "${storyhook_test_args[@]}" "$@" || {
+            add_to_exact_total "$script_dir/managed-cargo.sh" test -p storyhook "${storyhook_test_args[@]}" "$@" || {
                 gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" failed
                 exit 1
             }
         fi
         i=0
         while [ "$i" -lt "${#workspace_test_packages[@]}" ]; do
-            add_to_exact_total cargo test -p "${workspace_test_packages[$i]}" --test "${workspace_test_names[$i]}" "$@" || {
+            add_to_exact_total "$script_dir/managed-cargo.sh" test -p "${workspace_test_packages[$i]}" --test "${workspace_test_names[$i]}" "$@" || {
                 gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" failed
                 exit 1
             }
@@ -455,14 +455,14 @@ elif [ -n "$(gate_progress_journal)" ]; then
         done
         i=0
         while [ "$i" -lt "${#lib_packages[@]}" ]; do
-            add_to_exact_total cargo test -p "${lib_packages[$i]}" --lib "$@" || {
+            add_to_exact_total "$script_dir/managed-cargo.sh" test -p "${lib_packages[$i]}" --lib "$@" || {
                 gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" failed
                 exit 1
             }
             i=$((i + 1))
         done
         if [ "$run_docs" -eq 1 ]; then
-            add_to_exact_total cargo test --workspace --doc "$@" || {
+            add_to_exact_total "$script_dir/managed-cargo.sh" test --workspace --doc "$@" || {
                 gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" failed
                 exit 1
             }
@@ -509,16 +509,16 @@ run_pool() {
     local pool=("$STORYHOOK_PYTHON" "$script_dir/test-pool.py" --budget "$thread_budget" --log "$log" --work "$data_root/pool"
         --additional-total "$exact_total" --discovery-ready "$data_root/discovery-ready")
     if [ "${#storyhook_test_args[@]}" -gt 0 ]; then
-        run_leg cargo test "${cargo_test_flags[@]}" --no-run -p storyhook "${storyhook_test_args[@]}" "$@" || build_status=$?
+        run_leg "$script_dir/managed-cargo.sh" test "${cargo_test_flags[@]}" --no-run -p storyhook "${storyhook_test_args[@]}" "$@" || build_status=$?
     fi
     i=0
     while [ "$i" -lt "${#workspace_test_packages[@]}" ]; do
-        run_leg cargo test "${cargo_test_flags[@]}" --no-run -p "${workspace_test_packages[$i]}" --test "${workspace_test_names[$i]}" "$@" || build_status=$?
+        run_leg "$script_dir/managed-cargo.sh" test "${cargo_test_flags[@]}" --no-run -p "${workspace_test_packages[$i]}" --test "${workspace_test_names[$i]}" "$@" || build_status=$?
         i=$((i + 1))
     done
     i=0
     while [ "$i" -lt "${#lib_packages[@]}" ]; do
-        run_leg cargo test "${cargo_test_flags[@]}" --no-run -p "${lib_packages[$i]}" --lib "$@" || build_status=$?
+        run_leg "$script_dir/managed-cargo.sh" test "${cargo_test_flags[@]}" --no-run -p "${lib_packages[$i]}" --lib "$@" || build_status=$?
         i=$((i + 1))
     done
     if [ "$build_status" -ne 0 ]; then
@@ -555,7 +555,7 @@ run_pool() {
 status=0
 
 if [ "$only_mode" -eq 0 ]; then
-    run_leg cargo test "${cargo_test_flags[@]}" --workspace "$@" || status=$?
+    run_leg "$script_dir/managed-cargo.sh" test "${cargo_test_flags[@]}" --workspace "$@" || status=$?
 else
     if [ "${#only_names[@]}" -eq 0 ]; then
         echo "run-tests.sh: --only given with no binaries -- nothing to run" >&2
@@ -570,23 +570,23 @@ else
     else
 
         if [ "${#storyhook_test_args[@]}" -gt 0 ]; then
-            run_leg cargo test "${cargo_test_flags[@]}" -p storyhook "${storyhook_test_args[@]}" "$@" || status=$?
+            run_leg "$script_dir/managed-cargo.sh" test "${cargo_test_flags[@]}" -p storyhook "${storyhook_test_args[@]}" "$@" || status=$?
         fi
         # Indexed loops avoid expanding empty arrays under macOS Bash 3.2 and set -u.
         i=0
         while [ "$i" -lt "${#workspace_test_packages[@]}" ]; do
-            run_leg cargo test "${cargo_test_flags[@]}" -p "${workspace_test_packages[$i]}" --test "${workspace_test_names[$i]}" "$@" || status=$?
+            run_leg "$script_dir/managed-cargo.sh" test "${cargo_test_flags[@]}" -p "${workspace_test_packages[$i]}" --test "${workspace_test_names[$i]}" "$@" || status=$?
             i=$((i + 1))
         done
         i=0
         while [ "$i" -lt "${#lib_packages[@]}" ]; do
             pkg="${lib_packages[$i]}"
-            run_leg cargo test "${cargo_test_flags[@]}" -p "$pkg" --lib "$@" || status=$?
+            run_leg "$script_dir/managed-cargo.sh" test "${cargo_test_flags[@]}" -p "$pkg" --lib "$@" || status=$?
             i=$((i + 1))
         done
     fi
     if [ "$run_docs" -eq 1 ]; then
-        run_leg cargo test "${cargo_test_flags[@]}" --workspace --doc "$@" || status=$?
+        run_leg "$script_dir/managed-cargo.sh" test "${cargo_test_flags[@]}" --workspace --doc "$@" || status=$?
     fi
 fi
 

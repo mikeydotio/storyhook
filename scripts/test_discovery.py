@@ -6,6 +6,7 @@ uses regular files so a descendant cannot keep a pipe open past its owner.
 
 import json
 import os
+from pathlib import Path
 import shlex
 import signal
 import subprocess
@@ -115,7 +116,7 @@ class Discovery:
         for job in jobs:
             groups.setdefault(job.package, []).append(job)
         for package, members in groups.items():
-            command = ["cargo", "test", "--no-run", "--message-format=json", "-p", package, *cargo_extra]
+            command = [str(Path(__file__).with_name("managed-cargo.sh")), "test", "--no-run", "--message-format=json", "-p", package, *cargo_extra]
             for job in members:
                 command += job.selector()
             output = self.run(command, f"artifact lookup for {package}")

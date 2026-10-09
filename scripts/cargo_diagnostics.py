@@ -238,7 +238,7 @@ def confirm_shared(path):
             return 0
         print("gate: confirming whether Rust preparation failure blocks production", file=sys.stderr)
         with tempfile.NamedTemporaryFile(prefix="storyhook-build-probe-", dir="/tmp") as probe:
-            status = run_build(["cargo", "build", "--message-format=json"], artifact, probe.name)
+            status = run_build([os.path.join(os.path.dirname(__file__), "managed-cargo.sh"), "build", "--message-format=json"], artifact, probe.name)
             if status >= 125:
                 return status
             if status and candidates.intersection(production_errors(probe.name)):
