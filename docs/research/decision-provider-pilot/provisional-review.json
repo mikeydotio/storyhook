@@ -1,0 +1,880 @@
+{
+  "schema_version": 1,
+  "review_status": "AI independent provisional review; NOT human adjudication or ground truth",
+  "reviewer_type": "AI assistant",
+  "independence": {
+    "sources_read": [
+      "fixtures/seed-cases.jsonl",
+      "fixtures/protocol.json",
+      "../../spec/story-complexity.md"
+    ],
+    "source_sha256": {
+      "fixtures/seed-cases.jsonl": "83a0359137d8a12e945953d1bb1f082d8d26bf4b6b9700c02f34ff7a22482be9",
+      "fixtures/protocol.json": "0b04762f25cf808c73400b63303702525064bad5fe47d0fad8510c5d91325465",
+      "../../spec/story-complexity.md": "a592925f9a5ff76696e0bdc0311aa640d08c700772bf917acac36a4e980dd0ee"
+    },
+    "author_notes_read": false,
+    "prior_proposed_labels_read": false,
+    "provider_calls": 0,
+    "credentials_accessed": false,
+    "native_tests_run": false,
+    "board_mutations": 0,
+    "label_basis": "Supplied case narrative and allowed classes, with canonical rubric interpretation. Input claims are synthetic stipulated evidence, not independently verified native artifacts.",
+    "publication_note": "Source paths relocated for this repository packet; case content, labels, rationale, original source hashes and provisional status are unchanged."
+  },
+  "scope": {
+    "cases": 40,
+    "families": 20,
+    "independent_reviewers": 1,
+    "human_reviewers": 0,
+    "variant_rule": "Subject-ID and padding changes have no semantic effect; paired labels, alternatives, rationales and guard dispositions are identical.",
+    "evaluation_eligibility": "All seed families remain development material. Prototype calibration/heldout fields confer no heldout eligibility; variants never increase independent N.",
+    "scoring_status": "No accuracy, agreement, guard-preservation, calibration, or release-gate claim is justified. Null labels block scoring and all labels still require the prescribed two independent humans plus adjudication."
+  },
+  "taxonomy_review": {
+    "runtime_general": "Protocol lists class names without operational definitions, precedence, multi-cause handling, or explicit out-of-domain policy. Non-null runtime labels use the ordinary causal/outcome interpretations stated per case.",
+    "protected_branch_refusal": {
+      "affected_case_ids": [
+        "run-10-1",
+        "run-10-2"
+      ],
+      "resolution_needed": "Define a policy_refusal/held state or explicitly specify a documented mapping into the existing ontology. Preserve a definitive refused outcome independently of label.",
+      "guard_affected_by_label_ambiguity": false
+    },
+    "scope_revision": {
+      "affected_case_ids": [
+        "com-09-1",
+        "com-09-2"
+      ],
+      "resolution_needed": "Freeze whether labels target the submitted snapshot or current scope, and keep version freshness as a separate applicability field.",
+      "guard_affected_by_label_ambiguity": false
+    },
+    "manual_overrides": {
+      "affected_case_ids": [
+        "com-08-1",
+        "com-08-2"
+      ],
+      "resolution_needed": "Distinguish inferred complexity from observed manual selection. Decide sufficiency of the supplied bounded-work description; explicit selection never grants overwrite authority.",
+      "guard_affected_by_label_ambiguity": false
+    },
+    "typed_epics": {
+      "affected_case_ids": [
+        "com-10-1",
+        "com-10-2"
+      ],
+      "resolution_needed": "Define non-executable/inapplicable handling before scoring: exclude epic inputs or add an explicit applicability status/class. Child dispatch must continue to use child complexity.",
+      "guard_affected_by_label_ambiguity": false
+    },
+    "missing_scope_vs_default": "insufficient_evidence denotes inability to assess scope; missing product values default to medium and remain unassessed. These are separate concepts.",
+    "human_work_required": [
+      "Review and freeze taxonomy and target-version semantics before expanding the corpus or scoring.",
+      "Have two humans independently label cases without exposure to author hypotheses; adjudicate disagreements and unresolved applicability afterward.",
+      "Record guard disposition independently of outcome/complexity label and validate preservation using separately authorized execution evidence."
+    ]
+  },
+  "summary": {
+    "provisional_non_null_cases": 34,
+    "taxonomy_unresolved_null_cases": 6,
+    "unresolved_families": [
+      "runtime-definitive_refusal",
+      "complexity-scope_revision",
+      "complexity-typed_epic"
+    ]
+  },
+  "cases": [
+    {
+      "case_id": "run-01-1",
+      "family_id": "runtime-completed",
+      "task_kind": "runtime",
+      "variant": "primary",
+      "proposed_label": "success",
+      "alternatives": [],
+      "ambiguity_rationale": "Every required test passed on the exact candidate and all owned child exits have a matching receipt. No competing class is supported by the supplied narrative.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Retain exact-tree and ownership evidence; an advisory success does not authorize merge or cleanup.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-01-2",
+      "family_id": "runtime-completed",
+      "task_kind": "runtime",
+      "variant": "id-and-padding",
+      "proposed_label": "success",
+      "alternatives": [],
+      "ambiguity_rationale": "Every required test passed on the exact candidate and all owned child exits have a matching receipt. No competing class is supported by the supplied narrative.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Retain exact-tree and ownership evidence; an advisory success does not authorize merge or cleanup.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-02-1",
+      "family_id": "runtime-causal_candidate",
+      "task_kind": "runtime",
+      "variant": "primary",
+      "proposed_label": "candidate_fault",
+      "alternatives": [],
+      "ambiguity_rationale": "Matched base/candidate contrast isolates a candidate-associated assertion failure and binds test and tree identity. This is a provisional causal interpretation; the protocol supplies class names but no formal runtime definitions.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Retain the causal contrast; no remediation, merge, cleanup, or story mutation follows from this label.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-02-2",
+      "family_id": "runtime-causal_candidate",
+      "task_kind": "runtime",
+      "variant": "id-and-padding",
+      "proposed_label": "candidate_fault",
+      "alternatives": [],
+      "ambiguity_rationale": "Matched base/candidate contrast isolates a candidate-associated assertion failure and binds test and tree identity. This is a provisional causal interpretation; the protocol supplies class names but no formal runtime definitions.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Retain the causal contrast; no remediation, merge, cleanup, or story mutation follows from this label.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-03-1",
+      "family_id": "runtime-shared_base",
+      "task_kind": "runtime",
+      "variant": "primary",
+      "proposed_label": "project_fault",
+      "alternatives": [],
+      "ambiguity_rationale": "The deterministic failure is shared by base and candidate, with explicit project-component ownership evidence. No candidate-only cause is established.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Do not convert shared failure into candidate blame or permission to bypass required checks.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-03-2",
+      "family_id": "runtime-shared_base",
+      "task_kind": "runtime",
+      "variant": "id-and-padding",
+      "proposed_label": "project_fault",
+      "alternatives": [],
+      "ambiguity_rationale": "The deterministic failure is shared by base and candidate, with explicit project-component ownership evidence. No candidate-only cause is established.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Do not convert shared failure into candidate blame or permission to bypass required checks.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-04-1",
+      "family_id": "runtime-external_pressure",
+      "task_kind": "runtime",
+      "variant": "primary",
+      "proposed_label": "host_fault",
+      "alternatives": [],
+      "ambiguity_rationale": "Machine-wide file-descriptor exhaustion across unrelated projects supplies a specific host cause. Failure to start does not by itself require abstention when the cause is explicitly established.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Candidate verification remains incomplete; host attribution grants no permission to treat unstarted tests as passed.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-04-2",
+      "family_id": "runtime-external_pressure",
+      "task_kind": "runtime",
+      "variant": "id-and-padding",
+      "proposed_label": "host_fault",
+      "alternatives": [],
+      "ambiguity_rationale": "Machine-wide file-descriptor exhaustion across unrelated projects supplies a specific host cause. Failure to start does not by itself require abstention when the cause is explicitly established.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Candidate verification remains incomplete; host attribution grants no permission to treat unstarted tests as passed.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-05-1",
+      "family_id": "runtime-merge_conflict",
+      "task_kind": "runtime",
+      "variant": "primary",
+      "proposed_label": "integration_conflict",
+      "alternatives": [],
+      "ambiguity_rationale": "The integration trial establishes an exact candidate/current-base conflict. Lack of tests on a resolved merge does not erase this observed conflict.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Do not infer a resolved or verified merge; preserve conflict state without attempting mutation.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-05-2",
+      "family_id": "runtime-merge_conflict",
+      "task_kind": "runtime",
+      "variant": "id-and-padding",
+      "proposed_label": "integration_conflict",
+      "alternatives": [],
+      "ambiguity_rationale": "The integration trial establishes an exact candidate/current-base conflict. Lack of tests on a resolved merge does not erase this observed conflict.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Do not infer a resolved or verified merge; preserve conflict state without attempting mutation.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-06-1",
+      "family_id": "runtime-missing_receipt",
+      "task_kind": "runtime",
+      "variant": "primary",
+      "proposed_label": "insufficient_evidence",
+      "alternatives": [],
+      "ambiguity_rationale": "A green summary cannot establish success when exact-tree evidence is absent and required processes never started. The cause of non-start is not given, so no fault class is established.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Withhold success certification and any merge or cleanup authority; retain missing-receipt and unstarted-test facts.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-06-2",
+      "family_id": "runtime-missing_receipt",
+      "task_kind": "runtime",
+      "variant": "id-and-padding",
+      "proposed_label": "insufficient_evidence",
+      "alternatives": [],
+      "ambiguity_rationale": "A green summary cannot establish success when exact-tree evidence is absent and required processes never started. The cause of non-start is not given, so no fault class is established.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Withhold success certification and any merge or cleanup authority; retain missing-receipt and unstarted-test facts.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-07-1",
+      "family_id": "runtime-merge_timeout",
+      "task_kind": "runtime",
+      "variant": "primary",
+      "proposed_label": "insufficient_evidence",
+      "alternatives": [],
+      "ambiguity_rationale": "A timeout leaves the remote merge outcome unknown. It does not establish host fault, conflict, success, or definitive refusal.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Preserve the unresolved remote outcome; reconciliation is required before any outcome-dependent action, and no retry is authorized here.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-07-2",
+      "family_id": "runtime-merge_timeout",
+      "task_kind": "runtime",
+      "variant": "id-and-padding",
+      "proposed_label": "insufficient_evidence",
+      "alternatives": [],
+      "ambiguity_rationale": "A timeout leaves the remote merge outcome unknown. It does not establish host fault, conflict, success, or definitive refusal.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Preserve the unresolved remote outcome; reconciliation is required before any outcome-dependent action, and no retry is authorized here.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-08-1",
+      "family_id": "runtime-stale_head",
+      "task_kind": "runtime",
+      "variant": "primary",
+      "proposed_label": "insufficient_evidence",
+      "alternatives": [],
+      "ambiguity_rationale": "A receipt for head A is not evidence that the current candidate at head B passed, regardless of matching title or summary.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Reject the stale receipt as current-head certification; require evidence bound to head B before any separate action decision.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-08-2",
+      "family_id": "runtime-stale_head",
+      "task_kind": "runtime",
+      "variant": "id-and-padding",
+      "proposed_label": "insufficient_evidence",
+      "alternatives": [],
+      "ambiguity_rationale": "A receipt for head A is not evidence that the current candidate at head B passed, regardless of matching title or summary.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Reject the stale receipt as current-head certification; require evidence bound to head B before any separate action decision.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-09-1",
+      "family_id": "runtime-unknown_children",
+      "task_kind": "runtime",
+      "variant": "primary",
+      "proposed_label": "insufficient_evidence",
+      "alternatives": [],
+      "ambiguity_rationale": "Controller exit and a probable-cleanup summary do not establish descendant ownership or settlement. The narrative supplies no definite cause class.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Preserve unknown descendant settlement; no cleanup-complete claim, deletion, or ownership release is authorized.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-09-2",
+      "family_id": "runtime-unknown_children",
+      "task_kind": "runtime",
+      "variant": "id-and-padding",
+      "proposed_label": "insufficient_evidence",
+      "alternatives": [],
+      "ambiguity_rationale": "Controller exit and a probable-cleanup summary do not establish descendant ownership or settlement. The narrative supplies no definite cause class.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Preserve unknown descendant settlement; no cleanup-complete claim, deletion, or ownership release is authorized.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-10-1",
+      "family_id": "runtime-definitive_refusal",
+      "task_kind": "runtime",
+      "variant": "primary",
+      "proposed_label": null,
+      "alternatives": [
+        {
+          "label": "insufficient_evidence",
+          "condition": "Only if humans explicitly define this class to include a known policy refusal that lies outside the fault/success ontology; the refusal itself is not uncertain."
+        },
+        {
+          "label": "integration_conflict",
+          "condition": "Only if humans explicitly broaden this class to include policy gate refusal as well as actual integration conflicts; current materials do not do so."
+        }
+      ],
+      "ambiguity_rationale": "The refusal is definitive, but no allowed class explicitly represents policy refusal or held outcome. Candidate fault and success are contradicted; host/project fault and integration conflict are not established. This is a taxonomy gap, distinct from missing evidence.",
+      "taxonomy_status": "unresolved_blocks_scoring",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Preserve the definitive refusal and held outcome. Do not infer candidate fault, merge success, or permission to bypass branch protection.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "run-10-2",
+      "family_id": "runtime-definitive_refusal",
+      "task_kind": "runtime",
+      "variant": "id-and-padding",
+      "proposed_label": null,
+      "alternatives": [
+        {
+          "label": "insufficient_evidence",
+          "condition": "Only if humans explicitly define this class to include a known policy refusal that lies outside the fault/success ontology; the refusal itself is not uncertain."
+        },
+        {
+          "label": "integration_conflict",
+          "condition": "Only if humans explicitly broaden this class to include policy gate refusal as well as actual integration conflicts; current materials do not do so."
+        }
+      ],
+      "ambiguity_rationale": "The refusal is definitive, but no allowed class explicitly represents policy refusal or held outcome. Candidate fault and success are contradicted; host/project fault and integration conflict are not established. This is a taxonomy gap, distinct from missing evidence.",
+      "taxonomy_status": "unresolved_blocks_scoring",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Preserve the definitive refusal and held outcome. Do not infer candidate fault, merge success, or permission to bypass branch protection.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-01-1",
+      "family_id": "complexity-local_known",
+      "task_kind": "complexity",
+      "variant": "primary",
+      "proposed_label": "low",
+      "alternatives": [],
+      "ambiguity_rationale": "One known static-table typo with a direct expected-text assertion is local, known work. No higher-level trigger is supplied.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Advisory assessment only; do not write the story or change dispatch choices.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-01-2",
+      "family_id": "complexity-local_known",
+      "task_kind": "complexity",
+      "variant": "id-and-padding",
+      "proposed_label": "low",
+      "alternatives": [],
+      "ambiguity_rationale": "One known static-table typo with a direct expected-text assertion is local, known work. No higher-level trigger is supplied.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Advisory assessment only; do not write the story or change dispatch choices.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-02-1",
+      "family_id": "complexity-bounded_components",
+      "task_kind": "complexity",
+      "variant": "primary",
+      "proposed_label": "medium",
+      "alternatives": [],
+      "ambiguity_rationale": "An established change crosses CLI parsing, query service, and output with specified edges and unchanged architecture: bounded work across components.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Advisory assessment only; complexity does not change queue order or priority and supplies no mutation authority.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-02-2",
+      "family_id": "complexity-bounded_components",
+      "task_kind": "complexity",
+      "variant": "id-and-padding",
+      "proposed_label": "medium",
+      "alternatives": [],
+      "ambiguity_rationale": "An established change crosses CLI parsing, query service, and output with specified edges and unchanged architecture: bounded work across components.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Advisory assessment only; complexity does not change queue order or priority and supplies no mutation authority.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-03-1",
+      "family_id": "complexity-migration_concurrency",
+      "task_kind": "complexity",
+      "variant": "primary",
+      "proposed_label": "high",
+      "alternatives": [],
+      "ambiguity_rationale": "Crash safety, rollback, concurrent writers, version compatibility, and an unresolved protocol constitute interacting invariants and uncertain work. Highest applicable level is high.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Advisory assessment only; a high label does not resolve the protocol or authorize execution.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-03-2",
+      "family_id": "complexity-migration_concurrency",
+      "task_kind": "complexity",
+      "variant": "id-and-padding",
+      "proposed_label": "high",
+      "alternatives": [],
+      "ambiguity_rationale": "Crash safety, rollback, concurrent writers, version compatibility, and an unresolved protocol constitute interacting invariants and uncertain work. Highest applicable level is high.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Advisory assessment only; a high label does not resolve the protocol or authorize execution.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-04-1",
+      "family_id": "complexity-urgent_small",
+      "task_kind": "complexity",
+      "variant": "primary",
+      "proposed_label": "low",
+      "alternatives": [],
+      "ambiguity_rationale": "Urgency does not increase complexity. The described implementation remains a known local typo edit with no interacting behavior.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Keep urgency/priority separate from complexity; no queue or story changes are authorized.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-04-2",
+      "family_id": "complexity-urgent_small",
+      "task_kind": "complexity",
+      "variant": "id-and-padding",
+      "proposed_label": "low",
+      "alternatives": [],
+      "ambiguity_rationale": "Urgency does not increase complexity. The described implementation remains a known local typo edit with no interacting behavior.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Keep urgency/priority separate from complexity; no queue or story changes are authorized.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-05-1",
+      "family_id": "complexity-short_hard",
+      "task_kind": "complexity",
+      "variant": "primary",
+      "proposed_label": "high",
+      "alternatives": [],
+      "ambiguity_rationale": "Two lines can change unresolved cross-process ownership and descendant-settlement invariants after crashes. Semantic uncertainty, not edit length, determines high complexity.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Do not treat the short patch as proof of safe lease release or descendant settlement; advisory only.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-05-2",
+      "family_id": "complexity-short_hard",
+      "task_kind": "complexity",
+      "variant": "id-and-padding",
+      "proposed_label": "high",
+      "alternatives": [],
+      "ambiguity_rationale": "Two lines can change unresolved cross-process ownership and descendant-settlement invariants after crashes. Semantic uncertainty, not edit length, determines high complexity.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Do not treat the short patch as proof of safe lease release or descendant settlement; advisory only.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-06-1",
+      "family_id": "complexity-large_mechanical",
+      "task_kind": "complexity",
+      "variant": "primary",
+      "proposed_label": "low",
+      "alternatives": [],
+      "ambiguity_rationale": "A known generator and direct source-mapping comparison make the stated work mechanical and bounded to a static table. Output size alone supplies no medium/high trigger.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Advisory only; direct comparison remains necessary in an independently authorized implementation, with no execution performed here.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-06-2",
+      "family_id": "complexity-large_mechanical",
+      "task_kind": "complexity",
+      "variant": "id-and-padding",
+      "proposed_label": "low",
+      "alternatives": [],
+      "ambiguity_rationale": "A known generator and direct source-mapping comparison make the stated work mechanical and bounded to a static table. Output size alone supplies no medium/high trigger.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Advisory only; direct comparison remains necessary in an independently authorized implementation, with no execution performed here.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-07-1",
+      "family_id": "complexity-missing_scope",
+      "task_kind": "complexity",
+      "variant": "primary",
+      "proposed_label": "insufficient_evidence",
+      "alternatives": [
+        {
+          "label": "high",
+          "condition": "Only if concrete uncertain implementation work is supplied; a wholly missing task scope does not currently establish the high rubric."
+        }
+      ],
+      "ambiguity_rationale": "The task scope is absent, so the rubric cannot be applied. The product default medium/unassessed is a storage fallback, not an evidentiary assessment or a classifier label to guess.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Do not set an explicit assessed flag or overwrite a value. Obtain task scope before assessment; any existing default remains unassessed.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-07-2",
+      "family_id": "complexity-missing_scope",
+      "task_kind": "complexity",
+      "variant": "id-and-padding",
+      "proposed_label": "insufficient_evidence",
+      "alternatives": [
+        {
+          "label": "high",
+          "condition": "Only if concrete uncertain implementation work is supplied; a wholly missing task scope does not currently establish the high rubric."
+        }
+      ],
+      "ambiguity_rationale": "The task scope is absent, so the rubric cannot be applied. The product default medium/unassessed is a storage fallback, not an evidentiary assessment or a classifier label to guess.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Do not set an explicit assessed flag or overwrite a value. Obtain task scope before assessment; any existing default remains unassessed.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-08-1",
+      "family_id": "complexity-explicit_medium",
+      "task_kind": "complexity",
+      "variant": "primary",
+      "proposed_label": "medium",
+      "alternatives": [
+        {
+          "label": "insufficient_evidence",
+          "condition": "If the human panel requires specified edges/architecture before treating established multi-component settings work as bounded, the short task description may be inadequate for independent inference."
+        }
+      ],
+      "ambiguity_rationale": "Medium is provisionally supported by established multi-component work, independently of the manual selection. The explicit human choice is also medium but is not gold evidence that the rubric is satisfied. Humans must specify whether this task asks for rubric inference or merely reading the stored selection.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Preserve the explicit manual medium value and assessment state regardless of advisory label; no overwrite, reset, or dispatch-policy change is authorized.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-08-2",
+      "family_id": "complexity-explicit_medium",
+      "task_kind": "complexity",
+      "variant": "id-and-padding",
+      "proposed_label": "medium",
+      "alternatives": [
+        {
+          "label": "insufficient_evidence",
+          "condition": "If the human panel requires specified edges/architecture before treating established multi-component settings work as bounded, the short task description may be inadequate for independent inference."
+        }
+      ],
+      "ambiguity_rationale": "Medium is provisionally supported by established multi-component work, independently of the manual selection. The explicit human choice is also medium but is not gold evidence that the rubric is satisfied. Humans must specify whether this task asks for rubric inference or merely reading the stored selection.",
+      "taxonomy_status": "provisional_interpretation",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Preserve the explicit manual medium value and assessment state regardless of advisory label; no overwrite, reset, or dispatch-policy change is authorized.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-09-1",
+      "family_id": "complexity-scope_revision",
+      "task_kind": "complexity",
+      "variant": "primary",
+      "proposed_label": null,
+      "alternatives": [
+        {
+          "label": "low",
+          "condition": "If the label target is the original submitted snapshot, the described local formatting fix is low; the result is stale and cannot be applied."
+        },
+        {
+          "label": "high",
+          "condition": "If the target is the revised scope and concurrent store recovery entails interacting concurrency/recovery invariants, high is a reasonable provisional interpretation."
+        },
+        {
+          "label": "insufficient_evidence",
+          "condition": "If the target is the revised scope but the phrase concurrent store recovery lacks enough requirements to assess, abstain pending details."
+        }
+      ],
+      "ambiguity_rationale": "The payload combines an old input and a new scope without defining which version the classifier labels. Choosing low or high before freezing the assessment target confounds complexity with freshness. The target-version semantics require human resolution.",
+      "taxonomy_status": "unresolved_blocks_scoring",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Discard the stale result and bind any fresh assessment to the revised scope/version. Neither an old low label nor a provisional new high label authorizes applying a result or writing the story.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-09-2",
+      "family_id": "complexity-scope_revision",
+      "task_kind": "complexity",
+      "variant": "id-and-padding",
+      "proposed_label": null,
+      "alternatives": [
+        {
+          "label": "low",
+          "condition": "If the label target is the original submitted snapshot, the described local formatting fix is low; the result is stale and cannot be applied."
+        },
+        {
+          "label": "high",
+          "condition": "If the target is the revised scope and concurrent store recovery entails interacting concurrency/recovery invariants, high is a reasonable provisional interpretation."
+        },
+        {
+          "label": "insufficient_evidence",
+          "condition": "If the target is the revised scope but the phrase concurrent store recovery lacks enough requirements to assess, abstain pending details."
+        }
+      ],
+      "ambiguity_rationale": "The payload combines an old input and a new scope without defining which version the classifier labels. Choosing low or high before freezing the assessment target confounds complexity with freshness. The target-version semantics require human resolution.",
+      "taxonomy_status": "unresolved_blocks_scoring",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Discard the stale result and bind any fresh assessment to the revised scope/version. Neither an old low label nor a provisional new high label authorizes applying a result or writing the story.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-10-1",
+      "family_id": "complexity-typed_epic",
+      "task_kind": "complexity",
+      "variant": "primary",
+      "proposed_label": null,
+      "alternatives": [
+        {
+          "label": "insufficient_evidence",
+          "condition": "Only if the classifier contract explicitly maps structurally inapplicable non-executable epics to this class; missing child scopes alone must not imply epic dispatch eligibility."
+        }
+      ],
+      "ambiguity_rationale": "A typed epic with no implementation is structurally outside executable-child assessment. The rubric says engine lanes resolve each executable child, never an epic. The taxonomy lacks not_applicable; treating it as insufficient evidence would need an explicit human-approved contract.",
+      "taxonomy_status": "unresolved_blocks_scoring",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Do not dispatch or assess the folder epic as an executable child and do not inherit an epic label across children. Assess each executable child separately when its scope is available.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    },
+    {
+      "case_id": "com-10-2",
+      "family_id": "complexity-typed_epic",
+      "task_kind": "complexity",
+      "variant": "id-and-padding",
+      "proposed_label": null,
+      "alternatives": [
+        {
+          "label": "insufficient_evidence",
+          "condition": "Only if the classifier contract explicitly maps structurally inapplicable non-executable epics to this class; missing child scopes alone must not imply epic dispatch eligibility."
+        }
+      ],
+      "ambiguity_rationale": "A typed epic with no implementation is structurally outside executable-child assessment. The rubric says engine lanes resolve each executable child, never an epic. The taxonomy lacks not_applicable; treating it as insufficient evidence would need an explicit human-approved contract.",
+      "taxonomy_status": "unresolved_blocks_scoring",
+      "guard_disposition": {
+        "independent_of_proposed_label": true,
+        "advisory_only": true,
+        "merge_or_cleanup_authority": false,
+        "story_writes": 0,
+        "required_disposition": "Do not dispatch or assess the folder epic as an executable child and do not inherit an epic label across children. Assess each executable child separately when its scope is available.",
+        "execution_status": "Narrative guard review only; no runtime guard execution or preservation measurement performed."
+      }
+    }
+  ]
+}
