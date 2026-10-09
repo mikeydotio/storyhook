@@ -53,6 +53,11 @@ they do not expand recursively. Unknown types, escaping or unresolvable links,
 unsupported Git origin escaping, unavailable sensors and more than 250,000
 inventory entries refuse execution. Do not weaken checks to obtain data.
 Actual inventory cost and platform compatibility require the integration window.
+Homebrew Python links add complete exact installed packages in the selected
+interpreter's physical Cellar, including transitive package links. Discovery has
+a 30-second/250,000-entry bound; links to another prefix, external configuration,
+unversioned packages or missing targets refuse. Package selection is checked
+again after hashing to catch a changed link or tool selection during capture.
 The standard profile permits tracked source wrappers such as rustc-slot and
 host-admit. Arbitrary external compiler/runner programs, compiler flags with
 unreviewed dependencies, Cargo include/env injection and gate command aliases
@@ -95,6 +100,9 @@ enrolled or swept. All logs and custody journals remain.
 
 Admission checks require 130 GiB initially free, two targets of at most 40 GiB
 each, 10 GiB evidence and 40 GiB system headroom. Disk is not reserved. Health
+checks also preserve free space for the active targets' remaining permitted
+growth and the unused evidence allowance, rather than checking headroom alone.
+Health
 observations retain native memory pressure, load, process census, detected
 competing builds/tests and observed aggregate descendant CPU/RSS. Five-second
 sampled RSS can count shared pages more than once; it is not a calibrated host

@@ -89,18 +89,27 @@ def check_storage(description, *, initial=False, disk=shutil.disk_usage, size=us
             raise Refusal('measurement target is shared or outside the owned target namespace')
         check_identity(target)
         sizes[str(path)] = size(path)
+        if type(sizes[str(path)]) is not int or sizes[str(path)] < 0:
+            raise Refusal('measurement target size observation is invalid')
         if sizes[str(path)] > TARGET_CAP:
             raise Refusal(f'measurement target exceeded 40 GiB: {path}')
     # Count source, probe state and logs, without following source/probe links.
     # Live Unix sockets contribute no allocated file bytes and are never removed.
     evidence = size(root, excluded=tuple(Path(x['path']) for x in targets),
                     allow_links=True, allow_sockets=True)
+    if type(evidence) is not int or evidence < 0:
+        raise Refusal('measurement evidence size observation is invalid')
     if evidence > EVIDENCE_CAP:
         raise Refusal('measurement evidence exceeded 10 GiB')
     free = disk(root).free
-    if type(free) is not int or free < (INITIAL_FREE if initial else SYSTEM_HEADROOM):
+    # Preserve room for all remaining permitted growth, not just today's usage.
+    # This is an observed allowance, never an exclusive reservation or quota.
+    remaining_growth = sum(TARGET_CAP - n for n in sizes.values()) + EVIDENCE_CAP - evidence
+    required = max(INITIAL_FREE if initial else 0, SYSTEM_HEADROOM + remaining_growth)
+    if type(free) is not int or free < required:
         raise Refusal('measurement free-space allowance is unavailable or exhausted')
     return {'free_bytes': free, 'target_bytes': sizes, 'evidence_bytes': evidence,
+            'remaining_growth_bytes': remaining_growth, 'required_free_bytes': required,
             'disk_reserved': False}
 
 
