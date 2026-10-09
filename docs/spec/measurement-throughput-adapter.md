@@ -24,8 +24,7 @@ choose and implement the optimization, with two windows of at most 10 hours.
 This is a conservative containment interpretation; it never grants extra time.
 Each revision gets exactly three C/W/R blocks. Cold/warm ceilings are 75 minutes,
 reuse is 10 minutes, initial preparation is 40 minutes, lock wait is 60 seconds,
-and quiet admission requires 60 consecutive seconds below load/core 0.5 within
-five minutes. Interrupted windows/slots cannot silently restart or be replaced.
+and host-load protocol v2 records representative exposure without a load cutoff. Interrupted windows/slots cannot silently restart or be replaced.
 The optimization window requires a complete accepted baseline and unchanged
 controls apart from source and fresh targets. Every duration at or above 900
 seconds remains a production-target breach.
@@ -104,9 +103,10 @@ checks also preserve free space for the active targets' remaining permitted
 growth and the unused evidence allowance, rather than checking headroom alone.
 Health
 observations retain native memory pressure, load, process census, detected
-competing builds/tests and observed aggregate descendant CPU/RSS. Five-second
+external builds/tests, cumulative native CPU ticks, swap usage and observed
+aggregate descendant CPU/RSS. Natural external activity does not reject a sample. Five-second
 sampled RSS can count shared pages more than once; it is not a calibrated host
-memory cap. Sensor failure or contamination stops admission. Summary JSON keeps
+memory cap. Unknown/unsafe sensors, low storage and input/ownership changes stop admission. Summary JSON keeps
 all attempt denominators, distributions, breaches, pending slots, failures and
 resource peaks; per-slot journals retain detailed cost boundaries.
 
@@ -119,3 +119,19 @@ target peak storage. Exercise real cancellation, descriptor inheritance, R
 coverage and target turnover using disposable fixtures. Freeze and review the
 actual manifest, then obtain the separate coordinated start. Draft publication
 does not authorize merging, measuring, activation or a production release.
+
+## Variable-load amendment
+
+The 2026-10-09 user direction removes idle-only and blanket external-contention
+exclusion. It does not change C/W/R meaning, exact inputs, detector coverage,
+three blocks per revision (18 total slots), 20-hour continuous campaign, 10-hour
+windows, 75-minute C/W, 10-minute R, or the 900-second production target. Every
+breach, interruption and failed cleanup remains evidence; no failure can be
+replaced. Existing v1 campaigns refuse under v2 rather than being reinterpreted.
+
+A separate 15-attempt/20-hour paired design has been proposed but is not an
+approved executable protocol. Neither that proposal nor this source amendment
+authorizes a broad run. Review the design and coordinate the native build lane,
+then capture fresh inputs and obtain a real start decision. The observed external
+Apple build is natural exposure and also relevant to lane coordination; it is
+never a reason to stop another owner's job. Automations remain off.

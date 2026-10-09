@@ -225,6 +225,7 @@ const VERIFIER_SCRIPTS: &[&str] = &[
     "gate_measurement_targets.py",
     "gate_measurement_legs.py",
     "gate_measurement_data.py",
+    "gate_measurement_exposure.py",
     "gate_measurement_probes.py",
     "gate_measurement_runtime.py",
     "gate_measurement_setup.py",

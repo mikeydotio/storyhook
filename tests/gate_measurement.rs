@@ -6,6 +6,8 @@ use std::process::Command;
 #[test]
 fn throughput_cohort_and_execution_evidence_regressions() {
     for script in [
+        "scripts/tests/test_gate_measurement_exposure.py",
+        "scripts/tests/test_git_shim_measurement.py",
         "scripts/tests/test_gate_measurement_cohorts.py",
         "scripts/tests/test_gate_measurement_execution.py",
         "scripts/tests/test_gate_measurement_campaign.py",

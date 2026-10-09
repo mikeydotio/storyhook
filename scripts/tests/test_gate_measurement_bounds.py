@@ -12,6 +12,7 @@ from unittest import mock
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from gate_measurement_exposure import PROTOCOL
 from gate_measurement_bounds import Deadline, LIMITS, require_same_day, start_slot, validate_policy
 from host_admission.supervisor import ManagedProcess
 from verifier_state import Refusal
@@ -60,7 +61,7 @@ class Bounds(unittest.TestCase):
             start_slot(events, 'sample', 20)
 
     def test_missing_or_weakened_policy_refuses(self):
-        validate_policy({'limits': LIMITS})
+        validate_policy({'limits': LIMITS, 'protocol': {'pairs': 10, 'host_load': PROTOCOL}})
         for identity in [{}, {'limits': dict(LIMITS, gate_seconds=3601)}]:
             with self.assertRaises(Refusal):
                 validate_policy(identity)

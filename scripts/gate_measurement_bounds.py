@@ -4,6 +4,7 @@ import datetime
 import math
 import time
 
+from gate_measurement_exposure import PROTOCOL
 from verifier_state import Refusal
 
 LIMITS = {
@@ -61,7 +62,8 @@ def require_same_day(day, allowance, *, now=None):
 
 def validate_policy(identity):
     """A historical or changed manifest cannot silently run the bounded protocol."""
-    if identity.get("limits") != LIMITS:
+    if (identity.get("limits") != LIMITS
+            or identity.get("protocol") != {"pairs": 10, "host_load": PROTOCOL}):
         raise Refusal("measurement manifest lacks the exact bounded policy")
 
 

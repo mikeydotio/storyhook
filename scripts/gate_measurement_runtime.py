@@ -187,8 +187,8 @@ def require_resource_limits(identity):
 
 def pressure():
     """Capture read-only host pressure and process activity with no command arguments."""
-    from gate_measurement_storage import pressure_level
-    return {'native_memory_pressure': pressure_level(),
+    from gate_measurement_exposure import snapshot
+    return {**snapshot(),
             'at': datetime.datetime.now().astimezone().isoformat(),
             'load': list(os.getloadavg()), 'cores': os.cpu_count(),
             'memory': capture(['/usr/bin/memory_pressure', '-Q']),

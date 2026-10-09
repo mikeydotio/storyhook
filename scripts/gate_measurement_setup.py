@@ -10,6 +10,7 @@ import sys
 import time
 
 from gate_measurement_runtime import capture, normal_class, resource_limits, scheduling, sha256
+from gate_measurement_exposure import PROTOCOL
 from gate_measurement_context import VARIABLE
 from verifier_state import Refusal, boot, read, save
 from gate_measurement_bounds import LIMITS, Deadline
@@ -114,7 +115,7 @@ def prepare(checkout, revision, output, binary):
                 'resource_limits': resource_limits(), 'limits': LIMITS, 'storage': storage,
                 'preparation_end': preparation_end,
                 'fixture': {'prefix': 'MB', 'stories': 10, 'title': 'Measurement fixture'},
-                'protocol': {'pairs': 10, 'idle_seconds': 60, 'max_load_per_core': 0.5}}
+                'protocol': {'pairs': 10, 'host_load': PROTOCOL}}
     path = output / 'manifest.json'
     immutable(path, identity)
     # The lock records its wait before the collector can append any activity.

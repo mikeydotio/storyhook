@@ -19,7 +19,7 @@ import time
 from gate_measurement_bounds import Deadline
 from gate_measurement_cohorts import Cohort, WINDOW_SECONDS, CAMPAIGN_SECONDS
 from gate_measurement_context import validate, manifest, VARIABLE
-from gate_measurement_data import IdleWindow
+from gate_measurement_exposure import PROTOCOL, annotate_processes
 from gate_measurement_execution import OwnedGate, run_observation
 from gate_measurement_inputs import inventory, observe, WORKERS
 from gate_measurement_runtime import capture, journal, records, pressure, normal_class, scheduling, sha256
@@ -29,10 +29,10 @@ from gate_measurement_targets import TargetPool
 from verifier_state import Refusal, boot, paths, read, save
 
 LEGS = ['fmt', 'clippy', 'rust-suite', 'rust-contracts', 'build', 'plugin']
-POLICY = {'version': 1, 'windows': 2, 'window_seconds': WINDOW_SECONDS,
+POLICY = {'version': 2, 'windows': 2, 'window_seconds': WINDOW_SECONDS,
           'campaign_seconds': CAMPAIGN_SECONDS, 'slots_per_window': 9,
           'cold_warm_seconds': 4500, 'reuse_seconds': 600,
-          'quiet_seconds': 60, 'quiet_wait_seconds': 300}
+          'host_load': PROTOCOL}
 SCRIPTS = Path(__file__).resolve().parent
 TOOL_ENV = {'HOME', 'XDG_STATE_HOME', 'PATH', 'USER', 'LOGNAME', 'TMPDIR', 'TZ',
             'LANG', 'LC_ALL', 'LC_CTYPE', 'LC_COLLATE', 'LC_MESSAGES', 'LC_MONETARY',
@@ -92,7 +92,7 @@ def begin_window(root, revision, authorization, *, clock=time.monotonic, boot_id
 
 
 def competing_work(raw, owner_pid):
-    """Reject known external build/test executables; retain the complete census."""
+    """Classify external build/test exposure; their presence alone never rejects."""
     rows = {}
     for line in raw.splitlines():
         parts = line.split(None, 3)
@@ -219,13 +219,10 @@ def collect(path):
     def health():
         nonlocal initial
         window.require('campaign window'); campaign.require('campaign')
-        observed = pressure()
+        observed = annotate_processes(pressure(), os.getpid())
         observed['storage'] = check_storage(pool.storage(), initial=initial)
-        observed['competing_pids'] = competing_work(observed['processes'], os.getpid())
-        observed['owned_resources'] = owned_resources(observed['resource_processes'], os.getpid())
         journal(root / 'pressure.jsonl', dict(observed, kind='health', revision=revision))
-        if observed['competing_pids']:
-            raise Refusal('competing external build/test work invalidates this measurement')
+        window.require('campaign health observation'); campaign.require('campaign health observation')
         initial = False
         return observed
 
@@ -255,13 +252,7 @@ def collect(path):
         if previous:
             dispose(previous)
         for _ in range(3):
-            quiet = IdleWindow(); quiet_limit = window.child(300)
-            while True:
-                quiet_limit.require('quiet gate admission')
-                sample = health()
-                if quiet.observe(time.monotonic(), sample['load'][0], sample['cores']):
-                    break
-                time.sleep(min(5, quiet_limit.remaining()))
+            health()
             def observer():
                 return observe(value, inputs, os.environ, target, window.child(2400),
                                validate_source=lambda: validate(path), versions=tools_identity,
@@ -296,7 +287,8 @@ def report(root, revision, error=None):
     result = {'version': 1, 'revision': revision, 'modes': modes,
               'complete': error is None and pending is None and count == 9 and all(r['accepted'] for r in rows if r['kind']=='finish'),
               'pending_slot': pending['slot'] if pending else None, 'error': error,
-              'production_certification': False,
+              'production_certification': False, 'host_load_protocol': PROTOCOL,
+              'inference': 'inconclusive pending matched timing and exposure review',
               'observed_peak_resources': {field: max(r[field] for r in resources)
                                           for field in resources[0]} if resources else None,
               'resource_limit': 'Five-second observations include collector descendants; summed RSS can count shared pages more than once and is not a calibrated host cap.',
