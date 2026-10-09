@@ -16,6 +16,8 @@ pub enum FamilyHandler {
     Github,
     /// Terminal UI after global option parsing.
     Tui,
+    /// Pure offline command discovery.
+    Describe,
 }
 
 /// Closed set of handlers that run before global option parsing.
@@ -25,23 +27,32 @@ pub enum BeforeGlobals {
 /// Closed set of handlers that run after globals and before invocation parsing.
 pub enum BeforeInvocation {
     Tui,
+    /// Pure offline command discovery.
+    Describe,
 }
 
 /// No project, store, daemon, environment or helper is consulted for routing.
 pub fn before_globals(args: &[String]) -> Option<BeforeGlobals> {
     match CommandId::find(args.first()?)?.handler() {
         FamilyHandler::Github => Some(BeforeGlobals::Github),
-        FamilyHandler::Parsed | FamilyHandler::Tui => None,
+        FamilyHandler::Parsed | FamilyHandler::Tui | FamilyHandler::Describe => None,
     }
 }
 
 /// Preserve the existing terminal help precedence, including legacy terminators.
 pub fn before_invocation(args: &[String]) -> Option<BeforeInvocation> {
+    let handler = CommandId::find(args.first()?)?.handler();
+    // Discovery owns its path words, including the registered --help spelling.
+    // Existing commands retain their legacy help precedence.
+    if handler == FamilyHandler::Describe {
+        return Some(BeforeInvocation::Describe);
+    }
     if super::is_help_request(args) {
         return None;
     }
-    match CommandId::find(args.first()?)?.handler() {
+    match handler {
         FamilyHandler::Tui => Some(BeforeInvocation::Tui),
+        FamilyHandler::Describe => Some(BeforeInvocation::Describe),
         FamilyHandler::Parsed | FamilyHandler::Github => None,
     }
 }
@@ -88,6 +99,7 @@ fn unknown(name: &str) -> Result<Invocation, AppError> {
 commands! {
     HelpFlag ["-h", "--help"] Parsed Grammar::new("[<ignored>...]", "", FormKind::Command); (args) => Ok(Invocation::Help),
     VersionFlag ["-V", "--version"] Parsed Grammar::new("[<ignored>...]", "", FormKind::Command); (args) => Ok(Invocation::Version),
+    Describe ["describe"] Describe Grammar::new("[<command-path>...] [--audience <audience:audiences>]", "", FormKind::Early); (args) => unknown(&args[0]),
     Help ["help"] Parsed Grammar::new("[<topic:help-topics>] [--all | --compact]", "", FormKind::Command); (args) => parse_help(args),
     Mcp ["mcp"] Parsed Grammar::new("", "", FormKind::Retired); (args) => Err(AppError::Usage(
             "`story mcp` is retired. Use CLI commands with --json instead. \
@@ -286,6 +298,11 @@ pub struct FlagPath {
 /// Two verbs cannot be checked against their own help text, because their help
 /// names no flags at all — see `UNDISCOVERABLE` in `tests/unknown_flag_sweep.rs`.
 pub static FLAG_PATHS: &[FlagPath] = &[
+    FlagPath {
+        command: CommandId::Describe,
+        subcommand: None,
+        flags: &[value("audience")],
+    },
     FlagPath {
         command: CommandId::Continuation,
         subcommand: None,
@@ -972,6 +989,8 @@ help_syntax! {
 "#,
     Scaffold => r#"  story scaffold agents-md|claude-md|cursor-rules
 "#,
+    Describe => r#"  story describe [command path] --json [--audience task|operator|internal|all]
+"#,
     Help => r#"  story help [<command>] [--compact] [--all]
 "#,
     Plugin => r#"  story plugin install|uninstall <claude|codex>
@@ -1111,7 +1130,7 @@ subcommands! {
         ResetCheck = "reset-check" => Grammar::new("<id:stories>", "SH-1", FormKind::Command),
         ResetTarget = "reset-target" => Grammar::new("--run <run> --token <token>", "--run run --token token", FormKind::Command),
         Start = "start" => Grammar::new("[--epic <id:stories>] [--lanes <lanes>] [--agent <agent:providers>] [--model <model:provider-models>] [--effort <effort:provider-efforts>] [--speed <speed:speed>]", "", FormKind::Command),
-        Configure = "configure" => Grammar::new("[--lanes <lanes>] [--model <model:provider-models>] [--effort <effort:provider-efforts>] [--speed <speed:speed>] [--run <run>]", "--lanes 1", FormKind::Command),
+        Configure = "configure" => Grammar::new("(--lanes <lanes> | --model <model:provider-models> | --effort <effort:provider-efforts> | --speed <speed:speed>)... [--run <run>]", "--lanes 1", FormKind::Command),
         Adopt = "adopt" => Grammar::new("<id:stories>... [--run <run>]", "SH-1", FormKind::Command),
         Status = "status" => Grammar::new("[--run <run>]", "", FormKind::Command),
         Pause = "pause" => Grammar::new("[--run <run>]", "", FormKind::Command),
@@ -1166,7 +1185,7 @@ subcommands! {
         Install = "install" => Grammar::new("<provider:providers>", "codex", FormKind::Command),
         Uninstall = "uninstall" => Grammar::new("<provider:providers>", "codex", FormKind::Command),
         Reinstall = "reinstall" => Grammar::new("", "", FormKind::Command),
-        Run = "run" => Grammar::new("<provider:providers> [--] <helper-command> [<argument>...]", "codex -- example", FormKind::Command),
+        Run = "run" => Grammar::new("<provider:codex-launcher> [--] <helper-command> [<argument>...]", "codex -- example", FormKind::Command),
     }
     StoreVerb (Store []) {
         New = "new" => Grammar::new("<path>", "/tmp/example.db", FormKind::Command),
@@ -1214,7 +1233,7 @@ subcommands! {
 
     ContinuationVerb (Continuation []) { Capabilities = "capabilities" => Grammar::new("", "", FormKind::Command), Request = "request" => Grammar::new("<id:stories> --stdin", "SH-1 --stdin", FormKind::Command), Status = "status" => Grammar::new("<id:stories>", "SH-1", FormKind::Command), Receipt = "receipt" => Grammar::new("<id:stories> <request> --stdin", "SH-1 request --stdin", FormKind::Command), Retry = "retry" => Grammar::new("<id:stories> <request>", "SH-1 request", FormKind::Command), Ack = "ack" => Grammar::new("<id:stories> <request> --reviewed-seq <sequence> --head <sha> --provider <provider:providers> --session-id <session>", "SH-1 request --reviewed-seq 1 --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --provider codex --session-id session", FormKind::Command) }
 
-    DispatchPolicyVerb (DispatchPolicy []) { Show = "show" => Grammar::new("[--global]", "", FormKind::Command), Set = "set" => Grammar::new("[--global] --agent <agent:providers> --complexity <complexity:complexity> [--model <model:provider-models>] [--effort <effort:provider-efforts>]", "--agent codex --complexity low --model example", FormKind::Command), Reset = "reset" => Grammar::new("[--global] --agent <agent:providers> --complexity <complexity:complexity> [--model] [--effort]", "--agent codex --complexity low", FormKind::Command), Resolve = "resolve" => Grammar::new("<id:stories> --agent <agent:providers>", "SH-1 --agent codex", FormKind::Command) }
+    DispatchPolicyVerb (DispatchPolicy []) { Show = "show" => Grammar::new("[--global]", "", FormKind::Command), Set = "set" => Grammar::new("[--global] --agent <agent:providers> --complexity <complexity:complexity> (--model <model:provider-models> | --effort <effort:provider-efforts>)...", "--agent codex --complexity low --model example", FormKind::Command), Reset = "reset" => Grammar::new("[--global] --agent <agent:providers> --complexity <complexity:complexity> [--model] [--effort]", "--agent codex --complexity low", FormKind::Command), Resolve = "resolve" => Grammar::new("<id:stories> --agent <agent:providers>", "SH-1 --agent codex", FormKind::Command) }
 
     GithubVerb (Github []) { Observe = "observe" => Grammar::new("--checkout <path> [--authority <path>] -- (ls-remote | fetch) <argument>...", "--checkout /tmp/example -- ls-remote origin", FormKind::Early), Resolve = "resolve" => Grammar::new("--checkout <path> [--authority <path>] [--expected <repository>]", "--checkout /tmp/example", FormKind::Early), Merge = "merge" => Grammar::new("--checkout <path> [--authority <path>] [--expected <repository>] -- <number> <head>", "--checkout /tmp/example -- 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", FormKind::Early), Exec = "exec" => Grammar::new("--checkout <path> [--authority <path>] [--expected <repository>] -- <argument>...", "--checkout /tmp/example -- repo view", FormKind::Early), Git = "git" => Grammar::new("--checkout <path> [--authority <path>] [--expected <repository>] -- <argument>...", "--checkout /tmp/example -- ls-remote origin", FormKind::Early) }
 

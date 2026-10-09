@@ -180,14 +180,25 @@ fn main() {
         Err(error) => fail(&error, json),
     };
     let json = flags.json;
-    publish_store_path(flags.store_path.as_deref(), json);
 
     // `tui` is dispatched here, ahead of parsing, so `story tui --help` would
     // launch the interactive UI instead of explaining it; the help request
     // falls through to the parser, which answers it like any other verb's.
     if let Some(handler) = cli::model::before_invocation(&filtered_args) {
         match handler {
+            cli::model::BeforeInvocation::Describe => {
+                let document = cli::discovery::describe(&filtered_args[1..])
+                    .unwrap_or_else(|error| fail(&error, json));
+                match serde_json::to_string_pretty(&document) {
+                    Ok(text) => println!("{text}"),
+                    Err(error) => fail(
+                        &storyhook::error::AppError::Storage(error.to_string()),
+                        json,
+                    ),
+                }
+            }
             cli::model::BeforeInvocation::Tui => {
+                publish_store_path(flags.store_path.as_deref(), json);
                 let cwd = env::current_dir().unwrap_or_else(|e| {
                     eprintln!("error: failed to resolve current directory: {e}");
                     process::exit(1);
@@ -200,6 +211,8 @@ fn main() {
         }
         return;
     }
+
+    publish_store_path(flags.store_path.as_deref(), json);
 
     let invocation = match cli::parse_invocation(&filtered_args) {
         Ok(invocation) => invocation,

@@ -1,0 +1,51 @@
+story describe [command path] --json [--audience task|operator|internal|all]
+
+Describe the compiled CLI without opening a store, resolving a project, starting
+a daemon, querying dynamic choices or invoking a helper. The default audience is
+task. Use operator for administration, internal for protocols, and all for the
+complete surface. Project/store global selectors are accepted but unused by
+discovery. Audiences filter visibility; they never grant authorization.
+
+The result is always a JSON document, schema storyhook.command-discovery,
+schema_version 1. --json is accepted; --quiet does not suppress this raw document.
+An exact path selects that command and its descendants. Runnable aliases resolve
+to the canonical path. An existing path excluded by the selected audience yields
+an empty commands array; unknown paths and invalid audiences fail with exit 2.
+Use story help describe for this guide; describe --help describes the registered
+--help command itself.
+
+Each entry gives canonical path, runnable aliases, help-only aliases, audience,
+entry kind, syntax, structured arguments, output contracts and effects. Group
+entries select descendants and are not standalone operations. Retired entries
+retain actionable refusals. Output classes are envelope, raw_document,
+json_lines, delegated_helper and terminal. Each records its own selection,
+content/schema, empty/error/channel/status and quiet/follow rules.
+
+Argument syntax: [] optional, () grouping, | alternatives, ... repetition of the
+preceding item; repeating an optional group permits zero occurrences. <name>
+is a value; <name:domain> names a static value set or a dynamic source. The JSON
+argument tree makes these operators explicit. It describes canonical forms;
+legacy option placement, duplicate handling, cross-field constraints and service
+validation remain in force. Dynamic sources are named without reading them.
+
+Capabilities describe the eventual command, not discovery. Store access is
+separate from daemon startup and its runtime files. A read query may start a
+daemon. Configured event hooks and delegated helpers may have further effects.
+Only declared dry-runs and guarded writes are supported. Reset's --force is not
+a generic confirmation flag. A timeout is not cancellation: inspect the target
+and its receipts before retrying an uncertain write.
+
+Examples:
+  story describe --json
+  story describe verifier --audience all --json
+  story describe project link --audience operator --json
+  story describe context --json
+  story describe set --json
+  story --json set SH-42 --input-json '{"complexity":"medium"}'
+
+set --input-json explicitly names JSON input. Legacy set --json <object> remains
+supported; combining both input forms fails before mutation. Literal --/help
+precedence and next's legacy result shapes are unchanged. states/is/awaits/priority
+are help-only aliases. link/unlink relate stories; project link/unlink changes Git
+associations. close retires work, archive changes visibility, delete removes data,
+reset tears down owned work resources, and unclaim releases a claim.
