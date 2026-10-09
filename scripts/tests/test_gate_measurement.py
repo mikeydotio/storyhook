@@ -555,7 +555,8 @@ subprocess.run([sys.executable, '-B', {str(SCRIPTS / 'verifier-owner.py')!r},
  sys.executable, '-c', {gate!r}], check=True)
 '''
         allowance = load_grace.patience(30, load_grace.contention())
-        env = dict(self.env, STORYHOOK_VERIFIER_CLEANUP_GRACE_MS=str(int(allowance * 1000)))
+        env = dict(self.env, STORYHOOK_VERIFIER_CLEANUP_GRACE_MS=str(int(allowance * 1000)),
+                   STORYHOOK_MEASUREMENT_GATE_DEADLINE=str(time.monotonic() + 300))
         child = subprocess.Popen([sys.executable, '-B', str(SCRIPTS / 'verifier-owner.py'),
                                   'measurement-run', str(self.common), str(self.worktree), '--',
                                   sys.executable, '-c', body], cwd=self.worktree, env=env,
@@ -563,8 +564,11 @@ subprocess.run([sys.executable, '-B', {str(SCRIPTS / 'verifier-owner.py')!r},
         try:
             patience = load_grace.Patience(allowance, 1, 30, time.monotonic())
             while not ready.exists():
-                if child.poll() is not None or patience.expired(time.monotonic()):
-                    self.fail(f'owned gate did not start: exit={child.poll()} fixture={self.root}')
+                if child.poll() is not None:
+                    out, err = child.communicate()
+                    self.fail(f'owned gate did not start: exit={child.returncode} fixture={self.root}: {out}\n{err}')
+                if patience.expired(time.monotonic()):
+                    self.fail(f'owned gate did not start before its allowance: fixture={self.root}')
                 time.sleep(.05)
             conflict = self.owned('pass')
             self.assertNotEqual(conflict.returncode, 0)
@@ -580,7 +584,7 @@ subprocess.run([sys.executable, '-B', {str(SCRIPTS / 'verifier-owner.py')!r},
         finally:
             if child.poll() is None:
                 child.terminate()
-                child.communicate(timeout=allowance * 2)
+            child.communicate(timeout=allowance * 2)
 
     @unittest.skipUnless(sys.platform == 'darwin', 'macOS timed command')
     def test_changed_resource_limits_refuse_before_timed_command(self):
