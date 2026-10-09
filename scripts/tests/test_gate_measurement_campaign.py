@@ -101,15 +101,24 @@ class Inputs(Fixture):
             observe(self.manifest, self.plan, self.env, self.target, Deadline(30),
                     validate_source=lambda: None, versions=lambda: {}, resolve_inventory=lambda: {})
 
-    def test_declared_internal_link_is_hashed_but_escape_or_cycle_refuses(self):
+    def test_declared_internal_link_is_hashed_but_escape_or_unresolvable_cycle_refuses(self):
         link = self.deps / 'current'; link.symlink_to('lib')
         before = snapshot(self.deps, Deadline(30), allowed=(self.deps,))
         self.library.write_text('changed target')
         self.assertNotEqual(snapshot(self.deps, Deadline(30), allowed=(self.deps,)), before)
         link.unlink(); link.symlink_to(self.tool)
         with self.assertRaises(Refusal): snapshot(self.deps, Deadline(30), allowed=(self.deps,))
-        link.unlink(); link.symlink_to(self.deps, target_is_directory=True)
+        link.unlink(); link.symlink_to(link)
         with self.assertRaises(Refusal): snapshot(self.deps, Deadline(30), allowed=(self.deps,))
+
+    def test_ancestor_header_alias_hashes_complete_directory_and_edge(self):
+        link = self.deps / 'headers'; link.symlink_to(self.deps, target_is_directory=True)
+        before = snapshot(self.deps, Deadline(30), allowed=(self.deps,))
+        self.library.write_text('changed ancestor content')
+        self.assertNotEqual(snapshot(self.deps, Deadline(30), allowed=(self.deps,)), before)
+        before = snapshot(self.deps, Deadline(30), allowed=(self.deps,))
+        link.unlink(); link.symlink_to('.', target_is_directory=True)
+        self.assertNotEqual(snapshot(self.deps, Deadline(30), allowed=(self.deps,)), before)
 
     def test_nonregular_or_expired_input_capture_refuses(self):
         pipe = self.root / 'pipe'; os.mkfifo(pipe)

@@ -77,12 +77,23 @@ def _snapshot(path, deadline, *, allowed, trail=(), audit):
     except FileNotFoundError:
         return {'kind': 'absent'}
     if stat.S_ISLNK(before.st_mode):
-        target = path.resolve(strict=True)
-        if (target in trail or not any(target == root or root in target.parents
-                                       for root in allowed)):
-            raise Refusal(f'input symlink escapes its declared dependencies or cycles: {path} -> {target}')
+        try:
+            target = path.resolve(strict=True)
+        except (OSError, RuntimeError) as error:
+            raise Refusal(f'input symlink cannot be resolved: {path}') from error
+        if not any(target == root or root in target.parents for root in allowed):
+            raise Refusal(f'input symlink escapes its declared dependencies: {path} -> {target}')
         link = os.readlink(path)
-        value = _snapshot(target, deadline, allowed=allowed, trail=(*trail, path), audit=audit)
+        if target in trail:
+            # SDK header aliases can point back into an ancestor directory.
+            # That directory's entire contents are already being captured by
+            # this walk. Record the edge, not an infinitely repeated subtree;
+            # the shared audit still verifies its identity and all file bytes.
+            if target not in audit or not stat.S_ISDIR(target.lstat().st_mode):
+                raise Refusal('input reference lacks an observed ancestor directory')
+            value = {'kind': 'ancestor-directory-reference', 'path': str(target)}
+        else:
+            value = _snapshot(target, deadline, allowed=allowed, trail=(*trail, path), audit=audit)
         after = path.lstat()
         if (before.st_dev, before.st_ino, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_ctime_ns) or os.readlink(path) != link:
             raise Refusal('input symlink changed during observation')
