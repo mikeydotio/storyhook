@@ -236,7 +236,7 @@ class Authority(unittest.TestCase):
                       "worktree": str(self.root / "worktree"),
                       "commit": "b" * 40, "tree": "a" * 40}
         self.path.write_text(json.dumps(self.value))
-        self.owner = {"measurement": str(self.path)}
+        self.owner = {"measurement": str(self.path), "measurement_sha256": runtime.sha256(self.path)}
 
     def validate(self, **overrides):
         """Inject OS facts without replacing the context validator's policy."""

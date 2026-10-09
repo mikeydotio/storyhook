@@ -11,6 +11,8 @@ from gate_measurement_data import hook_context
 from gate_measurement_runtime import capture, probe_environment, scheduling, sha256
 from gate_measurement_setup import immutable
 from verifier_state import Refusal
+from gate_measurement_bounds import Deadline, LIMITS
+from gate_measurement_command import bounded
 
 
 class Probes:
@@ -36,11 +38,13 @@ class Probes:
 
     def start(self):
         """Seed once and refuse partial or changed fixture state on restart."""
+        preparation = Deadline(LIMITS['probe_preparation_seconds'])
         if sha256(self.story) != self.identity['binary_sha256']:
             raise Refusal('probe binary identity changed')
         if not (self.project / '.storyhook.toml').exists():
             self.cli('project', 'new', '--prefix', 'MB', '--name', 'Gate measurement', '--no-agents-md')
             for index in range(10):
+                preparation.require('probe preparation')
                 self.cli('new', f'Measurement fixture {index + 1:02}', '--type', 'normal', '--priority', 'low')
         rows = json.loads(self.cli('list', '--json'))
         # Preserve the full immutable response,
@@ -49,6 +53,7 @@ class Probes:
             raise Refusal(f'probe project requires exactly ten stories: {rows!r}')
         immutable(self.root / 'fixture.json', {'version': 1, 'stories': rows,
                                               'hook_sha256': sha256(self.hook)})
+        preparation.require('probe preparation')
         self.expected = rows
         for name in ('list', 'hook'):
             result = self.run(name, self.root / ('warm-' + name))
@@ -60,10 +65,10 @@ class Probes:
         if name not in ('list', 'hook'):
             raise Refusal(f'unknown probe: {name}')
         command = [self.story, 'list', '--json'] if name == 'list' else ['bash', str(self.hook)]
-        started = time.monotonic()
-        result = subprocess.run(command, input=json.dumps({'cwd': str(self.project)}) if name == 'hook' else '',
-                                text=True, capture_output=True, cwd=self.project, env=self.env)
-        elapsed = time.monotonic() - started
+        result = bounded(command, root=self.root / 'operations', seconds=LIMITS['probe_seconds'],
+                         input=json.dumps({'cwd': str(self.project)}) if name == 'hook' else '',
+                         cwd=self.project, env=self.env)
+        elapsed = result.wall_seconds
         Path(str(prefix) + '.stdout').write_text(result.stdout)
         Path(str(prefix) + '.stderr').write_text(result.stderr)
         error = None

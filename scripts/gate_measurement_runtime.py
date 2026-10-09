@@ -9,6 +9,8 @@ from pathlib import Path
 import resource
 import subprocess
 import sys
+import tempfile
+import time
 
 sys.dont_write_bytecode = True
 from verifier_state import Refusal
@@ -128,7 +130,16 @@ def sha256(path):
 
 def capture(argv, **kwargs):
     """Capture successful OS observations with command and stderr on failure."""
-    result = subprocess.run(argv, text=True, capture_output=True, **kwargs)
+    from gate_measurement_command import bounded
+    root = os.environ.get('STORYHOOK_MEASUREMENT_OPERATIONS')
+    if root is None:
+        root = str(Path(tempfile.mkdtemp(prefix='storyhook-measurement-command-')).resolve())
+    seconds = 30
+    if 'STORYHOOK_MEASUREMENT_END' in os.environ:
+        seconds = min(seconds, float(os.environ['STORYHOOK_MEASUREMENT_END']) - time.monotonic())
+        if seconds <= 0:
+            raise Refusal('measurement campaign allowance expired')
+    result = bounded(argv, root=root, seconds=seconds, **kwargs)
     if result.returncode:
         raise Refusal(f"{argv!r} exited {result.returncode}: {result.stderr.strip()}")
     return result.stdout.strip()

@@ -538,6 +538,8 @@ def run(mode, common, worktree, key, command, cancellation, output=None):
                  "supervisor": os.getpid()}
         if measurement is not None:
             owner["measurement"] = measurement
+            from gate_measurement_runtime import sha256
+            owner["measurement_sha256"] = sha256(measurement)
         os.environ["STORYHOOK_VERIFIER_OWNER"] = owner["nonce"]
         status = execute(command, owner_path, owner, "session", cancellation, budget, output)
         try:

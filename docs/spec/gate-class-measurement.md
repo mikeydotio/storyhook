@@ -83,8 +83,8 @@ arbitrary stdout cannot keep it alive.
 
 A restart requires the same identity and a valid completed prefix. Missing exits,
 partial JSON lines, changed identities and interrupted attempts fail loudly.
-A new date starts a separate cohort. Never pool dates or count a warmup as a
-sample. Retain incomplete cohorts; they do not satisfy the story.
+An output directory cannot automatically start a new date or campaign.
+Never pool dates or count a warmup as a sample. Retain incomplete cohorts; they do not satisfy the story.
 
 Report attempts, valid samples and failures with denominators. For each condition,
 report gate median/min/max and list/hook medians. Report the gate median percentage
@@ -102,3 +102,32 @@ implementation lane. The explicit measurement operation owns the full gates.
 Completion requires ten valid samples per condition, their probe samples, a
 committed compact evidence/report artifact, and results on SH-801 and SH-785.
 Tooling alone is not completion. The central verifier owns submission and merge.
+
+## Containment and current readiness
+
+The bounded collector has a 22.25-hour campaign ceiling, 40-minute initial
+preparation ceiling, 60-second project-lock wait, 300-second quiet admission
+wait, 60-minute per-gate ceiling and 30-second helper/probe ceiling. The probe
+fixture gets at most ten minutes of preparation. It samples host observations
+every five seconds. The same boot, day and manifest are required for resumption.
+Every started gate, including warmup, failed and interrupted gates, consumes
+one of 21 slots. No failed slot can be replaced.
+
+These are containment ceilings, not measured runtimes. Taking every individual
+maximum sequentially (21 gates, 21 quiet waits and 40 minutes of preparation)
+would total 23 hours 25 minutes before cleanup overhead, exceeding the campaign
+ceiling. The collector must stop before admitting work that does not fit; the
+22.25-hour reservation does not promise a complete cohort at those maxima.
+Acceptance still requires all twenty valid same-day samples. A longer
+reservation or another campaign needs an explicit coordinated decision.
+
+Every admission-to-settlement duration at or above 900 seconds is reported as a
+production target breach. Cancellation requests use existing exact-owner
+settlement. Cleanup excess retains ownership and prevents another sample; a
+containment deadline is never proof that children disappeared. Helper streams
+and failed command custody records remain in the private output namespace.
+
+Source readiness still requires the pressure/storage controls shared with
+SH-872 and focused regression validation. Do not launch a full campaign from
+this incremental port. The current manual campaign also requires a separate
+quiet-host start signal. Disk is not reserved and existing caches are retained.

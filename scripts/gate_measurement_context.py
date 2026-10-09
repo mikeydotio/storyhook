@@ -1,6 +1,7 @@
 """Owner-bound measurement authority; an environment flag alone grants nothing."""
 
 import os
+import hashlib
 import re
 from pathlib import Path
 import subprocess
@@ -18,7 +19,7 @@ def manifest(path):
     if not file.is_absolute() or file.resolve() != file or file.name != "manifest.json":
         raise Refusal(f"measurement manifest must be a physical absolute manifest.json: {path}")
     value = read(file)
-    if not value or value.get("kind") != "gate-class-measurement":
+    if not value or value.get("version") != 1 or value.get("kind") != "gate-class-measurement":
         raise Refusal("not a gate-class measurement manifest")
     if value.get("worktree") != str(file.parent / "worktree"):
         raise Refusal("measurement workspace is not bound to the output directory")
@@ -40,7 +41,11 @@ def validate(path=None):
     common, worktree, key = paths(value["common"], value["worktree"])
     if not held(common, worktree, key) or (read(str(key) + ".owner") or {}).get("measurement") != path:
         raise Refusal("measurement context has no matching live verifier owner")
-    observed = [subprocess.check_output(["git", *args], text=True).strip() for args in (
+    owner = read(str(key) + ".owner")
+    digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    if owner.get("measurement_sha256") != digest:
+        raise Refusal("measurement manifest changed after ownership admission")
+    observed = [subprocess.check_output(["git", *args], text=True, timeout=30).strip() for args in (
         ["rev-parse", "--show-toplevel"], ["rev-parse", "HEAD"],
         ["rev-parse", "HEAD^{tree}"], ["status", "--porcelain", "--untracked-files=no"],
         ["rev-parse", "--git-common-dir"])]

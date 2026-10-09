@@ -17,6 +17,7 @@ from gate_measurement_data import IdleWindow, parse_wall, schedule, summarize
 from gate_measurement_runtime import capture, execution_active, journal, mirror_progress, normal_class, pending_sample, pressure, records, require_resource_limits, scheduling
 from gate_measurement_setup import immutable, prepare, tools_identity
 from verifier_state import Refusal, atomic, paths, read, save
+from gate_measurement_bounds import Deadline, LIMITS, require_same_day, start_slot, validate_policy
 
 SCRIPTS = Path(__file__).resolve().parent
 
@@ -48,7 +49,9 @@ def progress(event):
 def idle(directory, cohort):
     """Wait for the declared continuous idle interval and keep sensor evidence."""
     window = IdleWindow()
+    limit = Deadline(LIMITS['quiet_wait_seconds'], end=float(os.environ.get('STORYHOOK_MEASUREMENT_END', 'inf')))
     while True:
+        limit.require('quiet admission')
         if today() != cohort['day']:
             raise Refusal('local day changed during idle admission')
         observed = pressure()
@@ -57,7 +60,7 @@ def idle(directory, cohort):
                   'label': f"observed load/core {observed['load'][0] / observed['cores']:.3f}", 'at': observed['at']})
         if window.observe(time.monotonic(), observed['load'][0], observed['cores']):
             return observed
-        time.sleep(5)
+        time.sleep(min(LIMITS['sample_seconds'], limit.remaining()))
 
 
 def gate_exec(path, condition, directory):
@@ -85,7 +88,14 @@ def gate_exec(path, condition, directory):
 
 def run_sample(identity, cohort, index, directory, probes, warmup=False):
     """Supervise one real gate and prove probes overlapped active test execution."""
+    limit = Deadline(LIMITS['gate_seconds'], end=float(os.environ.get('STORYHOOK_MEASUREMENT_END', 'inf')))
+    if float(os.environ.get('STORYHOOK_MEASUREMENT_END', 'inf')) - time.monotonic() < LIMITS['gate_seconds']:
+        raise Refusal('gate admission exceeds remaining campaign allowance')
+    require_same_day(cohort['day'], LIMITS['gate_seconds'])
     directory.mkdir()
+    ledger = Path(os.environ['STORYHOOK_GATE_MEASUREMENT']).parent / 'gates.jsonl'
+    slot = start_slot(records(ledger), 'warmup' if warmup else 'sample', index)
+    journal(ledger, slot)
     condition = 'control' if warmup else schedule(cohort['pairs'])[index]
     path = os.environ['STORYHOOK_GATE_MEASUREMENT']
     command = [sys.executable, '-B', str(SCRIPTS / 'verifier-owner.py'), 'measurement-gate',
@@ -102,6 +112,7 @@ def run_sample(identity, cohort, index, directory, probes, warmup=False):
         process = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
         try:
             while process.poll() is None:
+                limit.require('measurement gate')
                 # Mirror complete real progress events to the outer gate lock's
                 # append-only watchdog journal. Stdout is never a heartbeat.
                 mirrored = mirror_progress(gate_progress, os.environ['STORYHOOK_GATE_PROGRESS'], mirrored)
@@ -112,7 +123,7 @@ def run_sample(identity, cohort, index, directory, probes, warmup=False):
                     measured.append(result)
                     journal(directory / 'probes.jsonl', result)
                 now = time.monotonic()
-                if now - last_pressure >= 60:
+                if now - last_pressure >= LIMITS['sample_seconds']:
                     journal(directory / 'pressure.jsonl', dict(pressure(), kind='running'))
                     last_pressure = now
                 time.sleep(.5)
@@ -121,11 +132,21 @@ def run_sample(identity, cohort, index, directory, probes, warmup=False):
             # verification. Retain the started journal event on interruption.
             if process.poll() is None:
                 process.send_signal(signal.SIGTERM)
-            process.wait()
+            try:
+                process.wait(timeout=LIMITS['cleanup_seconds'])
+            except subprocess.TimeoutExpired as error:
+                journal(ledger, {'kind': 'cleanup-excess', 'slot': slot['slot'], 'detail': str(error)})
+                # The outer verifier retains custody and drains this session.
+                # Never clear the durable start or admit another sample here.
+                raise Refusal('measurement cleanup exceeded its observation allowance; owner retained') from error
             raise
     _, _, key = paths(identity['common'], identity['worktree'])
     owner = read(str(key) + '.owner')
     cleanup = 'complete' if owner and owner.get('gate_started') is False and owner.get('gate_session') is None else 'unknown'
+    elapsed = time.monotonic() - limit.started
+    if cleanup == 'complete':
+        journal(ledger, {'kind': 'gate-settled', 'slot': slot['slot'], 'seconds': elapsed,
+                         'production_target_breach': elapsed >= LIMITS['production_target_seconds']})
     exit_record = read(directory / 'exit.json')
     if exit_record is None:
         raise Refusal(f'gate has no observed command exit; supervisor={process.returncode}; evidence={directory}')
@@ -140,6 +161,8 @@ def run_sample(identity, cohort, index, directory, probes, warmup=False):
     validate(path)
     return {'kind': 'warmup' if warmup else 'sample', 'index': index, 'condition': condition,
             'tree': cohort['tree'], 'day': cohort['day'], 'wall_seconds': wall,
+            'admission_to_settlement_seconds': elapsed,
+            'production_target_breach': elapsed >= LIMITS['production_target_seconds'],
             'exit_code': exit_record['exit_code'], 'supervisor_exit': process.returncode,
             'cleanup': cleanup, 'valid': not reasons, 'reasons': reasons, 'probes': measured,
             'class': read(directory / 'class.json')}
@@ -172,6 +195,10 @@ def report(directory, cohort):
 def owned(path):
     """Collect a fixed cohort only while the project gate and workspace are owned."""
     identity = manifest(path)
+    validate_policy(identity)
+    if 'STORYHOOK_MEASUREMENT_END' not in os.environ:
+        raise Refusal('bounded campaign deadline is missing')
+    Deadline(LIMITS['campaign_seconds'], end=float(os.environ['STORYHOOK_MEASUREMENT_END'])).require('campaign')
     output = Path(path).parent
     worktree = Path(identity['worktree'])
     if not worktree.exists():
@@ -182,6 +209,7 @@ def owned(path):
     if tools_identity() != identity['tools'] or not normal_class(scheduling()):
         raise Refusal('toolchain or collector class changed before collection')
     day = today()
+    immutable(output / 'day.json', {'version': 1, 'day': day})
     directory = output / 'cohorts' / day
     directory.mkdir(parents=True, exist_ok=True)
     cohort = {'version': 1, 'day': day, 'tree': identity['tree'], 'pairs': 10}

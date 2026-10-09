@@ -7,10 +7,12 @@ from pathlib import Path
 import shutil
 import stat
 import sys
+import time
 
 from gate_measurement_runtime import capture, normal_class, resource_limits, scheduling, sha256
 from gate_measurement_context import VARIABLE
-from verifier_state import Refusal, read, save
+from verifier_state import Refusal, boot, read, save
+from gate_measurement_bounds import LIMITS, Deadline
 
 SCRIPTS = Path(__file__).resolve().parent
 
@@ -54,6 +56,18 @@ def prepare(checkout, revision, output, binary):
     fd = os.open(output / 'collection.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     os.set_inheritable(fd, True)
+    lifetime = output / 'lifetime.json'
+    state = read(lifetime)
+    if state is None:
+        state = {'version': 1, 'boot': boot(), 'started': time.monotonic()}
+        save(lifetime, state)
+    if state.get('boot') != boot():
+        raise Refusal('measurement campaign cannot resume across a reboot')
+    end = state['started'] + LIMITS['campaign_seconds']
+    preparation = Deadline(LIMITS['preparation_seconds'], end=end)
+    preparation.require('measurement preparation')
+    os.environ['STORYHOOK_MEASUREMENT_END'] = str(preparation.end)
+    os.environ['STORYHOOK_MEASUREMENT_OPERATIONS'] = str(output / 'operations')
     git = lambda *args: capture(['git', '-C', str(checkout), *args])
     if git('status', '--porcelain', '--untracked-files=no'):
         raise Refusal('measurement source has tracked changes; commit the approved work first')
@@ -85,7 +99,7 @@ def prepare(checkout, revision, output, binary):
     identity = {'version': 1, 'kind': 'gate-class-measurement', 'commit': commit, 'tree': tree,
                 'common': common, 'worktree': str(output / 'worktree'), 'source': str(checkout),
                 'gate': gate, 'binary_sha256': digest, 'tools': tools_identity(),
-                'resource_limits': resource_limits(),
+                'resource_limits': resource_limits(), 'limits': LIMITS,
                 'fixture': {'prefix': 'MB', 'stories': 10, 'title': 'Measurement fixture'},
                 'protocol': {'pairs': 10, 'idle_seconds': 60, 'max_load_per_core': 0.5}}
     path = output / 'manifest.json'
@@ -95,8 +109,10 @@ def prepare(checkout, revision, output, binary):
     os.environ[VARIABLE] = str(path)
     os.environ['STORYHOOK_GATE_PROGRESS'] = str(output / 'progress.jsonl')
     os.environ['STORYHOOK_VERIFIER_CLEANUP_GRACE_MS'] = '30000'
+    preparation.require('measurement preparation')
+    os.environ['STORYHOOK_MEASUREMENT_END'] = str(end)
     os.chdir(checkout)
-    command = ['bash', str(SCRIPTS / 'machine-lock.sh'), '--termination-grace', '22', 'gate', '--',
+    command = ['bash', str(SCRIPTS / 'machine-lock.sh'), '--max-wait', str(LIMITS['lock_wait_seconds']), '--termination-grace', '22', 'gate', '--',
                sys.executable, '-B', str(SCRIPTS / 'verifier-owner.py'), 'measurement-run', common,
                identity['worktree'], '--', sys.executable, '-B', str(SCRIPTS / 'gate_measurement.py'), 'owned', str(path)]
     os.execvpe(command[0], command, os.environ)
