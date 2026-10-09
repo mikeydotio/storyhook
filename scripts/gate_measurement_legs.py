@@ -22,7 +22,7 @@ ATTEMPT_ENV = {
 
 def current_slot(identity, manifest_path, directory):
     directory = Path(directory)
-    root = Path(manifest_path).parent
+    root = Path(identity.get('campaign_root', Path(manifest_path).parent))
     if (not directory.is_absolute() or directory.resolve() != directory
             or directory.parent.parent != root / 'measurement-results-v1'
             or identity.get('kind') != 'gate-throughput-measurement'):

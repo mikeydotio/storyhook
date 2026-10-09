@@ -65,9 +65,9 @@ def run_observation(cohort, *, observe, launch, remaining_window,
     Exceptions leave the durable start pending and append a diagnostic; they
     never manufacture an exit or a successful cleanup observation.
     """
+    started = clock()
     before = observe()
     key = fingerprint(before)
-    started = clock()
     slot = cohort.begin(before, remaining_window=remaining_window,
                         remaining_campaign=remaining_campaign)
     attempt = cohort.root / f"slot-{slot['slot']:02}"
@@ -115,7 +115,7 @@ class OwnedGate:
         directory = Path(directory)
         if directory.resolve() != directory:
             raise Refusal('measurement attempt directory was substituted')
-        manifest_root = Path(self.manifest_path).parent
+        manifest_root = Path(identity['campaign_root'])
         if directory.parent.parent.parent != manifest_root or directory.parent.parent.name != 'measurement-results-v1':
             raise Refusal('measurement attempt is outside its owned result namespace')
         progress_path = directory / 'progress.jsonl'

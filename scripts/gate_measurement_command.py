@@ -60,10 +60,12 @@ def execute(directory):
     """Capture real command time, excluding custody admission/cleanup overhead."""
     directory = Path(directory)
     argv = json.loads((directory / "request.json").read_text())["argv"]
+    from host_admission.supervisor import inherited_descriptors
     with (directory / "input").open("rb") as source, (directory / "stdout").open("xb") as out, \
             (directory / "stderr").open("xb") as err:
         started = time.monotonic()
-        result = subprocess.run(argv, stdin=source, stdout=out, stderr=err)
+        result = subprocess.run(argv, stdin=source, stdout=out, stderr=err,
+                                pass_fds=tuple(sorted(inherited_descriptors())))
         record = {"exit_code": result.returncode, "wall_seconds": time.monotonic() - started}
     with (directory / "result.json").open("x") as stream:
         json.dump(record, stream)
