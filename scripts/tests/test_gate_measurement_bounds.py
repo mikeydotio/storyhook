@@ -73,8 +73,8 @@ class Observation(unittest.TestCase):
         process.boot = 'fixture'
         process.observation_failure = None
         with mock.patch('host_admission.supervisor.native.session_members', return_value=[101, 102]), \
-                mock.patch('host_admission.supervisor.native.process',
-                           side_effect=[PermissionError(errno.EPERM, 'denied'), {'live': True}]):
+                mock.patch('host_admission.supervisor.native.session_member_is_live',
+                           side_effect=[PermissionError(errno.EPERM, 'denied'), True]):
             self.assertEqual(process._members(), [101, 102])
         self.assertIn('101', process.observation_failure)
         with mock.patch('host_admission.supervisor.os.getsid', side_effect=[999, 100]), \
