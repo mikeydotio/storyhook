@@ -25,14 +25,17 @@ class NativeIntegration(unittest.TestCase):
 
     def test_bounded_child_inherits_product_exclusion_until_settlement(self):
         custody = self.root / 'products'; custody.mkdir(mode=0o700)
-        probe = """import fcntl, sys
+        probe = """import fcntl, os, sys
+actual = os.fstat(int(sys.argv[2]))
+expected = os.stat(sys.argv[1])
+assert (actual.st_dev, actual.st_ino) == (expected.st_dev, expected.st_ino)
 with open(sys.argv[1], 'a') as lock:
     try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError: print('excluded')
     else: raise SystemExit('inherited product exclusion was lost')
 """
-        with ProductLease(custody, reclaim=True):
-            result = bounded([sys.executable, '-B', '-c', probe, str(custody / 'products.lock')],
+        with ProductLease(custody, reclaim=True) as lease:
+            result = bounded([sys.executable, '-B', '-c', probe, str(custody / 'products.lock'), str(lease.fd)],
                              root=self.root / 'operations', seconds=30)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), 'excluded')
