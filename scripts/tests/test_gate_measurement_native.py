@@ -1,5 +1,7 @@
 """SH-872 native ownership and target turnover, using only disposable fixtures."""
 import json
+import ctypes
+import errno
 import os
 from pathlib import Path
 import shutil
@@ -7,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 SCRIPTS = Path(__file__).resolve().parents[1]
@@ -14,6 +17,38 @@ sys.path.insert(0, str(SCRIPTS))
 from gate_measurement_command import bounded
 from gate_measurement_targets import TargetPool
 from build_products import ProductLease
+from host_admission import native
+
+
+class NativeObservation(unittest.TestCase):
+    def failed_info(self, failure, probe):
+        library = mock.Mock()
+        def result(*_):
+            self.assertEqual(ctypes.get_errno(), 0, 'stale errno must not become current evidence')
+            ctypes.set_errno(failure)
+            return 0
+        library.proc_pidinfo.side_effect = result
+        ctypes.set_errno(errno.EPERM)
+        with mock.patch.object(native.ctypes, 'CDLL', return_value=library), \
+             mock.patch.object(native.os, 'kill', side_effect=probe) as check:
+            try:
+                native.bsd_info(123)
+            finally:
+                check.assert_called_once_with(123, 0)
+
+    def test_failed_observation_is_gone_only_after_kernel_confirms_esrch(self):
+        with self.assertRaises(ProcessLookupError):
+            self.failed_info(errno.EPERM, ProcessLookupError(errno.ESRCH, 'gone'))
+
+    def test_live_or_denied_process_preserves_observation_failure(self):
+        for probe in (None, PermissionError(errno.EPERM, 'denied')):
+            with self.subTest(probe=probe), self.assertRaises(PermissionError):
+                self.failed_info(errno.EPERM, probe)
+
+    def test_missing_errno_is_unknown_not_stale_permission_or_success(self):
+        with self.assertRaises(OSError) as raised:
+            self.failed_info(0, None)
+        self.assertEqual(raised.exception.errno, errno.EIO)
 
 
 @unittest.skipUnless(sys.platform == 'darwin', 'native macOS custody')

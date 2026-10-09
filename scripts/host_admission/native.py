@@ -67,8 +67,20 @@ def bsd_info(pid):
     lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
     lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
                                 ctypes.c_void_p, ctypes.c_int]
+    ctypes.set_errno(0)
     if lib.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info)) != ctypes.sizeof(info):
-        raise OSError(ctypes.get_errno() or errno.EIO, f"cannot observe PID {pid}")
+        error = ctypes.get_errno() or errno.EIO
+        # A census member can exit between enumeration and proc_pidinfo. Darwin
+        # can return an unreadable record during that transition. Only an
+        # independent kernel ESRCH confirms absence; a live or denied PID still
+        # fails closed with the original observation error.
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            raise ProcessLookupError(errno.ESRCH, f"PID {pid} exited during observation") from None
+        except OSError:
+            pass
+        raise OSError(error, f"cannot observe PID {pid}")
     return info
 
 
