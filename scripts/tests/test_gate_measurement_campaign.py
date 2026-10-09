@@ -157,6 +157,13 @@ class Inputs(Fixture):
                     validate_source=lambda: None, versions=versions,
                     resolve_inventory=lambda: copy.deepcopy(self.plan), limits=lambda: {})
 
+    def test_late_change_to_selected_dependency_locations_refuses(self):
+        resolutions = iter([copy.deepcopy(self.plan), {}])
+        with self.assertRaises(Refusal):
+            observe(self.manifest, self.plan, self.env, self.target, Deadline(30),
+                    validate_source=lambda: None, versions=lambda: {},
+                    resolve_inventory=lambda: next(resolutions), limits=lambda: {})
+
     def test_git_include_origins_are_discovered_without_config_values(self):
         self.config.write_text('[core]\n bare = false\n')
         raw = f'file:{self.config}\tcore.bare\nfile:{self.config}\tinclude.path\n'

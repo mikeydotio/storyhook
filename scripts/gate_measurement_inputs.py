@@ -16,6 +16,7 @@ import sysconfig
 import tomllib
 
 from gate_measurement_cohorts import canonical, fingerprint
+from gate_measurement_bounds import Deadline
 from gate_measurement_runtime import capture, resource_limits
 from gate_measurement_storage import directory_identity
 from verifier_state import Refusal
@@ -233,6 +234,62 @@ def python_distribution(prefix):
     return prefix
 
 
+def python_linked_packages(runtime, libraries, *, deadline=None, entry_limit=250000):
+    """Close installed Homebrew Python links over versioned Cellar packages.
+
+    Linked files are not enough: include the complete selected package and walk
+    its links too. Only packages in this interpreter's physical Cellar can be
+    added. External configuration, another prefix, broken links and unknown
+    package layouts refuse; this never installs or reads arbitrary link targets.
+    """
+    deadline = deadline or Deadline(30)
+    runtime = Path(runtime).resolve(strict=True)
+    cellar = runtime.parent.parent
+    if cellar.name != 'Cellar':
+        return {}  # Non-Homebrew escaping links still refuse during capture.
+    roots = {runtime, *(Path(p).resolve(strict=True) for p in libraries)}
+    pending = list(sorted(roots))
+    visited = set()
+    result = {}
+    while pending:
+        path = pending.pop()
+        deadline.require('Python dependency link discovery')
+        if path in visited:
+            continue
+        if len(visited) >= entry_limit:
+            raise Refusal('Python dependency discovery exceeded its entry bound')
+        visited.add(path)
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            try:
+                target = path.resolve(strict=True)
+            except (OSError, RuntimeError) as error:
+                raise Refusal(f'Python dependency link cannot be resolved: {path}') from error
+            if any(target == root or root in target.parents for root in roots):
+                continue
+            if cellar not in target.parents:
+                raise Refusal(f'Python dependency link leaves its installed Cellar: {path}')
+            parts = target.relative_to(cellar).parts
+            if (len(parts) < 2 or not re.fullmatch(r'[a-z0-9][a-z0-9+_.@-]*', parts[0])
+                    or not re.fullmatch(r'[0-9][a-zA-Z0-9._+-]*', parts[1])):
+                raise Refusal('Python dependency link lacks an exact installed package')
+            package = cellar / parts[0] / parts[1]
+            if package.resolve(strict=True) != package or not package.is_dir():
+                raise Refusal('Python dependency package identity is not physical')
+            roots.add(package)
+            result['python-linked-package-' + digest(str(package))] = str(package)
+            pending.append(package)
+        elif stat.S_ISDIR(mode):
+            with os.scandir(path) as entries:
+                for item in entries:
+                    if len(visited) + len(pending) >= entry_limit:
+                        raise Refusal('Python dependency discovery exceeded its entry bound')
+                    pending.append(Path(item.path))
+        elif not stat.S_ISREG(mode):
+            raise Refusal(f'Python dependency contains a nonregular input: {path}')
+    return dict(sorted(result.items()))
+
+
 def inventory(worktree, env, *, query=capture):
     """Resolve mandatory tools and mutable dependency roots before pinning.
 
@@ -265,6 +322,8 @@ def inventory(worktree, env, *, query=capture):
     roots['python-runtime'] = str(python_distribution(sys.base_prefix))
     for kind in ('purelib', 'platlib'):
         roots['python-' + kind] = str(Path(sysconfig.get_path(kind)).resolve(strict=True))
+    roots.update(python_linked_packages(roots['python-runtime'],
+                 [roots['python-standard-library'], roots['python-purelib'], roots['python-platlib']]))
     tools['selected-clang'] = str(clang)
     for name in ('xcrun', 'xcodebuild'):
         found = shutil.which(name, path=env.get('PATH'))
@@ -337,5 +396,7 @@ def observe(manifest, inventory_record, env, target, deadline, *, validate_sourc
     }
     fingerprint(result)
     check_audit(audit, deadline)
+    if resolve_inventory() != inventory_record:
+        raise Refusal('selected dependency locations changed during input capture')
     validate_source()
     return result
