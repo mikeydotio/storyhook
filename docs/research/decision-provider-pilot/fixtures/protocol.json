@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "state": "offline_draft_no_provider_selected",
+  "class_order": {
+    "runtime": [
+      "success",
+      "candidate_fault",
+      "project_fault",
+      "host_fault",
+      "integration_conflict",
+      "insufficient_evidence"
+    ],
+    "complexity": [
+      "low",
+      "medium",
+      "high",
+      "insufficient_evidence"
+    ]
+  },
+  "full_study_target": {
+    "runtime_primary_cases": 1200,
+    "complexity_primary_cases": 900,
+    "split_fractions": {
+      "development": 0.3,
+      "calibration": 0.2,
+      "heldout": 0.5
+    },
+    "minimum_challenge_fraction": 0.2,
+    "independence": "Plan one primary independently authored scenario per family; repeats, paraphrases and ordering probes are supplementary and never increase independent N. Freeze family and split assignments before calls. Seed families are development material for any future real study, irrespective of prototype split names."
+  },
+  "labeling": "Two independent humans, then adjudication; null labels block scoring. Author hypotheses never count as gold. Review schema/class taxonomy before corpus expansion.",
+  "runtime_thresholds": {
+    "macro_f1": 0.9,
+    "accepted_precision": 0.98,
+    "answerable_coverage": 0.7,
+    "insufficient_evidence_abstention_recall": 0.95,
+    "accepted_independent_heldout_min": 300,
+    "wilson_95_upper_error_max": 0.02
+  },
+  "complexity_thresholds": {
+    "macro_f1": 0.85,
+    "answered_weighted_kappa": 0.8,
+    "high_recall": 0.95,
+    "hazardous_high_to_low_max": 0
+  },
+  "common_thresholds": {
+    "equal_mass_10_bin_ece_max": 0.05,
+    "brier_max": "development class-frequency baseline",
+    "guard_preservation": 1
+  },
+  "paid_execution_authorized": false,
+  "provider_configuration_authorized": false,
+  "retention": "No actual provider records exist. Proposed future retention/spend still needs approval."
+}
