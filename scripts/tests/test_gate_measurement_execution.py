@@ -157,6 +157,16 @@ class Legs(unittest.TestCase):
         finish(slot, directory, 'fmt', self.argv, self.env, 7)
         with self.assertRaises(Refusal): finish(slot, directory, 'fmt', self.argv, self.env, 0)
 
+    def test_mid_leg_environment_change_retains_key_names_without_values(self):
+        slot, directory = self.begin()
+        prepare(self.cohort, slot, directory, 'fmt', self.argv, self.env)
+        with self.assertRaisesRegex(Refusal, 'UNRECOGNIZED_INPUT'):
+            finish(slot, directory, 'fmt', self.argv, dict(self.env, UNRECOGNIZED_INPUT='private value'), 0)
+        text = (directory / 'legs.jsonl').read_text()
+        self.assertNotIn('private value', text)
+        rows = records(directory / 'legs.jsonl')
+        self.assertEqual([r['kind'] for r in rows], ['start', 'input-mismatch'])
+
     def test_warm_terminal_record_is_required_even_when_summary_is_present(self):
         slot, directory = self.warm()
         (self.cohort.root / 'slot-01' / 'legs.jsonl').unlink()

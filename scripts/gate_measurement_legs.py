@@ -22,6 +22,11 @@ ATTEMPT_ENV = {
 }
 
 
+def environment_identity(env):
+    """Retain per-key hashes so an input mismatch is diagnosable without values."""
+    return {k: hashlib.sha256(v.encode()).hexdigest() for k, v in env.items() if k not in ATTEMPT_ENV}
+
+
 def current_slot(identity, manifest_path, directory):
     directory = Path(directory)
     root = Path(identity.get('campaign_root', Path(manifest_path).parent))
@@ -75,7 +80,8 @@ def prepare(cohort, slot, directory, leg, argv, env):
             raise Refusal('warm command/environment evidence is missing, changed or failed')
         journal(path, {'kind': 'reused', 'leg': leg, 'key': key})
         return 'reused'
-    journal(path, {'kind': 'start', 'leg': leg, 'key': key})
+    journal(path, {'kind': 'start', 'leg': leg, 'key': key,
+                   'environment': environment_identity(env)})
     return 'run'
 
 
@@ -86,7 +92,11 @@ def finish(slot, directory, leg, argv, env, exit_code):
     if (slot['mode'] == 'reuse' or len(evidence) != 1
             or evidence[0].get('kind') != 'start' or evidence[0].get('key') != key
             or type(exit_code) is not int or not 0 <= exit_code <= 255):
-        raise Refusal('measurement leg has no identical unfinished execution')
+        before = evidence[0].get('environment', {}) if evidence else {}
+        after = environment_identity(env)
+        changed = sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k))
+        journal(path, {'kind': 'input-mismatch', 'leg': leg, 'changed_environment_keys': changed})
+        raise Refusal('measurement leg has no identical unfinished execution; changed environment keys: ' + ', '.join(changed))
     journal(path, {'kind': 'finish', 'leg': leg, 'key': key, 'exit_code': exit_code})
 
 
