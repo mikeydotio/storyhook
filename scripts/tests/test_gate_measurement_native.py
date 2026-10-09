@@ -21,6 +21,31 @@ from host_admission import native
 
 
 class NativeObservation(unittest.TestCase):
+    def short_status(self, pid=123, status=2, size=64, error=0, session=456):
+        library = mock.Mock()
+        def result(observed, flavor, _arg, destination, capacity):
+            self.assertEqual((observed, flavor, capacity), (123, 13, 64))
+            info = ctypes.cast(destination, ctypes.POINTER(native.BsdShortInfo)).contents
+            info.pid, info.status = pid, status
+            ctypes.set_errno(error)
+            return size
+        library.proc_pidinfo.side_effect = result
+        with mock.patch.object(native.sys, 'platform', 'darwin'), \
+             mock.patch.object(native.ctypes, 'CDLL', return_value=library), \
+             mock.patch.object(native.os, 'getsid', return_value=session):
+            return native.session_member_is_live(123, 456, 'boot')
+
+    def test_short_status_requires_positive_live_status_and_current_session(self):
+        self.assertTrue(self.short_status())
+        self.assertFalse(self.short_status(status=5))
+        self.assertFalse(self.short_status(session=999))
+
+    def test_short_status_denial_truncation_and_identity_mismatch_refuse(self):
+        for kwargs in ({'size': 0, 'error': errno.EPERM}, {'size': 12},
+                       {'pid': 999}, {'status': 0}):
+            with self.subTest(kwargs=kwargs), self.assertRaises((OSError, native.Refusal)):
+                self.short_status(**kwargs)
+
     def failed_info(self, failure, probe):
         library = mock.Mock()
         def result(*_):
@@ -76,6 +101,12 @@ with open(sys.argv[1], 'a') as lock:
             self.assertEqual(result.stdout.strip(), 'excluded')
         with ProductLease(custody, reclaim=True):
             pass
+
+    def test_managed_setuid_ps_is_observable_without_privileged_identity(self):
+        result = bounded(['/bin/ps', '-axo', 'pid=,ppid=,comm='],
+                         root=self.root / 'operations', seconds=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(os.getpid()), result.stdout)
 
     def test_exact_target_turnover_through_real_lease_and_bounded_child(self):
         campaign = self.root / 'campaign'; campaign.mkdir(mode=0o700)

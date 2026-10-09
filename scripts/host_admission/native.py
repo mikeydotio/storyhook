@@ -23,6 +23,15 @@ class BsdInfo(ctypes.Structure):
     _fields_ += [("nice", ctypes.c_int32), ("seconds", ctypes.c_uint64), ("microseconds", ctypes.c_uint64)]
 
 
+class BsdShortInfo(ctypes.Structure):
+    """Public proc_bsdshortinfo ABI; basic status, not an authority identity."""
+
+    _fields_ = [(name, ctypes.c_uint32) for name in ("pid", "ppid", "pgid", "status")]
+    _fields_ += [("comm", ctypes.c_char * 16)]
+    _fields_ += [(name, ctypes.c_uint32) for name in
+                ("flags", "uid", "gid", "ruid", "rgid", "svuid", "svgid", "reserved")]
+
+
 def sysctl(name):
     """Read exact sysctl bytes, refusing missing values rather than guessing."""
     libc = ctypes.CDLL(None, use_errno=True)
@@ -148,6 +157,33 @@ def session_members(session):
         except ProcessLookupError:
             continue
     return members
+
+
+def session_member_is_live(pid, session, boot):
+    """Observe only liveness inside an already pinned session, never identity.
+
+    Darwin's full BSD record is unavailable while a child such as /bin/ps is
+    setuid. The documented short record provides its basic status without
+    privileged inspection. Full process/start identity remains required by
+    authority admission; this observation cannot grant ownership of a PID.
+    """
+    integer(pid, "pid", 2)
+    if sys.platform == "darwin":
+        info = BsdShortInfo()
+        lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                                    ctypes.c_void_p, ctypes.c_int]
+        ctypes.set_errno(0)
+        if lib.proc_pidinfo(pid, 13, 0, ctypes.byref(info), ctypes.sizeof(info)) != ctypes.sizeof(info):
+            raise OSError(ctypes.get_errno() or errno.EIO, f"cannot observe session PID {pid}")
+        if info.pid != pid or info.status not in (1, 2, 3, 4, 5):
+            raise Refusal("native session PID/status observation mismatch")
+        live = info.status != 5
+    else:
+        live = process(pid, boot)["live"]
+    # Recheck membership after status acquisition. The managed leader remains
+    # waitable, pinning the session number until all descendants have settled.
+    return live and os.getsid(pid) == session
 
 
 def peer_identity(connection, boot):
