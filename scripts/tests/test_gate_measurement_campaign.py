@@ -13,7 +13,7 @@ from unittest import mock
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gate_measurement_bounds import Deadline
-from gate_measurement_campaign import begin_window, campaign_environment, competing_work
+from gate_measurement_campaign import begin_window, campaign_environment, competing_work, owned_resources
 from gate_measurement_cohorts import Cohort
 from gate_measurement_inputs import snapshot, observe, WORKERS, cargo_config_paths
 from gate_measurement_targets import TargetPool, remove_exact
@@ -160,6 +160,13 @@ class Windows(Fixture):
         for text in ['bad observation', '20 1 2.0 cargo\n']:
             with self.assertRaises(Refusal): competing_work(text, 10)
 
+    def test_resource_totals_include_only_observed_owned_descendants(self):
+        raw = '10 1 0.5 20 python\n11 10 50.0 100 rustc\n20 1 99.0 999 xcodebuild\n'
+        self.assertEqual(owned_resources(raw, 10), {'cpu_percent_sum': 50.5,
+                                                   'rss_bytes_sum': 120 * 1024, 'process_count': 2})
+        with self.assertRaises(Refusal): owned_resources('10 1 nan 20 python\n', 10)
+        with self.assertRaises(Refusal): owned_resources('20 1 1.0 20 python\n', 10)
+
 
 class Targets(Fixture):
     def setUp(self):
@@ -266,7 +273,7 @@ class Controller(Fixture):
              mock.patch.object(campaign_module, 'observe', side_effect=observe), \
              mock.patch.object(campaign_module, 'OwnedGate', return_value=launch), \
              mock.patch.object(campaign_module, 'IdleWindow') as idle, \
-             mock.patch.object(campaign_module, 'pressure', return_value={'load': [0, 0, 0], 'cores': 10, 'processes': f'{os.getpid()} 1 0.0 python\n'}), \
+             mock.patch.object(campaign_module, 'pressure', return_value={'load': [0, 0, 0], 'cores': 10, 'processes': f'{os.getpid()} 1 0.0 python\n', 'resource_processes': f'{os.getpid()} 1 0.0 10 python\n'}), \
              mock.patch.object(campaign_module, 'check_storage', return_value={'free_bytes': 200 * 1024**3}), \
              mock.patch.object(campaign_module, 'paths', return_value=(None, None, self.root / 'owner')), \
              mock.patch('build_products.namespace', return_value=self.root), \
@@ -286,6 +293,10 @@ class Controller(Fixture):
         self.assertEqual(sum(r['kind'] == 'created' for r in rows), 3)
         self.assertEqual(sum(r['kind'] == 'deleted' for r in rows), 3)
         self.assertTrue((self.revision / 'complete.json').exists())
+        summary = json.loads((self.revision / 'summary.json').read_text())
+        self.assertTrue(summary['complete'])
+        self.assertEqual(summary['modes']['reuse']['accepted'], 3)
+        self.assertEqual(summary['observed_peak_resources']['rss_bytes_sum'], 10240)
 
     def test_interrupted_warm_stops_before_reuse_and_retains_target(self):
         with self.assertRaises(InterruptedError): self.run_controller(fail_slot=1)
@@ -293,6 +304,9 @@ class Controller(Fixture):
         self.assertEqual(set(TargetPool(self.root).state()), {'baseline-0'})
         self.assertEqual(Cohort(self.root, 'baseline').history()[1]['slot'], 1)
         self.assertFalse((self.revision / 'complete.json').exists())
+        summary = json.loads((self.revision / 'summary.json').read_text())
+        self.assertFalse(summary['complete'])
+        self.assertEqual(summary['pending_slot'], 1)
 
 
 if __name__ == '__main__': unittest.main()

@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import stat
 from pathlib import Path
 import sys
 
@@ -16,6 +17,7 @@ from verifier_state import Refusal
 ATTEMPT_ENV = {
     'STORYHOOK_MEASUREMENT_SLOT', 'STORYHOOK_GATE_PROGRESS',
     'STORYHOOK_GATE_EXECUTION_FILE', 'STORYHOOK_MEASUREMENT_GATE_DEADLINE',
+    'STORYHOOK_GATE_BUILD_OUTCOME',
     '_',
 }
 
@@ -43,12 +45,20 @@ def command_key(slot, leg, argv, env):
     if any(not isinstance(arg, str) or '\x00' in arg for arg in argv):
         raise Refusal('measurement detector has invalid arguments')
     inputs = {'identity': slot['key'], 'leg': leg, 'argv': argv,
+              'build_outcome_channel': 'STORYHOOK_GATE_BUILD_OUTCOME' in env,
               'environment': {k: v for k, v in env.items() if k not in ATTEMPT_ENV}}
     return hashlib.sha256(canonical(inputs).encode()).hexdigest()
 
 
 def prepare(cohort, slot, directory, leg, argv, env):
     """Run C/W even if ordinary receipts exist; R needs this exact W command."""
+    if 'STORYHOOK_GATE_BUILD_OUTCOME' in env:
+        # gate_run creates an empty feedback channel for each Rust detector.
+        # Its random pathname is output routing, not an input to the detector.
+        info = Path(env['STORYHOOK_GATE_BUILD_OUTCOME']).lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_size != 0
+                or info.st_uid != os.getuid() or info.st_nlink != 1):
+            raise Refusal('measurement build-outcome channel is not a fresh regular file')
     key = command_key(slot, leg, argv, env)
     path = Path(directory) / 'legs.jsonl'
     if any(row.get('leg') == leg for row in records(path)):

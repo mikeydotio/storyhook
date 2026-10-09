@@ -11,6 +11,7 @@ from pathlib import Path
 import shutil
 import stat
 import sys
+import sysconfig
 
 from gate_measurement_cohorts import canonical, fingerprint
 from gate_measurement_runtime import capture, resource_limits
@@ -146,6 +147,10 @@ def inventory(worktree, env, *, query=capture):
     roots['rust-sysroot'] = str(sysroot)
     sdk = Path(query(['xcrun', '--show-sdk-path'])).resolve(strict=True)
     roots['apple-sdk'] = str(sdk)
+    clang = Path(query(['xcrun', '--find', 'clang'])).resolve(strict=True)
+    roots['apple-toolchain'] = str(clang.parent.parent)
+    roots['python-standard-library'] = str(Path(sysconfig.get_path('stdlib')).resolve(strict=True))
+    tools['selected-clang'] = str(clang)
     for name in ('xcrun', 'xcodebuild'):
         found = shutil.which(name, path=env.get('PATH'))
         if not found:

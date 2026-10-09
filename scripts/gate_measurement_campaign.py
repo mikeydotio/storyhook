@@ -8,9 +8,11 @@ This entry does not run from ordinary gates, the daemon, or project automation.
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import signal
+import statistics
 import sys
 import time
 
@@ -112,6 +114,27 @@ def competing_work(raw, owner_pid):
             and (Path(command).name in names or '/target/' in command or '/deps/' in command)]
 
 
+def owned_resources(raw, owner_pid):
+    rows = {}
+    for line in raw.splitlines():
+        parts = line.split(None, 4)
+        if len(parts) != 5 or not all(parts[i].isdigit() for i in (0, 1, 3)):
+            raise Refusal('resource process observation is unreadable')
+        cpu = float(parts[2])
+        if not math.isfinite(cpu) or cpu < 0:
+            raise Refusal('resource CPU observation is invalid')
+        rows[int(parts[0])] = (int(parts[1]), cpu, int(parts[3]) * 1024)
+    if owner_pid not in rows:
+        raise Refusal('resource process observation omitted the collector')
+    owned = {owner_pid}
+    while True:
+        more = {pid for pid, (parent, _, _) in rows.items() if parent in owned}
+        if more <= owned: break
+        owned |= more
+    return {'cpu_percent_sum': sum(rows[pid][1] for pid in owned),
+            'rss_bytes_sum': sum(rows[pid][2] for pid in owned), 'process_count': len(owned)}
+
+
 def prepare(root, checkout, revision_commit, binary, revision, authorization):
     root, checkout, binary = map(lambda p: Path(p).resolve(strict=True), (root, checkout, binary))
     if not normal_class(scheduling()) or root == checkout or checkout in root.parents:
@@ -164,7 +187,7 @@ def prepare(root, checkout, revision_commit, binary, revision, authorization):
     os.execvpe(command[0], command, os.environ)
 
 
-def owned(path):
+def collect(path):
     value = manifest(path)
     root = Path(value['campaign_root']); revision = value['revision']
     if value.get('policy') != POLICY:
@@ -190,7 +213,8 @@ def owned(path):
         observed = pressure()
         observed['storage'] = check_storage(pool.storage(), initial=initial)
         observed['competing_pids'] = competing_work(observed['processes'], os.getpid())
-        journal(root / 'pressure.jsonl', dict(observed, kind='health'))
+        observed['owned_resources'] = owned_resources(observed['resource_processes'], os.getpid())
+        journal(root / 'pressure.jsonl', dict(observed, kind='health', revision=revision))
         if observed['competing_pids']:
             raise Refusal('competing external build/test work invalidates this measurement')
         initial = False
@@ -243,6 +267,45 @@ def owned(path):
     save(Path(path).parent / 'complete.json', {'version': 1, 'revision': revision, 'slots': 9,
                                               'production_certification': False})
     return 0
+
+
+def report(root, revision, error=None):
+    cohort = Cohort(root, revision)
+    rows, pending, count = cohort.history()
+    modes = {}
+    for mode in ('cold', 'warm', 'reuse'):
+        starts = [r for r in rows if r['kind'] == 'start' and r['mode'] == mode]
+        finished = [r for r in rows if r['kind'] == 'finish' and r['mode'] == mode]
+        durations = [r['admission_to_settlement_seconds'] for r in finished]
+        modes[mode] = {'attempted': len(starts), 'finished': len(finished),
+                       'accepted': sum(r['accepted'] for r in finished),
+                       'production_target_breaches': sum(r['production_target_breach'] for r in finished),
+                       'seconds': ({'minimum': min(durations), 'median': statistics.median(durations),
+                                    'maximum': max(durations), 'all': durations} if durations else None)}
+    resources = [r['owned_resources'] for r in records(Path(root) / 'pressure.jsonl')
+                 if 'owned_resources' in r and r.get('revision') == revision]
+    result = {'version': 1, 'revision': revision, 'modes': modes,
+              'complete': error is None and pending is None and count == 9 and all(r['accepted'] for r in rows if r['kind']=='finish'),
+              'pending_slot': pending['slot'] if pending else None, 'error': error,
+              'production_certification': False,
+              'observed_peak_resources': {field: max(r[field] for r in resources)
+                                          for field in resources[0]} if resources else None,
+              'resource_limit': 'Five-second observations include collector descendants; summed RSS can count shared pages more than once and is not a calibrated host cap.',
+              'cost_evidence': 'Per-slot progress.jsonl retains raw queue, discovery, compile/link, execution and cleanup boundaries; absent intervals remain unknown.'}
+    save(Path(root) / revision / 'summary.json', result)
+    return result
+
+
+def owned(path):
+    value = manifest(path)
+    error = None
+    try:
+        return collect(path)
+    except BaseException as failure:
+        error = {'type': type(failure).__name__, 'detail': str(failure)}
+        raise
+    finally:
+        report(value['campaign_root'], value['revision'], error)
 
 
 def main():

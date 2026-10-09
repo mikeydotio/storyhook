@@ -175,5 +175,26 @@ class Legs(unittest.TestCase):
         self.complete(slot)
         with self.assertRaises(Refusal): current_slot(manifest, self.root / 'manifest.json', directory)
 
+    def test_fresh_build_feedback_path_does_not_invalidate_reuse(self):
+        for index in range(2):
+            channel = self.root / f'feedback-{index}'; channel.touch()
+            self.env['STORYHOOK_GATE_BUILD_OUTCOME'] = str(channel)
+            slot, directory = self.begin()
+            self.assertEqual(prepare(self.cohort, slot, directory, 'fmt', self.argv, self.env), 'run')
+            finish(slot, directory, 'fmt', self.argv, self.env, 0)
+            self.complete(slot)
+        channel = self.root / 'feedback-reuse'; channel.touch()
+        self.env['STORYHOOK_GATE_BUILD_OUTCOME'] = str(channel)
+        slot, directory = self.begin()
+        self.assertEqual(prepare(self.cohort, slot, directory, 'fmt', self.argv, self.env), 'reused')
+
+    def test_nonempty_or_symlinked_feedback_channel_refuses(self):
+        channel = self.root / 'feedback'; channel.write_text('previous build error')
+        self.env['STORYHOOK_GATE_BUILD_OUTCOME'] = str(channel)
+        slot, directory = self.begin()
+        with self.assertRaises(Refusal): prepare(self.cohort, slot, directory, 'fmt', self.argv, self.env)
+        channel.unlink(); channel.symlink_to(self.root / 'missing')
+        with self.assertRaises(Refusal): prepare(self.cohort, slot, directory, 'fmt', self.argv, self.env)
+
 
 if __name__ == '__main__': unittest.main()

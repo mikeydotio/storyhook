@@ -57,7 +57,12 @@ def idle(directory, cohort):
         if today() != cohort['day']:
             raise Refusal('local day changed during idle admission')
         observed = pressure()
+        from gate_measurement_campaign import competing_work, owned_resources
+        observed['competing_pids'] = competing_work(observed['processes'], os.getpid())
+        observed['owned_resources'] = owned_resources(observed['resource_processes'], os.getpid())
         journal(directory / 'pressure.jsonl', dict(observed, kind='idle'))
+        if observed['competing_pids']:
+            raise Refusal('competing external work prevents quiet scheduling admission')
         progress({'kind': 'activity', 'path': 'measurement/idle', 'status': 'running',
                   'label': f"observed load/core {observed['load'][0] / observed['cores']:.3f}", 'at': observed['at']})
         if window.observe(time.monotonic(), observed['load'][0], observed['cores']):
@@ -138,8 +143,9 @@ def run_sample(identity, cohort, index, directory, probes, warmup=False):
                 now = time.monotonic()
                 if now - last_pressure >= LIMITS['sample_seconds']:
                     observed = pressure()
-                    from gate_measurement_campaign import competing_work
+                    from gate_measurement_campaign import competing_work, owned_resources
                     observed['competing_pids'] = competing_work(observed['processes'], os.getpid())
+                    observed['owned_resources'] = owned_resources(observed['resource_processes'], os.getpid())
                     if 'storage' in identity:
                         observed['storage'] = check_storage(identity['storage'])
                         observed['native_memory_pressure'] = pressure_level()
