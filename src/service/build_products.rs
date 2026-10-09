@@ -82,6 +82,13 @@ impl Identity {
         }
         Ok(Self::of(&meta))
     }
+    fn private_directory(path: &Path) -> Result<Self, AppError> {
+        let identity = Self::directory(path)?;
+        if fs::symlink_metadata(path)?.mode() & 0o077 != 0 {
+            return Err(refusal("authority directory is not private"));
+        }
+        Ok(identity)
+    }
     fn check(self, path: &Path) -> Result<(), AppError> {
         if Self::directory(path)? != self {
             return Err(refusal("directory identity changed"));
@@ -255,7 +262,7 @@ pub fn reclaim_handoff<S: Store>(
         return Err(refusal("configured products contain tracked source"));
     }
     let custody = private.join("storyhook-build-products-v1");
-    let custody_identity = Identity::directory(&custody)?;
+    let custody_identity = Identity::private_directory(&custody)?;
     let product_lock = private_file(&custody.join("products.lock"), false)?;
     if let Err(error) = product_lock.try_lock_exclusive() {
         if error.kind() == std::io::ErrorKind::WouldBlock {
@@ -275,7 +282,7 @@ pub fn reclaim_handoff<S: Store>(
             return Err(refusal("unknown custody record"));
         }
         owners += 1;
-        Identity::directory(&entry.path())?;
+        Identity::private_directory(&entry.path())?;
         let row: serde_json::Value = read_json(&entry.path().join("record.json"))?;
         let token = entry
             .file_name()
@@ -309,7 +316,7 @@ pub fn reclaim_handoff<S: Store>(
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(e.into()),
     }
-    let quarantine_identity = Identity::directory(&quarantine)?;
+    let quarantine_identity = Identity::private_directory(&quarantine)?;
     let job = quarantine.join(format!("generation-{seq}"));
     match fs::create_dir(&job) {
         Ok(()) => {}
@@ -327,7 +334,7 @@ pub fn reclaim_handoff<S: Store>(
         version: 1,
         generation: *seq,
         lease: lease.clone(),
-        directory: Identity::directory(&job)?,
+        directory: Identity::private_directory(&job)?,
         product,
         state: "prepared".into(),
     };
@@ -451,6 +458,8 @@ fn open_directory(path: &Path) -> Result<File, AppError> {
     }
     Ok(current)
 }
+// st_dev/st_ino widths differ between supported Unix targets.
+#[allow(clippy::unnecessary_cast)]
 fn child_identity(parent: &File, name: &str) -> Result<Identity, AppError> {
     let name = CString::new(name).map_err(|_| refusal("invalid product name"))?;
     let mut meta = std::mem::MaybeUninit::<libc::stat>::uninit();

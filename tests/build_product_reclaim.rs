@@ -111,6 +111,7 @@ impl Fixture {
         );
         let custody = private.join("storyhook-build-products-v1");
         fs::create_dir(&custody).unwrap();
+        fs::set_permissions(&custody, fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(custody.join("products.lock"), "").unwrap();
         fs::set_permissions(
             custody.join("products.lock"),
@@ -120,6 +121,7 @@ impl Fixture {
         let token = "0123456789abcdef0123456789abcdef";
         let owner = custody.join(format!("build-{token}"));
         fs::create_dir(&owner).unwrap();
+        fs::set_permissions(&owner, fs::Permissions::from_mode(0o700)).unwrap();
         private_json(
             &owner.join("record.json"),
             &json!({"version":1,"id":token,"token":token,"state":"finished","executions":[],"command":["fixture"],"owner":{"pid":42,"start":"fixture:1","boot":"fixture"},"settled_execution":{"id":"fixture","session":43,"guard":format!("lease-{token}.lock")}}),
@@ -479,4 +481,21 @@ fn absent_managed_build_evidence_retains_existing_products() {
             .contains("no completed managed build")
     );
     assert!(f.original().exists());
+}
+
+#[test]
+fn nonprivate_custody_authority_is_retained() {
+    let f = Fixture::new(no_purge());
+    fs::set_permissions(
+        f.private.join("storyhook-build-products-v1"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    assert!(
+        f.reclaim()
+            .unwrap_err()
+            .to_string()
+            .contains("authority directory is not private")
+    );
+    assert!(f.original().join("old").exists());
 }

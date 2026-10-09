@@ -699,12 +699,12 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             Ok((row.snapshot, snapshot, product_generation))
         })?;
 
-        if state == VERIFYING_STATE_SLUG && self.ctx.hooks_enabled() {
-            if let Some(expected) = product_generation {
-                if let Err(error) = super::build_products::reclaim_handoff(self.ctx, id, expected) {
-                    eprintln!("warning: {error}");
-                }
-            }
+        if state == VERIFYING_STATE_SLUG
+            && self.ctx.hooks_enabled()
+            && let Some(expected) = product_generation
+            && let Err(error) = super::build_products::reclaim_handoff(self.ctx, id, expected)
+        {
+            eprintln!("warning: {error}");
         }
         self.fire_transition_hooks(id, &before.title, &before.state, state, &snapshot, &now);
         Ok(snapshot)
