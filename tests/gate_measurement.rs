@@ -4,6 +4,27 @@ use std::path::Path;
 use std::process::Command;
 
 #[test]
+fn throughput_cohort_and_execution_evidence_regressions() {
+    for script in [
+        "scripts/tests/test_gate_measurement_cohorts.py",
+        "scripts/tests/test_gate_measurement_execution.py",
+    ] {
+        let result =
+            Command::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/python-bin/python3"))
+                .args(["-B", script])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .output()
+                .unwrap();
+        assert!(
+            result.status.success(),
+            "{script}: {}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+}
+
+#[test]
 fn measurement_discovery_is_operator_local_and_delegates_output() {
     use storyhook::cli::discovery::{self, Access, Audience, OutputClass};
     let args = ["verifier", "measure-gate-class", "--audience", "operator"].map(str::to_string);

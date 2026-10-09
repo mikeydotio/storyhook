@@ -66,6 +66,21 @@ receipt=""
 . "$script_dir/gate-measurement-context.sh"
 if [ "$gate_measurement" = 1 ]; then
     reuse=0
+    if [ "${STORYHOOK_MEASUREMENT_SLOT+x}" = x ]; then
+        measurement_action="$("$STORYHOOK_PYTHON" "$script_dir/gate_measurement_legs.py" prepare "$label" "$@")" || exit 2
+        case "$measurement_action" in
+        reused)
+            echo "leg $label: REUSED — exact preceding measurement warm execution" >&2
+            gate_progress_emit_item "release gate/$label" reused
+            exit 0
+            ;;
+        run) ;;
+        *) echo "leg.sh: invalid measurement decision" >&2; exit 2 ;;
+        esac
+    fi
+elif [ "${STORYHOOK_MEASUREMENT_SLOT+x}" = x ]; then
+    echo "leg.sh: measurement slot has no live measurement authority" >&2
+    exit 2
 fi
 if [ "$reuse" = 1 ]; then
     case "$label" in
@@ -118,6 +133,9 @@ status=0
 activity_source="$1"
 case "$activity_source" in bash | sh) activity_source="${2:-$1}" ;; esac
 activity_run "leg.sh/$label:$activity_source" "$@" || status=$?
+if [ "${measurement_action:-}" = run ]; then
+    "$STORYHOOK_PYTHON" "$script_dir/gate_measurement_legs.py" finish "$label" "$status" "$@" || exit 2
+fi
 end=$(date +%s)
 elapsed=$((end - start))
 

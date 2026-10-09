@@ -19,8 +19,9 @@ def manifest(path):
     if not file.is_absolute() or file.resolve() != file or file.name != "manifest.json":
         raise Refusal(f"measurement manifest must be a physical absolute manifest.json: {path}")
     value = read(file)
-    if not value or value.get("version") != 1 or value.get("kind") != "gate-class-measurement":
-        raise Refusal("not a gate-class measurement manifest")
+    if (not value or value.get("version") != 1
+            or value.get("kind") not in ("gate-class-measurement", "gate-throughput-measurement")):
+        raise Refusal("not a supported measurement manifest")
     if value.get("worktree") != str(file.parent / "worktree"):
         raise Refusal("measurement workspace is not bound to the output directory")
     for field in ("commit", "tree"):
