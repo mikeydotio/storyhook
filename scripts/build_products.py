@@ -76,8 +76,10 @@ class ProductLease:
     """A shared whole-build lease, or an exclusive reclaim reservation.
 
     Never explicitly unlock: descendants inherit the same open file description.
-    Never unlink/replace the permanent lock inode. Contention is a refusal, not
-    a wait whose owner is guessed from a PID or a pane snapshot.
+    Never unlink/replace the permanent lock inode. Reclamation is nonblocking.
+    Managed builds may wait up to 30 seconds for a short detach operation, before
+    launching or reserving an owner; cancellation cannot strand a build record.
+    Neither waiting nor refusal guesses ownership from a PID or pane snapshot.
     """
 
     def __init__(self, root, *, reclaim=False, wait_seconds=0):
