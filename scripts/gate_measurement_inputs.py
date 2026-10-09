@@ -8,6 +8,7 @@ types, symlinks inside roots, concurrent writes or a deadline refuse measurement
 import hashlib
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import sys
@@ -79,7 +80,7 @@ def _snapshot(path, deadline, *, allowed, trail=(), audit):
         target = path.resolve(strict=True)
         if (target in trail or not any(target == root or root in target.parents
                                        for root in allowed)):
-            raise Refusal('input symlink escapes its declared dependencies or cycles')
+            raise Refusal(f'input symlink escapes its declared dependencies or cycles: {path} -> {target}')
         link = os.readlink(path)
         value = _snapshot(target, deadline, allowed=allowed, trail=(*trail, path), audit=audit)
         after = path.lstat()
@@ -178,6 +179,33 @@ def supported_compiler_profile(config_paths, worktree, env, query):
                     raise Refusal('configured compiler/runner is not tracked by the pinned source')
 
 
+def rust_linked_components(sysroot):
+    """Declare Homebrew's selected LLVM component package, not arbitrary links.
+
+    Homebrew Rust ships rust-objcopy as a link into its versioned LLVM package.
+    Include that whole package so its tools and libraries are input bytes too.
+    Other escaping links remain unsupported; discovery does not bless them.
+    """
+    sysroot = Path(sysroot)
+    result = {}
+    for component in sorted(sysroot.glob('lib/rustlib/*/bin/rust-objcopy')):
+        if not component.is_symlink():
+            continue
+        target = component.resolve(strict=True)
+        if sysroot in target.parents:
+            continue
+        cellar = sysroot.parent.parent
+        if cellar.name != 'Cellar' or cellar not in target.parents:
+            raise Refusal('external Rust component requires a reviewed package inventory')
+        relative = target.relative_to(cellar).parts
+        if (len(relative) != 4 or not re.fullmatch(r'llvm(?:@[0-9]+)?', relative[0])
+                or relative[2:] != ('bin', 'llvm-objcopy') or not target.is_file()):
+            raise Refusal('external Rust component is not the supported LLVM package')
+        package = cellar / relative[0] / relative[1]
+        result['rust-linked-llvm-' + digest(str(package))] = str(package)
+    return result
+
+
 def inventory(worktree, env, *, query=capture):
     """Resolve mandatory tools and mutable dependency roots before pinning.
 
@@ -201,11 +229,14 @@ def inventory(worktree, env, *, query=capture):
     # rustup's proxy binary alone does not identify the actual selected compiler.
     sysroot = Path(query(['rustc', '--print', 'sysroot'])).resolve(strict=True)
     roots['rust-sysroot'] = str(sysroot)
+    roots.update(rust_linked_components(sysroot))
     sdk = Path(query(['xcrun', '--show-sdk-path'])).resolve(strict=True)
     roots['apple-sdk'] = str(sdk)
     clang = Path(query(['xcrun', '--find', 'clang'])).resolve(strict=True)
     roots['apple-toolchain'] = str(clang.parent.parent)
     roots['python-standard-library'] = str(Path(sysconfig.get_path('stdlib')).resolve(strict=True))
+    for kind in ('purelib', 'platlib'):
+        roots['python-' + kind] = str(Path(sysconfig.get_path(kind)).resolve(strict=True))
     tools['selected-clang'] = str(clang)
     for name in ('xcrun', 'xcodebuild'):
         found = shutil.which(name, path=env.get('PATH'))

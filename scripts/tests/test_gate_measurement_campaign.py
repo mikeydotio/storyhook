@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gate_measurement_bounds import Deadline
 from gate_measurement_campaign import begin_window, campaign_environment, competing_work, owned_resources
 from gate_measurement_cohorts import Cohort
-from gate_measurement_inputs import snapshot, observe, WORKERS, cargo_config_paths, git_config_origins, supported_compiler_profile
+from gate_measurement_inputs import snapshot, observe, WORKERS, cargo_config_paths, git_config_origins, supported_compiler_profile, rust_linked_components
 from gate_measurement_targets import TargetPool, remove_exact
 from gate_measurement_storage import directory_identity
 from gate_measurement_runtime import records
@@ -33,6 +33,29 @@ class Fixture(unittest.TestCase):
 
 
 class Inputs(Fixture):
+    def test_selected_homebrew_llvm_package_is_included_as_input(self):
+        cellar = self.root / 'Cellar'
+        sysroot = cellar / 'rust/1.98.0'
+        component = sysroot / 'lib/rustlib/host/bin/rust-objcopy'
+        component.parent.mkdir(parents=True)
+        package = cellar / 'llvm@22/22.1.8'
+        executable = package / 'bin/llvm-objcopy'
+        executable.parent.mkdir(parents=True); executable.write_bytes(b'tool')
+        component.symlink_to(executable)
+        self.assertEqual(list(rust_linked_components(sysroot).values()), [str(package)])
+        before = snapshot(component, Deadline(30), allowed=(sysroot, package))
+        executable.write_bytes(b'changed tool')
+        self.assertNotEqual(before, snapshot(component, Deadline(30), allowed=(sysroot, package)))
+
+    def test_unreviewed_rust_component_link_is_not_adopted(self):
+        sysroot = self.root / 'Cellar/rust/1.98.0'
+        component = sysroot / 'lib/rustlib/host/bin/rust-objcopy'
+        component.parent.mkdir(parents=True)
+        target = self.root / 'unrelated'; target.write_text('keep')
+        component.symlink_to(target)
+        with self.assertRaises(Refusal): rust_linked_components(sysroot)
+        self.assertEqual(target.read_text(), 'keep')
+
     def setUp(self):
         super().setUp()
         self.tool = self.root / 'compiler'; self.tool.write_bytes(b'compiler bytes')
