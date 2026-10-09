@@ -2,8 +2,10 @@
 
 SH-872's collector source supplies the C/W/R controller, input observer, owned
 execution bridge, per-leg reuse path, bounded setup and disposable target pool.
-It is awaiting native integration validation. No actual baseline/optimization
-measurement or production performance claim is implied by source tests.
+Native fixtures exercise ownership, cancellation, probes, target turnover and
+C/W/R leg execution. The retained integration and input-preflight receipts
+determine readiness. No baseline/optimization measurement or production
+performance claim is implied by source or native fixture tests.
 
 ## Entry and containment
 
@@ -39,12 +41,15 @@ frozen manifest before an actual start.
 Every boundary re-observes committed source, selected tools, dependency bytes,
 active Cargo/Git configuration, inherited environment, actual resource/worker
 limits and exact target identity. The inventory includes selected Rust/Apple
-toolchains and SDK, Python standard library, Cargo registry/Git sources and
+toolchains and SDK, selected Homebrew LLVM/configuration dependencies, Python
+distribution and installed packages, Cargo registry/Git sources and
 metadata, external Cargo packages and Node modules. Git config discovery asks
 for names/origins, never values; raw environment values are hashed, not stored.
 Files are hashed without an mtime digest cache and rechecked for concurrent
 mutation. Optional missing files are part of the fingerprint. Symlinks may only
-resolve inside declared dependencies; unknown types, escaping/cyclic links,
+resolve inside declared dependencies. SDK aliases to an ancestor directory are
+recorded as references while its complete contents and identity are audited;
+they do not expand recursively. Unknown types, escaping or unresolvable links,
 unsupported Git origin escaping, unavailable sensors and more than 250,000
 inventory entries refuse execution. Do not weaken checks to obtain data.
 Actual inventory cost and platform compatibility require the integration window.
@@ -66,12 +71,17 @@ afterward. Missing progress, exit or cleanup leaves an incomplete attempt.
 result channel. Cancellation signals only its direct supervisor; an expired
 cleanup observation retains ownership. Private probe shutdown has a separate
 bounded cleanup allowance after admission expires.
+Darwin session liveness uses its documented basic-status API so setuid `ps`
+children remain observable without privileged inspection. Full authority identity
+checks remain separate; denied, truncated or mismatched basic status fails closed.
 
 Cold and warm legs execute regardless of ordinary receipts. R needs the
 immediately preceding successful W and matching per-leg command/environment
 records. Attempt telemetry and the verified empty build-feedback output channel
 are excluded from detector-input comparison; unknown environment changes refuse
 reuse. Measurement records cannot publish ordinary gate/tree certification.
+The internal leg decision uses an exit status to preserve shell inputs such as
+`SHLVL`; failures retain changed environment key names and hashes, never values.
 
 ## Targets, monitoring and reports
 

@@ -1,7 +1,7 @@
 """Bridge SH-872 slots to owned gates and their actual execution evidence.
 
-The campaign caller supplies a complete identity observer. There is deliberately
-no command-line entry until configuration capture and target turnover are ready.
+The campaign caller supplies a complete identity observer. The owned campaign
+entry prepares configuration capture and target turnover before using this bridge.
 No result here is a production receipt or permission to merge.
 """
 
@@ -99,7 +99,7 @@ class OwnedGate:
 
     `gate_command` is the prepared measurement gate entry. It must equal the
     command pinned in the owner-bound manifest; arbitrary commands are refused.
-    Native invocation is not a supported campaign entry point yet.
+    The operator campaign entry owns preparation and admission before this call.
     """
 
     def __init__(self, manifest_path, gate_command, *, health):
