@@ -13,6 +13,7 @@ from gate_measurement_runtime import capture, normal_class, resource_limits, sch
 from gate_measurement_context import VARIABLE
 from verifier_state import Refusal, boot, read, save
 from gate_measurement_bounds import LIMITS, Deadline
+from gate_measurement_storage import reserve_description, check_storage, pressure_level
 
 SCRIPTS = Path(__file__).resolve().parent
 
@@ -96,10 +97,15 @@ def prepare(checkout, revision, output, binary):
             dest.flush()
             os.fsync(dest.fileno())
         lease.chmod(0o700)
+    old = read(output / 'manifest.json')
+    storage = old.get('storage') if old else reserve_description(output)
+    check_storage(storage, initial=True)
+    pressure_level()
+    os.environ['CARGO_TARGET_DIR'] = storage['targets'][0]['path']
     identity = {'version': 1, 'kind': 'gate-class-measurement', 'commit': commit, 'tree': tree,
                 'common': common, 'worktree': str(output / 'worktree'), 'source': str(checkout),
                 'gate': gate, 'binary_sha256': digest, 'tools': tools_identity(),
-                'resource_limits': resource_limits(), 'limits': LIMITS,
+                'resource_limits': resource_limits(), 'limits': LIMITS, 'storage': storage,
                 'fixture': {'prefix': 'MB', 'stories': 10, 'title': 'Measurement fixture'},
                 'protocol': {'pairs': 10, 'idle_seconds': 60, 'max_load_per_core': 0.5}}
     path = output / 'manifest.json'

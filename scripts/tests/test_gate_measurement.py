@@ -169,7 +169,9 @@ class Preparation(unittest.TestCase):
         with mock.patch.object(setup, 'capture', side_effect=capture), \
              mock.patch.object(setup, 'normal_class', return_value=True), \
              mock.patch.object(setup, 'scheduling', return_value={}), \
-             mock.patch.object(setup, 'tools_identity', return_value={}), \
+             mock.patch.object(setup, 'tools_identity', return_value={}),
+             mock.patch.object(setup, 'check_storage', return_value={}),
+             mock.patch.object(setup, 'pressure_level', return_value=1), \
              mock.patch.object(setup.fcntl, 'flock', side_effect=lock), \
              mock.patch.object(setup.os, 'chdir'), \
              mock.patch.dict(os.environ), \
@@ -408,7 +410,8 @@ class OwnedExecution(unittest.TestCase):
         (self.source / 'scripts').mkdir()
         for name in ['leg.sh', 'gate-receipt.sh', 'tree-receipt.sh', 'gate-measurement-context.sh',
                      'gate_measurement_context.py', 'verifier_state.py', 'gate-progress.sh',
-                     'python-runtime.sh', 'activity-log.sh', 'activity-run.py']:
+                     'python-runtime.sh', 'activity-log.sh', 'activity-run.py', 'test_output.py',
+                     'gate-progress-writer.py', 'gate_cost.py', 'progress_journal.py']:
             shutil.copy2(SCRIPTS / name, self.source / 'scripts' / name)
         (self.source / 'scripts/python-bin').mkdir()
         shutil.copy2(SCRIPTS / 'python-bin/python3', self.source / 'scripts/python-bin/python3')

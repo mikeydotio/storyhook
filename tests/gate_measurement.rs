@@ -4,6 +4,38 @@ use std::path::Path;
 use std::process::Command;
 
 #[test]
+fn measurement_discovery_is_operator_local_and_delegates_output() {
+    use storyhook::cli::discovery::{self, Access, Audience, OutputClass};
+    let args = ["verifier", "measure-gate-class", "--audience", "operator"].map(str::to_string);
+    let document = discovery::describe(&args).unwrap();
+    let entry = document
+        .commands
+        .iter()
+        .find(|entry| entry.path == ["verifier", "measure-gate-class"])
+        .unwrap();
+    assert_eq!(entry.audience, Audience::Operator);
+    assert_eq!(entry.capabilities.effects.store, Access::None);
+    assert!(!entry.capabilities.effects.may_start_daemon);
+    assert_eq!(entry.output[0].class, OutputClass::DelegatedHelper);
+}
+
+#[test]
+fn measurement_bounded_policy_and_storage_regressions() {
+    let result =
+        Command::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/python-bin/python3"))
+            .args(["-B", "scripts/tests/test_gate_measurement_bounds.py"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .unwrap();
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
 fn measurement_requires_complete_arguments_and_is_store_free() {
     let args = [
         "verifier",

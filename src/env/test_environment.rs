@@ -296,6 +296,24 @@ pub const TEST_ENVIRONMENT: &[Parameter] = &[
                  ones an ordinary session gets",
     },
     Parameter {
+        name: "STORYHOOK_MEASUREMENT_GATE_DEADLINE",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "measurement gate deadlines belong only to the owned collector",
+    },
+    Parameter {
+        name: "STORYHOOK_MEASUREMENT_END",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "measurement budgets and evidence paths belong only to the owned collector",
+    },
+    Parameter {
+        name: "STORYHOOK_MEASUREMENT_OPERATIONS",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "measurement budgets and evidence paths belong only to the owned collector",
+    },
+    Parameter {
         name: "STORYHOOK_GATE_MEASUREMENT",
         disposition: Disposition::Clear,
         scope: Scope::Anywhere,

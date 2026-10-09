@@ -9,6 +9,7 @@ Every gate session starts at the verifier's scheduling class (SH-785).
 
 import fcntl
 import json
+import math
 import os
 import select
 import signal
@@ -229,7 +230,7 @@ def admission_cause(error):
 
 
 def execute(command, record_path, record, field, cancellation, budget, output=None, gate_prefix=None,
-            reservation_factory=None):
+            reservation_factory=None, run_deadline=None):
     """Admit a new session only after its identity is durably recorded.
 
     With gate_prefix, the leader execs the class tools, which exec the launcher
@@ -249,7 +250,7 @@ def execute(command, record_path, record, field, cancellation, budget, output=No
             reservation = reservation_factory()
             if reservation is not None:
                 reporter = Reporter("verifier-gate", reservation.id)
-                if reservation.acquire(reporter.waiting, lambda: cancellation.signum is not None) is None:
+                if reservation.acquire(reporter.waiting, lambda: cancellation.signum is not None or (run_deadline is not None and time.monotonic() >= run_deadline)) is None:
                     # Cancelled while queued: nothing ran and nothing is held.
                     if execution_path:
                         publish_execution(execution_path, 125, False)
@@ -331,6 +332,8 @@ def execute(command, record_path, record, field, cancellation, budget, output=No
         while True:
             # Everything this pass observes is at least as recent as this.
             observed_at = time.monotonic()
+            if run_deadline is not None and observed_at >= run_deadline:
+                cancellation.request(signal.SIGTERM, None)
             if attached and withdrawn is None and code is None and observed_at >= next_admission_check:
                 # Polled at the policy's own sample interval, never per pass.
                 next_admission_check = observed_at + reservation.policy.value["sample_ms"] / 1000
@@ -454,9 +457,15 @@ def run(mode, common, worktree, key, command, cancellation, output=None):
         # Policy is validated before the record says a gate started, so a
         # refused budget or class cannot leave an interrupted gate behind (SH-695).
         budget = cleanup_budget()
+        run_deadline = None
         if mode == "measurement-gate":
             from gate_measurement_context import validate
             validate()
+            from gate_measurement_bounds import LIMITS
+            now = time.monotonic()
+            run_deadline = float(os.environ.get("STORYHOOK_MEASUREMENT_GATE_DEADLINE", now + LIMITS['gate_seconds']))
+            if not math.isfinite(run_deadline) or not now < run_deadline <= now + LIMITS['gate_seconds']:
+                raise Refusal("measurement gate deadline is missing, expired or exceeds containment policy")
             if len(command) < 2 or command[0] not in ("control", "utility"):
                 raise Refusal("measurement gate requires control or utility")
             condition, command = command[0], command[1:]
@@ -469,7 +478,7 @@ def run(mode, common, worktree, key, command, cancellation, output=None):
         owner["gate_leader_exit"] = None
         save(owner_path, owner)
         status = execute(command, owner_path, owner, "gate_session", cancellation, budget, gate_prefix=prefix,
-                         reservation_factory=lambda: gate_reservation(common))
+                         reservation_factory=lambda: gate_reservation(common), run_deadline=run_deadline)
         owner = read(owner_path)
         owner["gate_started"] = False
         owner["gate_session"] = None

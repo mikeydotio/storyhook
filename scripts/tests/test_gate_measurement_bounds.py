@@ -2,6 +2,8 @@
 
 import datetime
 import errno
+import copy
+import tempfile
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gate_measurement_bounds import Deadline, LIMITS, require_same_day, start_slot, validate_policy
 from host_admission.supervisor import ManagedProcess
 from verifier_state import Refusal
+import gate_measurement_storage as storage
 
 
 class Bounds(unittest.TestCase):
@@ -78,6 +81,65 @@ class Observation(unittest.TestCase):
                 mock.patch('host_admission.supervisor.os.kill') as kill:
             process._signal([101, 102], 15)
         kill.assert_called_once_with(102, 15)
+
+
+class Storage(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='sh801-storage-')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.description = storage.reserve_description(self.root)
+
+    def check(self, **kwargs):
+        return storage.check_storage(self.description,
+                                     disk=lambda _: SimpleNamespace(free=storage.INITIAL_FREE),
+                                     **kwargs)
+
+    def test_no_existing_or_shared_target_is_adopted(self):
+        with self.assertRaises(FileExistsError):
+            storage.reserve_description(self.root)
+        original = copy.deepcopy(self.description)
+        self.description['targets'][0]['path'] = str(self.root.parent)
+        with self.assertRaises(Refusal):
+            self.check()
+        self.description = original
+        self.assertFalse(self.check()['disk_reserved'])
+
+    def test_target_inode_and_symlink_substitution_refuse(self):
+        target = Path(self.description['targets'][0]['path'])
+        retained = target.with_name('retained')
+        target.rename(retained)
+        target.mkdir()
+        with self.assertRaises(Refusal):
+            self.check()
+        target.rmdir()
+        target.symlink_to(retained)
+        with self.assertRaises(Refusal):
+            self.check()
+        self.assertTrue(retained.is_dir())
+
+    def test_low_space_growth_and_unknown_sensors_refuse(self):
+        for free in [None, storage.SYSTEM_HEADROOM - 1]:
+            with self.subTest(free=free), self.assertRaises(Refusal):
+                storage.check_storage(self.description,
+                                      disk=lambda _: SimpleNamespace(free=free))
+        for cap in ['target', 'evidence']:
+            def size(path, **_kwargs):
+                if (Path(path) == self.root) == (cap == 'evidence'):
+                    return storage.TARGET_CAP + storage.EVIDENCE_CAP
+                return 0
+            with self.subTest(cap=cap), self.assertRaises(Refusal):
+                self.check(size=size)
+        with self.assertRaises(OSError):
+            storage.check_storage(self.description,
+                                  disk=mock.Mock(side_effect=OSError('unavailable')))
+        self.assertTrue(Path(self.description['targets'][0]['path']).exists())
+
+    def test_warning_critical_and_unknown_pressure_stop_work(self):
+        self.assertEqual(storage.pressure_level(lambda: 1), 1)
+        for value in [2, 4, 0, None, True]:
+            with self.subTest(value=value), self.assertRaises(Refusal):
+                storage.pressure_level(lambda: value)
 
 
 if __name__ == '__main__':

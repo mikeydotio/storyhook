@@ -18,6 +18,7 @@ from gate_measurement_runtime import capture, execution_active, journal, mirror_
 from gate_measurement_setup import immutable, prepare, tools_identity
 from verifier_state import Refusal, atomic, paths, read, save
 from gate_measurement_bounds import Deadline, LIMITS, require_same_day, start_slot, validate_policy
+from gate_measurement_storage import check_storage, pressure_level
 
 SCRIPTS = Path(__file__).resolve().parent
 
@@ -92,6 +93,9 @@ def run_sample(identity, cohort, index, directory, probes, warmup=False):
     if float(os.environ.get('STORYHOOK_MEASUREMENT_END', 'inf')) - time.monotonic() < LIMITS['gate_seconds']:
         raise Refusal('gate admission exceeds remaining campaign allowance')
     require_same_day(cohort['day'], LIMITS['gate_seconds'])
+    if 'storage' in identity:
+        check_storage(identity['storage'])
+        pressure_level()
     directory.mkdir()
     ledger = Path(os.environ['STORYHOOK_GATE_MEASUREMENT']).parent / 'gates.jsonl'
     slot = start_slot(records(ledger), 'warmup' if warmup else 'sample', index)
@@ -104,7 +108,8 @@ def run_sample(identity, cohort, index, directory, probes, warmup=False):
     gate_progress = directory / 'progress.jsonl'
     # The launch supervisor records cost context before the gate can run.
     gate_progress.touch(mode=0o600, exist_ok=False)
-    env = dict(os.environ, STORYHOOK_GATE_PROGRESS=str(gate_progress))
+    env = dict(os.environ, STORYHOOK_GATE_PROGRESS=str(gate_progress),
+               STORYHOOK_MEASUREMENT_GATE_DEADLINE=str(limit.end))
     measured = []
     mirrored = 0
     last_pressure = 0
@@ -124,7 +129,11 @@ def run_sample(identity, cohort, index, directory, probes, warmup=False):
                     journal(directory / 'probes.jsonl', result)
                 now = time.monotonic()
                 if now - last_pressure >= LIMITS['sample_seconds']:
-                    journal(directory / 'pressure.jsonl', dict(pressure(), kind='running'))
+                    observed = pressure()
+                    if 'storage' in identity:
+                        observed['storage'] = check_storage(identity['storage'])
+                        observed['native_memory_pressure'] = pressure_level()
+                    journal(directory / 'pressure.jsonl', dict(observed, kind='running'))
                     last_pressure = now
                 time.sleep(.5)
         except BaseException:
@@ -196,6 +205,10 @@ def owned(path):
     """Collect a fixed cohort only while the project gate and workspace are owned."""
     identity = manifest(path)
     validate_policy(identity)
+    if 'storage' not in identity:
+        raise Refusal('measurement storage policy is missing')
+    check_storage(identity['storage'], initial=True)
+    pressure_level()
     if 'STORYHOOK_MEASUREMENT_END' not in os.environ:
         raise Refusal('bounded campaign deadline is missing')
     Deadline(LIMITS['campaign_seconds'], end=float(os.environ['STORYHOOK_MEASUREMENT_END'])).require('campaign')
