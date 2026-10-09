@@ -57,7 +57,7 @@ def ca_source(path, target):
         valid = (target == prefix / 'etc/ca-certificates/cert.pem'
                  and len(parts) == 7 and parts[0] == 'certifi'
                  and re.fullmatch(r'[0-9][a-zA-Z0-9._+-]*', parts[1])
-                 and parts[2] == 'lib' and re.fullmatch(r'python[0-9]+\.[0-9]+', parts[3])
+                 and parts[2] == 'lib' and re.fullmatch(r'python[0-9]+\.[0-9]+t?', parts[3])
                  and parts[4:] == ('site-packages', 'certifi', 'cacert.pem')
                  and path.is_absolute() and path.parent.resolve(strict=True) == path.parent
                  and path.is_symlink() and path.resolve(strict=True) == target)
@@ -350,7 +350,6 @@ def python_linked_packages(runtime, libraries, *, deadline=None, entry_limit=250
     Other external configuration, prefixes and unknown package layouts refuse.
     """
     deadline = deadline or Deadline(30)
-    external_files = external_files if external_files is not None else {}
     runtime = Path(runtime).resolve(strict=True)
     cellar = runtime.parent.parent
     if cellar.name != 'Cellar':
@@ -377,6 +376,8 @@ def python_linked_packages(runtime, libraries, *, deadline=None, entry_limit=250
             nominal_target = Path(os.path.abspath(path.parent / os.readlink(path)))
             if target == bundle or nominal_target == bundle:
                 ca_source(path, bundle)
+                if external_files is None:
+                    raise Refusal('public CA bundle requires an external_files declaration output')
                 with open_ca_bundle(target):
                     pass
                 declaration = external_files.setdefault(str(target), {'kind': 'public-ca-bundle', 'sources': []})

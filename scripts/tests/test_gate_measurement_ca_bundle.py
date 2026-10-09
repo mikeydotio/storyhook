@@ -49,6 +49,25 @@ class PythonCABundleInputs(unittest.TestCase):
         self.bundle.write_bytes(b'changed public bundle')
         self.assertNotEqual(before, self.capture())
 
+    def test_ordinary_free_threaded_and_older_abi_link_chain_are_declared(self):
+        free_threaded = self.package / 'lib/python3.14t/site-packages/certifi/cacert.pem'
+        older_abi = self.package / 'lib/python3.13/site-packages/certifi/cacert.pem'
+        for source in (free_threaded, older_abi):
+            source.parent.mkdir(parents=True)
+        free_threaded.symlink_to(self.bundle)
+        older_abi.symlink_to(free_threaded)
+        dependencies = self.discover()
+        self.assertCountEqual(dependencies.values(), [str(self.package), str(self.bundle)])
+        self.assertEqual(self.files[str(self.bundle)]['sources'],
+                         sorted(map(str, (self.source, free_threaded, older_abi))))
+        before = self.capture()
+        self.bundle.write_bytes(b'changed synthetic public bundle')
+        self.assertNotEqual(before, self.capture())
+
+    def test_canonical_bundle_requires_typed_dependency_output(self):
+        with self.assertRaisesRegex(Refusal, 'external_files'):
+            python_linked_packages(self.runtime, [self.library])
+
     def test_wrong_origins_refuse_before_and_after_valid_source(self):
         for name, valid_first in (('aaa', True), ('zzz', False)):
             with self.subTest(valid_first=valid_first):
@@ -72,6 +91,8 @@ class PythonCABundleInputs(unittest.TestCase):
         for relative in ('Cellar/certifi/current/lib/python3.14/site-packages/certifi/cacert.pem',
                          'Cellar/certifi-extra/1/lib/python3.14/site-packages/certifi/cacert.pem',
                          'Cellar/certifi/1/lib/pythonX/site-packages/certifi/cacert.pem',
+                         'Cellar/certifi/1/lib/python3.14tt/site-packages/certifi/cacert.pem',
+                         'Cellar/certifi/1/lib/python3.14debug/site-packages/certifi/cacert.pem',
                          'other/Cellar/certifi/1/lib/python3.14/site-packages/certifi/cacert.pem'):
             with self.subTest(relative=relative):
                 origin = self.prefix / relative
