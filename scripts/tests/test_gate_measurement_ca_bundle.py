@@ -68,6 +68,42 @@ class PythonCABundleInputs(unittest.TestCase):
         with self.assertRaisesRegex(Refusal, 'external_files'):
             python_linked_packages(self.runtime, [self.library])
 
+    def test_physical_shared_site_package_declares_only_canonical_bundle(self):
+        shared = self.library / 'certifi'
+        shared.unlink()
+        shared.mkdir()
+        source = shared / 'cacert.pem'
+        source.symlink_to(self.bundle)
+        self.assertEqual(self.discover(), {'python-public-ca-bundle': str(self.bundle)})
+        self.assertEqual(self.files[str(self.bundle)]['sources'], [str(source)])
+        before = self.capture(source)
+        self.bundle.write_bytes(b'changed synthetic public bundle')
+        self.assertNotEqual(before, self.capture(source))
+        private = self.prefix / 'etc/private'; private.write_bytes(b'private fixture')
+        source.unlink(); source.symlink_to(private)
+        with self.assertRaises(Refusal): self.discover()
+
+    def test_pip_vendored_certifi_declares_only_canonical_bundle(self):
+        source = self.library / 'pip/_vendor/certifi/cacert.pem'
+        source.parent.mkdir(parents=True)
+        source.symlink_to(self.bundle)
+        self.discover()
+        self.assertEqual(self.files[str(self.bundle)]['sources'],
+                         sorted(map(str, (self.source, source))))
+        before = self.capture(source)
+        self.bundle.write_bytes(b'changed synthetic public bundle')
+        self.assertNotEqual(before, self.capture(source))
+
+    def test_versioned_python_pip_bundle_is_an_exact_dependency(self):
+        source = self.runtime / 'lib/python3.14/site-packages/pip/_vendor/certifi/cacert.pem'
+        source.parent.mkdir(parents=True)
+        source.symlink_to(self.bundle)
+        self.discover()
+        self.assertIn(str(source), self.files[str(self.bundle)]['sources'])
+        before = self.capture(source)
+        self.bundle.write_bytes(b'changed synthetic public bundle')
+        self.assertNotEqual(before, self.capture(source))
+
     def test_wrong_origins_refuse_before_and_after_valid_source(self):
         for name, valid_first in (('aaa', True), ('zzz', False)):
             with self.subTest(valid_first=valid_first):
@@ -93,10 +129,19 @@ class PythonCABundleInputs(unittest.TestCase):
                          'Cellar/certifi/1/lib/pythonX/site-packages/certifi/cacert.pem',
                          'Cellar/certifi/1/lib/python3.14tt/site-packages/certifi/cacert.pem',
                          'Cellar/certifi/1/lib/python3.14debug/site-packages/certifi/cacert.pem',
+                         'Cellar/python@3.14/current/lib/python3.14/site-packages/pip/_vendor/certifi/cacert.pem',
+                         'Cellar/python@3.14/1/lib/python3.13/site-packages/pip/_vendor/certifi/cacert.pem',
+                         'Cellar/rogue/1/lib/python3.14/site-packages/pip/_vendor/certifi/cacert.pem',
+                         'lib/python3.14debug/site-packages/certifi/cacert.pem',
+                         'lib/python3.14/site-packages/certifi-extra/cacert.pem',
+                         'lib/python3.14/site-packages/certifi/other.pem',
+                         'lib/python3.14/site-packages/rogue/_vendor/certifi/cacert.pem',
+                         'lib/python3.14/site-packages/pip/vendor/certifi/cacert.pem',
+                         'other/lib/python3.14/site-packages/certifi/cacert.pem',
                          'other/Cellar/certifi/1/lib/python3.14/site-packages/certifi/cacert.pem'):
             with self.subTest(relative=relative):
                 origin = self.prefix / relative
-                origin.parent.mkdir(parents=True)
+                origin.parent.mkdir(parents=True, exist_ok=True)
                 origin.symlink_to(self.bundle)
                 with self.assertRaises(Refusal):
                     python_linked_packages(self.runtime, [origin.parent], external_files={})

@@ -49,22 +49,31 @@ def stamp(path):
 
 
 def ca_source(path, target):
-    """Require the one physical, versioned certifi layout for the public bundle."""
+    """Require an exact physical Homebrew certifi source for the public bundle."""
     path, target = Path(path), Path(target)
     prefix = target.parent.parent.parent
     try:
-        parts = path.relative_to(prefix / 'Cellar').parts
+        parts = path.relative_to(prefix).parts
+        if (len(parts) == 8 and parts[:2] == ('Cellar', 'certifi')
+                and re.fullmatch(r'[0-9][a-zA-Z0-9._+-]*', parts[2])):
+            parts = parts[3:]
+        elif (len(parts) == 10 and parts[0] == 'Cellar'
+              and re.fullmatch(r'python@[0-9]+\.[0-9]+', parts[1])
+              and re.fullmatch(r'[0-9][a-zA-Z0-9._+-]*', parts[2])
+              and parts[4] in (parts[1].replace('@', ''), parts[1].replace('@', '') + 't')):
+            parts = parts[3:]
+        shared_pip = (len(parts) == 7 and parts[3:] == ('pip', '_vendor', 'certifi', 'cacert.pem'))
         valid = (target == prefix / 'etc/ca-certificates/cert.pem'
-                 and len(parts) == 7 and parts[0] == 'certifi'
-                 and re.fullmatch(r'[0-9][a-zA-Z0-9._+-]*', parts[1])
-                 and parts[2] == 'lib' and re.fullmatch(r'python[0-9]+\.[0-9]+t?', parts[3])
-                 and parts[4:] == ('site-packages', 'certifi', 'cacert.pem')
+                 and (len(parts) == 5 or shared_pip) and parts[0] == 'lib'
+                 and re.fullmatch(r'python[0-9]+\.[0-9]+t?', parts[1])
+                 and parts[2] == 'site-packages'
+                 and (parts[3:] == ('certifi', 'cacert.pem') or shared_pip)
                  and path.is_absolute() and path.parent.resolve(strict=True) == path.parent
                  and path.is_symlink() and path.resolve(strict=True) == target)
     except (ValueError, OSError, RuntimeError):
         valid = False
     if not valid:
-        raise Refusal('public CA bundle requires its physical versioned certifi source')
+        raise Refusal('public CA bundle requires its physical Homebrew certifi source')
 
 
 def ca_fields(value):
