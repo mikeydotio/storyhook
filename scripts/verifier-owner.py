@@ -448,13 +448,21 @@ def run(mode, common, worktree, key, command, cancellation, output=None):
     owner_path = str(key) + ".owner"
     if mode == "held":
         return 0 if held(common, worktree, key) else 1
-    if mode == "gate":
+    if mode in ("gate", "measurement-gate"):
         if not held(common, worktree, key):
             raise Refusal("gate execution has no matching verifier owner")
         # Policy is validated before the record says a gate started, so a
         # refused budget or class cannot leave an interrupted gate behind (SH-695).
         budget = cleanup_budget()
-        prefix = gate_class()
+        if mode == "measurement-gate":
+            from gate_measurement_context import validate
+            validate()
+            if len(command) < 2 or command[0] not in ("control", "utility"):
+                raise Refusal("measurement gate requires control or utility")
+            condition, command = command[0], command[1:]
+            prefix = [] if condition == "control" else gate_class()
+        else:
+            prefix = gate_class()
         owner = read(owner_path)
         owner["gate_started"] = True
         owner["gate_supervisor"] = os.getpid()
@@ -469,6 +477,14 @@ def run(mode, common, worktree, key, command, cancellation, output=None):
         owner["gate_leader_exit"] = None
         save(owner_path, owner)
         return status
+    measurement = None
+    if mode == "measurement-run":
+        from gate_measurement_context import manifest, VARIABLE
+        measurement = os.environ.get(VARIABLE, "")
+        identity = manifest(measurement)
+        if identity["common"] != str(common) or identity["worktree"] != str(worktree):
+            raise Refusal("measurement lifecycle mapping differs from its manifest")
+        mode = "run"
     if mode != "run" or not command:
         raise Refusal("usage: verifier-owner.py held|run|gate <common> <worktree> [-- command...]")
     budget = cleanup_budget()
@@ -520,6 +536,8 @@ def run(mode, common, worktree, key, command, cancellation, output=None):
         owner = {"version": 1, "common": str(common), "worktree": str(worktree),
                  "nonce": uuid.uuid4().hex, "boot": boot(), "gate_started": False,
                  "supervisor": os.getpid()}
+        if measurement is not None:
+            owner["measurement"] = measurement
         os.environ["STORYHOOK_VERIFIER_OWNER"] = owner["nonce"]
         status = execute(command, owner_path, owner, "session", cancellation, budget, output)
         try:

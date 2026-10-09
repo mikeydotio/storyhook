@@ -78,6 +78,7 @@ is_gate_contract() {
     (scripts/gate-progress.sh | scripts/gate-progress-writer.py | scripts/gate_cost.py | scripts/activity-log.sh) return 0 ;;
     (scripts/host-admission.py | scripts/host-admit.py | scripts/host_admission/*) return 0 ;;
     (scripts/progress_journal.py) return 0 ;;
+    (scripts/gate-measurement-context.sh | scripts/gate_measurement_context.py | scripts/verifier_state.py) return 0 ;;
     (scripts/python-runtime.sh | scripts/python-bin/python3) return 0 ;;
     (*) return 1 ;;
     esac

@@ -447,6 +447,14 @@ fn effects(path: &CommandPath) -> (Effects, &'static str) {
             }
             "Controls automatic dispatch; start/resume/adopt may launch providers and downstream remote work. Merely describing this command performs none of those actions."
         }
+        C::Verifier if sub == "measure-gate-class" => {
+            e.store = None;
+            e.may_start_daemon = false;
+            e.filesystem = Write;
+            e.processes = Write;
+            e.remote = Conditional;
+            "Local measurement helper creates isolated checkout/output/probe state and executes the configured gate. The gate determines remote effects. It never certifies or merges."
+        }
         C::Verifier => {
             if !matches!(sub, "status" | "evidence" | "gate-config")
                 && !(matches!(sub, "repair" | "landing") && leaf == "show")
@@ -671,6 +679,17 @@ fn outputs(path: &CommandPath) -> Vec<OutputContract> {
             "JSON document in both output modes",
             "Suppresses success (this uses the ordinary renderer).",
         )],
+        C::Verifier if sub == "measure-gate-class" => {
+            let mut o = envelope();
+            o.class = DelegatedHelper;
+            o.selection = "Local collector stdout/stderr; --json does not wrap helper output";
+            o.schema = "Progress lines; durable measurement reports live in the output directory";
+            o.empty = "An early refusal may have no stdout.";
+            o.quiet = "Does not suppress delegated streams.";
+            o.errors = "Preparation errors use the normal contract; after exec the helper owns diagnostics and exit status.";
+            o.exit_status = "Collector exit status; success is measurement completion, never production certification.";
+            vec![o]
+        }
         C::Verifier if matches!(sub, "repair-admit" | "gate-config" | "landing") => vec![raw(
             "Admission/configuration receipt, landing-intent array, or landing-release object according to this exact subcommand",
             "Always JSON",

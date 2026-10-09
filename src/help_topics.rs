@@ -2842,11 +2842,19 @@ story verifier stop
 story verifier drain
 story verifier ack <incident-id> [--leave-stopped]
 story verifier gate-config <checkout> <base> <head> <tree> --json
+story verifier measure-gate-class <checkout> <commit> --output <directory>
 story verifier repair show <recovery-id> --json
 story verifier repair decide <recovery-id> --input <json-file>
 story verifier repair satisfy <recovery-id> --input <json-file>
 
 Inspect and control this project's centralized verifier.
+
+  measure-gate-class is a local, store-free macOS measurement command. It
+  owns a dedicated pinned checkout, retains raw failed-attempt evidence, and
+  runs twenty interleaved control/utility gates after one warmup. It requires
+  a normal-class collector and validated measurement ownership. It neither
+  reuses validation verdicts nor publishes production certification.
+  See docs/spec/gate-class-measurement.md for bounds and admission rules.
 
   landing show lists pending intents for this project, including batch bindings.
   landing release is an operator-only recovery for an exact intent id. It refuses

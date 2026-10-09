@@ -120,6 +120,20 @@ pub fn materialize(env: &Environment) -> Result<PathBuf, AppError> {
     Ok(dir)
 }
 
+/// Project an experiment's private bundle without sweeping any daemon payload.
+/// The caller must first reserve `output` as an owned measurement directory.
+pub fn materialize_measurement(output: &Path) -> Result<PathBuf, AppError> {
+    let root = output.join("verifier");
+    let leaf = root.join(payload_digest());
+    crate::embedded::materialize(
+        EMBEDDED_VERIFIER,
+        &root,
+        &leaf,
+        ".materialize.lock",
+        "measurement verifier scripts",
+    )
+}
+
 /// The path of `verify-pr.sh` for this binary, materializing the bundle
 /// first. What the actuator hands to `bash`.
 pub fn verify_script(env: &Environment) -> Result<PathBuf, AppError> {

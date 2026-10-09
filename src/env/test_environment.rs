@@ -296,6 +296,12 @@ pub const TEST_ENVIRONMENT: &[Parameter] = &[
                  ones an ordinary session gets",
     },
     Parameter {
+        name: "STORYHOOK_GATE_MEASUREMENT",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "measurement authority belongs to the outer owned gate, never to fixture repositories",
+    },
+    Parameter {
         name: "STORYHOOK_CODEX_BOOTSTRAP",
         disposition: Disposition::Clear,
         scope: Scope::Anywhere,
