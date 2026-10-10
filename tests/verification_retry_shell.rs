@@ -503,12 +503,18 @@ raise SystemExit(status)
             (f.project(), "SH-2"),
             "{next:#?}"
         );
-        assert!(row.snapshot.comments.iter().any(|comment| {
-            comment
-                .text
-                .contains("CENTRAL VERIFICATION ATTRIBUTION HELD")
-                && comment.text.contains("No repair is assigned")
-        }));
+        assert!(
+            row.snapshot.comments.iter().any(|comment| {
+                comment
+                    .text
+                    .contains("CENTRAL VERIFICATION ATTRIBUTION HELD")
+                    && comment
+                        .text
+                        .contains("No implementer repair is assigned by this held result.")
+            }),
+            "expected a held comment explaining implementer repair ownership; actual comments: {:#?}",
+            row.snapshot.comments
+        );
         assert!(
             row.snapshot
                 .comments
