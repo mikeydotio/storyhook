@@ -129,3 +129,9 @@ a long purge. Reclamation does not delete sources, Git state,
 provider/session evidence, global caches, or shared verifier caches, and does not
 enable host admission, project automation, provider enrollment on existing lanes,
 or production rollout. Those are separate operator actions.
+
+An optional [retention hook](build-product-retention.md) can keep already detached,
+debug-only products in quarantine, report candidates, and apply an explicit
+age/count/pin policy. It is disabled by default and does not enroll legacy caches
+or enable unattended deletion. Its lifetime is limited to the private Git
+administration containing the quarantine.

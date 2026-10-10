@@ -38,7 +38,7 @@ def remove_contents(fd, device):
             os.unlink(name, dir_fd=fd)
 
 
-def purge(journal):
+def purge(journal, *, authorize=None):
     path = Path(journal)
     if path.name != 'journal.json' or path.parent.parent.name != 'storyhook-detached-products-v1':
         raise ValueError('not a detached product journal')
@@ -67,6 +67,8 @@ def purge(journal):
                 record = json.load(stream)
             if record.get('version') != 1 or record.get('directory') != identity(info):
                 raise ValueError('detached directory identity mismatch')
+            if 'retention' in record and authorize is None:
+                raise ValueError('retention-enrolled products require the retention policy')
             if record.get('state') not in ('prepared', 'detached', 'purging', 'purged'):
                 raise ValueError('unknown detached journal state')
             def publish(state):
@@ -90,6 +92,10 @@ def purge(journal):
                 raise ValueError('detached product identity mismatch')
             if record['state'] == 'purged':
                 raise ValueError('products appeared after completed purge')
+            # Retention decisions run under the same permanent job lock as deletion.
+            # A stale preview or a pin added before lock acquisition cannot authorize it.
+            if authorize is not None:
+                authorize(record, fd)
             # Durable intent before recursive work: cancellation retains the job;
             # retry is authorized only against this same detached root identity.
             root = os.open('products', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
