@@ -47,6 +47,22 @@ fn measurement_live_storage_churn_regressions() {
 }
 
 #[test]
+fn measurement_cargo_dsym_alias_regressions() {
+    let result =
+        Command::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/python-bin/python3"))
+            .args(["-B", "scripts/tests/test_gate_measurement_dsym_alias.py"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .unwrap();
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
 fn measurement_discovery_is_operator_local_and_delegates_output() {
     use storyhook::cli::discovery::{self, Access, Audience, OutputClass};
     let args = ["verifier", "measure-gate-class", "--audience", "operator"].map(str::to_string);

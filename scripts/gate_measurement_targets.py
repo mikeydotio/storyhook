@@ -100,8 +100,8 @@ class TargetPool:
             if settled() is not True:
                 raise Refusal('target still has an unresolved verifier owner')
             check_identity(target)
-            # Refuse symlinks/nonregular entries before deleting any byte.
-            usage(target['path'])
+            # Only validated Cargo dSYM aliases are admitted before removal.
+            usage(target['path'], expected=target, cargo_dsym=True)
             journal(self.path, {'kind': 'delete-start', 'name': name, 'identity': target})
             remove(target)
             if os.path.lexists(target['path']):
@@ -124,7 +124,8 @@ def remove_exact(path, device, inode):
     if (not rows or rows[-1].get('kind') != 'delete-start'
             or rows[-1].get('identity') != {'path': str(path), 'device': device, 'inode': inode}):
         raise Refusal('target has no exact pending removal record')
-    usage(path)  # no links or unknown types, even after parent admission
+    usage(path, expected={'path': str(path), 'device': device, 'inode': inode},
+          cargo_dsym=True)  # repeat strict validation after parent admission
     shutil.rmtree(path)
 
 

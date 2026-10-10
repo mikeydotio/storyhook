@@ -7,6 +7,7 @@ import shutil
 import stat
 import sys
 
+from gate_measurement_dsym import account_alias
 from verifier_state import Refusal
 
 GIB = 1024 ** 3
@@ -32,7 +33,7 @@ def check_identity(expected):
 
 
 def usage(path, *, excluded=(), allow_links=False, allow_sockets=False,
-          live=False, expected=None):
+          live=False, expected=None, cargo_dsym=False):
     """Observe allocated bytes; live descendants may vanish, admitted roots may not.
 
     This is not an atomic snapshot. Settled disposal scans remain strict. Every
@@ -68,6 +69,25 @@ def usage(path, *, excluded=(), allow_links=False, allow_sockets=False,
                 total += observed.st_blocks * 512
                 continue
             if allow_sockets and stat.S_ISSOCK(observed.st_mode):
+                continue
+            if cargo_dsym and stat.S_ISLNK(observed.st_mode):
+                if (observed.st_dev != admitted['device']
+                        or os.fstat(fd).st_dev != admitted['device']):
+                    raise Refusal(f"Cargo dSYM alias left admitted target device: {child}")
+                try:
+                    total += account_alias(fd, child.relative_to(path), observed)
+                except FileNotFoundError as error:
+                    if not live or error.errno != errno.ENOENT:
+                        raise
+                    # Only disappearance of the alias itself permits omission.
+                    # A dangling alias or unexplained sensor failure stays loud.
+                    try:
+                        os.stat(item.name, dir_fd=fd, follow_symlinks=False)
+                    except FileNotFoundError as missing:
+                        if missing.errno != errno.ENOENT:
+                            raise
+                        continue
+                    raise
                 continue
             if stat.S_ISLNK(observed.st_mode):
                 raise Refusal(f"symlink in measurement storage: {child}")
@@ -140,7 +160,7 @@ def check_storage(description, *, initial=False, disk=shutil.disk_usage, size=us
         if path.parent != root / 'targets':
             raise Refusal('measurement target is shared or outside the owned target namespace')
         check_identity(target)
-        sizes[str(path)] = size(path, live=True, expected=target)
+        sizes[str(path)] = size(path, live=True, expected=target, cargo_dsym=True)
         if type(sizes[str(path)]) is not int or sizes[str(path)] < 0:
             raise Refusal('measurement target size observation is invalid')
         if sizes[str(path)] > TARGET_CAP:
