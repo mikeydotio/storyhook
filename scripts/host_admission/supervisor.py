@@ -39,6 +39,7 @@ class ManagedProcess:
         self.forward_signals = forward_signals
         # The authority's reason for withdrawing this grant, once observed.
         self.drain_reason = None
+        self.observation_failure = None
         self.finished = False
         self.result, self.failure = None, None
         self.execution_id = uuid.uuid4().hex
@@ -117,10 +118,16 @@ class ManagedProcess:
         members = []
         for pid in native.session_members(self.child.pid):
             try:
-                if native.process(pid, self.boot)["live"]:
+                if native.session_member_is_live(pid, self.child.pid, self.boot):
                     members.append(pid)
             except ProcessLookupError:
                 continue
+            except OSError as error:
+                # An unreadable participant is still possibly live. Retain it,
+                # drain under the pinned session, and never certify this run.
+                # _signal rechecks session membership before every delivery.
+                self.observation_failure = f"cannot observe owned participant {pid}: {error}"
+                members.append(pid)
         return members
 
     def _signal(self, members, signum):
@@ -170,6 +177,11 @@ class ManagedProcess:
                         failure, draining = str(error), True
                 exited = self._exited()
                 members = self._members()
+                if self.observation_failure is not None:
+                    failure = failure or self.observation_failure
+                    draining = True
+                    if not requested:
+                        requested = True
                 if exited and not members:
                     break
                 if draining or exited:
