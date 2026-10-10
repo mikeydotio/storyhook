@@ -934,7 +934,7 @@ fn managed_landing_owns_one_distinct_request_and_retains_uncertainty_after_resta
     let reopened = SqliteStore::open(f.store.path()).unwrap();
     assert_eq!(
         reopened.read(|tx| tx.landing_intents()).unwrap(),
-        [intent.clone()]
+        std::slice::from_ref(&intent)
     );
     assert_eq!(uncertain.1.started_at, original.1.started_at);
     assert_eq!(uncertain.1.attribution, original.1.attribution);

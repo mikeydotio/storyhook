@@ -49,7 +49,7 @@ fn recovery_pending_sqlite_ids_roundtrip_without_narrowing_or_project_aliasing()
             $insert(&conn, &first).unwrap();
             $insert(&conn, &second).unwrap();
             $insert(&conn, &first).unwrap(); // exact immutable replay
-            assert_eq!($read(&conn, first.project).unwrap(), [first.clone()]);
+            assert_eq!($read(&conn, first.project).unwrap(), std::slice::from_ref(&first));
             assert_eq!($read(&conn, second.project).unwrap(), [second]);
             let raw: (i64, i64, String, String) = conn
                 .query_row(
