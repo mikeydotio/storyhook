@@ -55,7 +55,8 @@ not in a published campaign artifact.
 
 ## Proposed first paid stage
 
-Request **one cold gate invocation**, then stop for evidence review. Retain the
+Request **one diagnostic-only cold gate invocation**, then stop for evidence review.
+It cannot be promoted retroactively into a later matched comparison. Retain the
 ordinary 75-minute admission-through-settlement ceiling, at most 40 minutes of
 preparation, and the existing cleanup allowance inside a fixed two-hour outer
 reservation. This is a cost ceiling, not a runtime estimate or a higher timeout.
@@ -93,8 +94,10 @@ are maxima, not predictions; prior failures do not support a credible runtime
 estimate. Only one optimization is in scope, with matched controls and complete
 exposure review.
 
-Eighteen additional invocations plus the nine already charged would total 27,
-which exceeds the earlier cumulative cap of 20. A full new comparison therefore
+After the proposed diagnostic attempt 10, eighteen fresh comparison invocations
+would total 28 charged attempts, exceeding the earlier cumulative cap of 20.
+Skipping the diagnostic and approving a full comparison directly would total 27.
+Neither path is currently authorized. A full new comparison therefore
 requires an explicit revised attempt budget or a separately reviewed smaller
 experimental design. Do not reset the count by choosing a new root. Any smaller
 design must state its weaker inference and may require different controller and
