@@ -502,6 +502,15 @@ fn nonprivate_custody_authority_is_retained() {
 
 impl Fixture {
     fn retention(&self) -> PathBuf {
+        // ServiceFixture's placeholder "fixture-uuid" is intentionally not a
+        // wire UUID. Seed only this private fixture database with a real one.
+        rusqlite::Connection::open(self.service.store().path())
+            .unwrap()
+            .execute(
+                "UPDATE projects SET uuid = ?1 WHERE uuid = 'fixture-uuid'",
+                ["01234567-89ab-cdef-0123-456789abcdef"],
+            )
+            .unwrap();
         let enrollment = self.private.join("storyhook-products-enrollment-v1.json");
         let mut row: Value = serde_json::from_slice(&fs::read(&enrollment).unwrap()).unwrap();
         row["nonce"] = json!("abcdef0123456789abcdef0123456789");
@@ -519,10 +528,7 @@ impl Fixture {
         private_json(&enrollment, &row);
         fs::write(
             self.lane.join(".storyhook.toml"),
-            format!(
-                "uuid = {uuid:?}\n[build_products]\n{}",
-                toml::to_string(&config).unwrap()
-            ),
+            toml::to_string(&json!({"uuid":uuid,"build_products":config})).unwrap(),
         )
         .unwrap();
         fs::remove_file(self.original().join("old")).unwrap();
@@ -817,11 +823,7 @@ fn retention_reset_during_post_detach_hook_preserves_pin_without_waiting() {
         serde_json::from_value(row["config"].clone()).unwrap();
     fs::write(
         f.lane.join(".storyhook.toml"),
-        format!(
-            "uuid = {}\n[build_products]\n{}",
-            row["project_uuid"],
-            toml::to_string(&config).unwrap()
-        ),
+        toml::to_string(&json!({"uuid":row["project_uuid"],"build_products":config})).unwrap(),
     )
     .unwrap();
     struct Release(PathBuf);
@@ -835,10 +837,15 @@ fn retention_reset_during_post_detach_hook_preserves_pin_without_waiting() {
         let _release = Release(release.clone());
         let deadline = std::time::Instant::now()
             + storyhook_test_support::load_grace::graced_now(Duration::from_secs(30));
-        while !ready.exists() && std::time::Instant::now() < deadline {
+        while !ready.exists() && !pending.is_finished() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(ready.exists(), "hook did not reach detached phase");
+        if !ready.exists() {
+            panic!(
+                "hook did not reach detached phase: {:?}",
+                pending.join().unwrap()
+            );
+        }
         f.retention_cli("pin", &journal);
         let before = fs::read(&journal).unwrap();
         let ctx = f.ctx().no_hooks(true);
