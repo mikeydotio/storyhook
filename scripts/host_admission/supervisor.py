@@ -11,6 +11,7 @@ import time
 import uuid
 
 from . import native
+from .diagnostics import boundary
 from .namespace import open_private
 from .policy import Refusal
 
@@ -33,13 +34,17 @@ class ManagedProcess:
     """A blocked-launch supervisor; SH-869 adapters own preserving its child contract."""
 
     def __init__(self, client, lease, command, *, publisher=None, env=None, grant_environment=True,
-                 cwd=None, forward_signals=False):
+                 cwd=None, forward_signals=False, trace=None, pass_fds=()):
+        self.trace = trace
         self.client, self.lease, self.child, self.guard = client, lease, None, None
         self.publisher = publisher
         self.forward_signals = forward_signals
         # The authority's reason for withdrawing this grant, once observed.
         self.drain_reason = None
         self.observation_failure = None
+        self.failure_cause = None
+        self.cancelled = False
+        self.leader_signals = set()
         self.finished = False
         self.result, self.failure = None, None
         self.execution_id = uuid.uuid4().hex
@@ -69,21 +74,24 @@ class ManagedProcess:
             # (a Cargo jobserver, a lock holder's stdin) must still reach the
             # command, so they are passed explicitly beside the handshake.
             handshake = (read_go, write_ready, self.guard, write_exec)
-            self.child = subprocess.Popen(
+            descriptors = boundary(self.trace, "supervisor_descriptor_capture", inherited_descriptors)
+            self.child = boundary(self.trace, "supervisor_spawn", subprocess.Popen,
                 [sys.executable, "-B", str(Path(__file__).with_name("launcher.py")),
                  str(read_go), str(write_ready), str(self.guard), str(write_exec), *command],
-                start_new_session=True, pass_fds=tuple(sorted(set(handshake) | inherited_descriptors())),
+                start_new_session=True, pass_fds=tuple(sorted(set(handshake) | descriptors | set(pass_fds))),
                 env=env, cwd=cwd)
             os.close(read_go); read_go = None
             os.close(write_ready); write_ready = None
             os.close(write_exec); write_exec = None
-            if not select.select([read_ready], [], [], self.timing["lease_ms"] / 1000)[0] or os.read(read_ready, 1) != b"R":
+            if not boundary(self.trace, "readiness_handshake", select.select,
+                            [read_ready], [], [], self.timing["lease_ms"] / 1000)[0] or os.read(read_ready, 1) != b"R":
                 raise Refusal("blocked launcher did not establish readiness")
             leader = native.identity(self.child.pid, self.boot)
             self.call("attach", execution=dict(id=self.execution_id, leader=leader,
                       session=self.child.pid, guard=guard_name))
             os.write(write_go, b"G")
-            if not select.select([read_exec], [], [], self.timing["lease_ms"] / 1000)[0]:
+            if not boundary(self.trace, "exec_handshake", select.select,
+                            [read_exec], [], [], self.timing["lease_ms"] / 1000)[0]:
                 raise Refusal("exec handshake exceeded the lease allowance")
             error = os.read(read_exec, 4096)
             if error:
@@ -115,8 +123,12 @@ class ManagedProcess:
     def _members(self):
         # The session is the ownership boundary. Process groups inside it are
         # ordinary: captured children, `set -m` and fixtures create them.
+        pids = boundary(self.trace, "census", native.session_members, self.child.pid)
+        return boundary(self.trace, "liveness", self._live_members, pids)
+
+    def _live_members(self, pids):
         members = []
-        for pid in native.session_members(self.child.pid):
+        for pid in pids:
             try:
                 if native.session_member_is_live(pid, self.child.pid, self.boot):
                     members.append(pid)
@@ -136,6 +148,8 @@ class ManagedProcess:
             try:
                 if os.getsid(pid) == self.child.pid:
                     os.kill(pid, signum)
+                    if pid == self.child.pid:
+                        self.leader_signals.add(signum)
             except ProcessLookupError:
                 continue
 
@@ -145,6 +159,7 @@ class ManagedProcess:
             if self.failure is not None:
                 raise Refusal(self.failure)
             return self.result
+        self.cancelled = self.cancelled or force_cancel
         requested, sent_term, sent_kill = force_cancel, None, False
         first_signal = signal.SIGTERM
         draining, failure = force_cancel, None
@@ -156,26 +171,31 @@ class ManagedProcess:
         def cancel(_signal, _frame):
             nonlocal requested, first_signal
             requested = True
+            self.cancelled = True
             if self.forward_signals:
                 first_signal = _signal
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             prior[signum] = signal.signal(signum, cancel)
         try:
             while True:
+                if self.trace is not None:
+                    self.trace.poll()
                 if failure is None:
                     try:
                         if requested:
                             draining = True
-                            self.call("cancel"); requested = False
+                            boundary(self.trace, "cancellation", self.call, "cancel"); requested = False
                         row = self.call("inspect")
                         if row["state"] in {"draining", "quarantined"}:
+                            self.cancelled = True
                             draining = True
                             self.drain_reason = self.drain_reason or row.get("reason")
                         if self.publisher:
-                            self.publisher.publish()
+                            boundary(self.trace, "publisher", self.publisher.publish)
                     except (Refusal, OSError) as error:
+                        self.failure_cause = error
                         failure, draining = str(error), True
-                exited = self._exited()
+                exited = boundary(self.trace, "waitid", self._exited)
                 members = self._members()
                 if self.observation_failure is not None:
                     failure = failure or self.observation_failure
@@ -194,13 +214,14 @@ class ManagedProcess:
                         sent_kill = True
                         sent_term = now
                     if sent_kill:
-                        self._signal(members, signal.SIGKILL)
+                        boundary(self.trace, "signal_kill", self._signal, members, signal.SIGKILL)
                     else:
-                        self._signal([pid for pid in members if pid not in terminated], first_signal)
+                        boundary(self.trace, "signal_term", self._signal,
+                                 [pid for pid in members if pid not in terminated], first_signal)
                         terminated.update(members)
                 # This is the policy observation cadence, not a guessed workload delay.
                 select.select([], [], [], self.timing["sample_ms"] / 1000)
-            result = self.child.wait()
+            result = boundary(self.trace, "reap", self.child.wait)
             self.result = 125 if draining and result == 0 else result
             os.close(self.guard); self.guard = None
             self.finished = True
@@ -208,8 +229,8 @@ class ManagedProcess:
                 raise Refusal(f"owned processes drained; admission control or evidence failed: {failure}")
             row = self.call("inspect")
             if any(e["id"] == self.execution_id for e in row["executions"]):
-                self.call("settle", execution_id=self.execution_id)
-            if not self.call("finish"):
+                boundary(self.trace, "settle", self.call, "settle", execution_id=self.execution_id)
+            if not boundary(self.trace, "finish", self.call, "finish"):
                 raise Refusal("managed work ended but descendant settlement remains unproved")
             if self.publisher:
                 self.publisher.publish()

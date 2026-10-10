@@ -49,6 +49,7 @@ pub mod engine;
 pub(crate) mod executor_lock;
 pub mod gate_command;
 pub mod gate_cost;
+pub mod gate_measurement;
 pub mod gate_output;
 pub mod gate_progress;
 pub mod gate_snapshot;

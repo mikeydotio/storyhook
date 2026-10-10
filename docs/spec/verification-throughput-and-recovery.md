@@ -914,3 +914,16 @@ Production stays disabled. Before a measured policy is installed:
 - `verify-pr.sh` maps an `admission` execution state through
   `verifier_result.py admission`, which has its own tests. A whole
   `verify-pr.sh` run belongs to the central lifecycle harness.
+
+
+### Representative workload amendment (2026-10-09)
+
+The user's everyday host load varies, including saturated CPU periods. Resilience
+analysis must work under that exposure: forward progress, bounded waits, clean
+holds/recovery, truthful cleanup, and no unsupported author return. An idle host
+is not a prerequisite. Preserve our broad-suite/release serialization and all
+900-second, ownership, coverage and recovery requirements. Record natural
+unmanaged workload rather than treating its presence as blanket contamination.
+Performance comparisons remain subject to the pinned controls and honest
+inconclusive outcomes in [the measurement protocol](representative-workload-measurement.md).
+This amendment does not activate host policy, batching, providers or automations.

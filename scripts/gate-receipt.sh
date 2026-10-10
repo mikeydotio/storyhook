@@ -81,6 +81,11 @@ note() {
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" \
     || die "cannot resolve the receipt script directory"
+. "$script_dir/gate-measurement-context.sh" || exit 2
+if [ "$gate_measurement" = 1 ]; then
+    case "${1:-}" in preflight | postlude) exit 0 ;; esac
+    die "invalid measurement receipt phase: ${1:-}"
+fi
 root="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || die "not inside a git worktree"
 cd "$root" || die "cannot enter $root"

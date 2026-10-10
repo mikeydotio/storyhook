@@ -210,6 +210,7 @@ impl Repo {
         fs::create_dir_all(repo.path().join("scripts")).expect("creating fixture scripts/");
         for script in [
             "leg.sh",
+            "gate-measurement-context.sh",
             "activity-log.sh",
             "activity-run.py",
             "test_output.py",

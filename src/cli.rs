@@ -245,6 +245,15 @@ pub enum VerifierAction {
         /// Expected proposed merge tree.
         tree: String,
     },
+    /// Local, store-free verifier scheduling experiment.
+    MeasureGateClass {
+        /// Clean source checkout.
+        checkout: std::path::PathBuf,
+        /// Pinned commit.
+        commit: String,
+        /// Private retained output directory.
+        output: std::path::PathBuf,
+    },
     /// Read durable permission, incidents, recovery and live ownership.
     Status,
     /// Enable admission without clearing a halt.
@@ -3369,6 +3378,22 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
                 | Some(model::VerifierRepairVerb::Satisfy) => {
                     return Err(AppError::Usage(USAGE.into()));
                 }
+            }
+        }
+        Some(model::VerifierVerb::MeasureGateClass) => {
+            const USAGE: &str = crate::cli::model::usage::VERIFIER_MEASUREMENT;
+            if args.len() != 6
+                || args[4] != "--output"
+                || [2, 3, 5]
+                    .iter()
+                    .any(|&i| args[i].is_empty() || is_flag_shaped(&args[i]))
+            {
+                return Err(AppError::Usage(USAGE.into()));
+            }
+            VerifierAction::MeasureGateClass {
+                checkout: args[2].clone().into(),
+                commit: args[3].clone(),
+                output: args[5].clone().into(),
             }
         }
         Some(model::VerifierVerb::GateConfig) => {

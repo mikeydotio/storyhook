@@ -490,6 +490,11 @@ pub static FLAG_PATHS: &[FlagPath] = &[
         flags: &[value("reason")],
     },
     FlagPath {
+        command: CommandId::Verifier,
+        subcommand: Some("measure-gate-class"),
+        flags: &[value("output")],
+    },
+    FlagPath {
         command: CommandId::Resources,
         subcommand: None,
         flags: &[
@@ -911,6 +916,8 @@ help_syntax! {
 "#,
     Verifier => r#"  story verifier repair satisfy <recovery-id> --input <json-file>
 "#,
+    Verifier => r#"  story verifier measure-gate-class <checkout> <commit> --output <directory>
+"#,
     Verifier => r#"  story verifier gate-config <checkout> <base> <head> <tree> --json
 "#,
     Resources => r#"  story resources <id> [--json]                    (inspect existing resource identity)
@@ -1143,6 +1150,7 @@ subcommands! {
         Evidence = "evidence" => Grammar::new("<id:stories>", "SH-1", FormKind::Command),
         RepairAdmit = "repair-admit" => Grammar::new("<story:stories> <attempt> <generation> <base> <head> <head-tree> <tree>", "SH-1 attempt 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", FormKind::Command),
         Repair = "repair" => Grammar::new("", "", FormKind::Group),
+        MeasureGateClass = "measure-gate-class" => Grammar::new("<checkout> <commit> --output <directory>", "/tmp/source aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --output /tmp/measurement", FormKind::Command),
         GateConfig = "gate-config" => Grammar::new("<checkout> <base> <head> <tree>", "/tmp/example aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", FormKind::Command),
         Status = "status" => Grammar::new("", "", FormKind::Command),
         Start = "start" => Grammar::new("", "", FormKind::Command),
@@ -1326,6 +1334,7 @@ usages! {
     VERIFIER_4 (Verifier) = "usage: story verifier evidence <story-id> [--json]";
     VERIFIER_5 (Verifier) = "usage: story verifier repair-admit <story> <attempt> <generation> <base> <head> <head-tree> <tree> --json (private verifier callback)";
     VERIFIER_6 (Verifier) = "usage: story verifier repair show <recovery-id> | decide <recovery-id> --input <json-file> | satisfy <recovery-id> --input <json-file>";
+    VERIFIER_MEASUREMENT (Verifier) = "usage: story verifier measure-gate-class <checkout> <commit> --output <directory>";
     VERIFIER_7 (Verifier) = "usage: story verifier gate-config <checkout> <base> <head> <tree> --json";
     VERIFIER_8 (Verifier) = "usage: story verifier <status|start|stop|drain>";
     REPORT_1 (Report) = "usage: story report [--html]";
@@ -1438,11 +1447,33 @@ pub fn before_environment(invocation: &Invocation) -> Option<BeforeEnvironment<'
 }
 /// Local protocols after current-directory resolution but before opening a store.
 pub enum BeforeStore<'a> {
-    Plugin { target: &'a str, args: &'a [String] },
-    StoreNew { path: &'a str },
+    MeasureGateClass {
+        checkout: &'a std::path::Path,
+        commit: &'a str,
+        output: &'a std::path::Path,
+    },
+    Plugin {
+        target: &'a str,
+        args: &'a [String],
+    },
+    StoreNew {
+        path: &'a str,
+    },
 }
 pub fn before_store(invocation: &Invocation) -> Option<BeforeStore<'_>> {
     match invocation {
+        Invocation::Verifier {
+            action:
+                VerifierAction::MeasureGateClass {
+                    checkout,
+                    commit,
+                    output,
+                },
+        } => Some(BeforeStore::MeasureGateClass {
+            checkout,
+            commit,
+            output,
+        }),
         Invocation::Plugin {
             action: PluginAction::Run { target, args },
         } => Some(BeforeStore::Plugin { target, args }),

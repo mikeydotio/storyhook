@@ -63,6 +63,29 @@ shift
 
 fingerprint=""
 receipt=""
+. "$script_dir/gate-measurement-context.sh"
+if [ "$gate_measurement" = 1 ]; then
+    reuse=0
+    if [ "${STORYHOOK_MEASUREMENT_SLOT+x}" = x ]; then
+        # Command substitution can change SHLVL for this one child. Keep the
+        # exact detector environment for both boundaries and use status for the
+        # internal run/reuse decision instead of excluding shell input variables.
+        measurement_status=0
+        "$STORYHOOK_PYTHON" "$script_dir/gate_measurement_legs.py" prepare-status "$label" "$@" || measurement_status=$?
+        case "$measurement_status" in
+        10)
+            echo "leg $label: REUSED — exact preceding measurement warm execution" >&2
+            gate_progress_emit_item "release gate/$label" reused
+            exit 0
+            ;;
+        0) measurement_action=run ;;
+        *) echo "leg.sh: invalid measurement decision" >&2; exit 2 ;;
+        esac
+    fi
+elif [ "${STORYHOOK_MEASUREMENT_SLOT+x}" = x ]; then
+    echo "leg.sh: measurement slot has no live measurement authority" >&2
+    exit 2
+fi
 if [ "$reuse" = 1 ]; then
     case "$label" in
     (*[!a-z0-9-]* | '')
@@ -114,6 +137,9 @@ status=0
 activity_source="$1"
 case "$activity_source" in bash | sh) activity_source="${2:-$1}" ;; esac
 activity_run "leg.sh/$label:$activity_source" "$@" || status=$?
+if [ "${measurement_action:-}" = run ]; then
+    "$STORYHOOK_PYTHON" "$script_dir/gate_measurement_legs.py" finish "$label" "$status" "$@" || exit 2
+fi
 end=$(date +%s)
 elapsed=$((end - start))
 
