@@ -197,6 +197,66 @@ def snapshot(journal):
         return row
 
 
+def require_settlement(custody):
+    """Match SH-835's native settled_record contract under the product lease.
+
+    ProductLease's legacy minimal state check is insufficient as deletion
+    authority. Keep this explicit check local to the new retention consumer;
+    no old managed launcher or recovery record is rewritten or reinterpreted.
+    """
+    fd = open_directory(custody)
+    try:
+        private(os.fstat(fd), stat.S_ISDIR)
+        owners = 0
+        for name in os.listdir(fd):
+            if name == 'products.lock':
+                continue
+            if not re.fullmatch(r'build-[0-9a-fA-F]{32}', name):
+                raise ValueError('unknown product custody entry')
+            token = name[len('build-'):]
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            try:
+                private(os.fstat(child), stat.S_ISDIR)
+                row = read_at(child, 'record.json')
+            finally:
+                os.close(child)
+            owner = row.get('owner')
+            execution = row.get('settled_execution')
+            command = row.get('command')
+            def nonempty(value):
+                return isinstance(value, str) and bool(value)
+            def process_id(value):
+                return type(value) is int and 1 < value <= 2**64 - 1
+            if not (type(row.get('version')) is int and row['version'] == 1
+                    and row.get('id') == token and row.get('token') == token
+                    and row.get('state') == 'finished' and row.get('executions') == []
+                    and isinstance(command, list) and command
+                    and all(isinstance(part, str) for part in command)
+                    and isinstance(owner, dict) and process_id(owner.get('pid'))
+                    and nonempty(owner.get('start')) and nonempty(owner.get('boot'))
+                    and isinstance(execution, dict) and nonempty(execution.get('id'))
+                    and execution.get('guard') == 'lease-' + token + '.lock'
+                    and process_id(execution.get('session'))):
+                raise ValueError('unfinished or unknown whole-build owner')
+            owners += 1
+        if not owners:
+            raise ValueError('no completed managed build owns these products')
+    finally:
+        os.close(fd)
+
+
+def failure_action(journal):
+    """A write-ahead purging state means bytes may already be gone."""
+    try:
+        with job(journal) as (fd, row):
+            if row.get('state') == 'detached':
+                products(fd, row)
+                return 'keep', 'detached'
+            return 'purge-incomplete', row.get('state', 'unknown')
+    except (OSError, ValueError):
+        return 'purge-incomplete', 'unresolved'
+
+
 def prune(private_git, *, keep=2, min_age_days=7, apply=False, now=None):
     """One explicit private Git namespace; no worktree discovery or legacy adoption."""
     if type(keep) is not int or keep < 1 or not math.isfinite(min_age_days) or min_age_days < 1:
@@ -255,6 +315,7 @@ def prune(private_git, *, keep=2, min_age_days=7, apply=False, now=None):
     if not (custody / 'products.lock').is_file():
         raise ValueError('no managed product custody; preserve all jobs')
     with ProductLease(custody, reclaim=True) as lease:
+        require_settlement(custody)
         check = open_directory(namespace)
         try:
             if (purge.identity(os.fstat(check)) != namespace_identity
@@ -290,7 +351,10 @@ def prune(private_git, *, keep=2, min_age_days=7, apply=False, now=None):
                 purge.purge(namespace / name / 'journal.json', authorize=authorize)
                 item['action'] = 'purged'
             except (OSError, ValueError) as error:
-                item.update(action='keep', reason=str(error))
+                action, state = failure_action(namespace / name / 'journal.json')
+                item.update(action=action, journal_state=state, reason=str(error))
+                if action == 'purge-incomplete':
+                    item['recovery'] = 'bytes may be missing; exact manual recovery required'
     return result
 
 
@@ -315,11 +379,12 @@ def main(argv=None):
         result = prune(git_path(Path.cwd(), '--absolute-git-dir'), keep=args.keep,
                        min_age_days=args.min_age_days, apply=args.apply)
     print(json.dumps(result, indent=2))
+    return int(any(item['action'] == 'purge-incomplete' for item in result.get('jobs', [])))
 
 
 if __name__ == '__main__':
     try:
-        main()
+        sys.exit(main())
     except (OSError, ValueError, RuntimeError) as error:
         print(json.dumps({'error': str(error), 'action': 'retain'}), file=sys.stderr)
         sys.exit(1)

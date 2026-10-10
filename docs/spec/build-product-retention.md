@@ -62,6 +62,9 @@ reason; `would-purge` is a proposal, never evidence that space was reclaimed.
 Only `--apply` removes bytes, using the existing descriptor-anchored detached
 purger. It acquires exclusive whole-build custody nonblockingly and checks every
 custody record. Any current build, unfinished owner or unknown record defers.
+The ownership records must match the native SH-835 settlement schema, including
+matching token/id, command, native owner identity, empty executions and the
+settled session/guard. Missing fields or an empty owner set refuse.
 The inventory is revalidated under exclusion; the selected exact journal, inode,
 layout and pin are rechecked inside the permanent job lock before deletion.
 Each apply removes at most one eligible generation, oldest first. Once that job
@@ -75,7 +78,10 @@ The scan is bounded to 1,024 jobs and never searches other worktrees.
 
 Purged journals and locks remain as receipts and do not consume the retained
 intact-generation count. Interrupted purges remain `purging` and stop automatic
-pruning for that namespace; exact operator recovery must be reviewed. No retry
+pruning for that namespace; exact operator recovery must be reviewed. An I/O
+failure after purge starts reports `purge-incomplete`, the durable journal state,
+and an unsuccessful CLI status. It never reports that partially deleted bytes
+were kept. Pre-deletion refusals retain their distinct `keep` result. No retry
 silently expands to the original path. Before deletion the products are still
 in the native quarantine and can be inspected or copied out to a separately
 owned destination while holding the job lock. No restore command overwrites a
@@ -110,6 +116,50 @@ separate `git worktree remove`, reset, or manual deletion. Removing that worktre
 can remove its quarantine. Durable campaign inputs must live outside disposable
 worktree administration. Extending retention across worktree removal requires a
 separate common-store custody design; this draft does not claim that behavior.
+
+## Scheduling assessment and approval scope
+
+There is already a scheduler in `src/daemon/cleanup.rs`: `poll_cleanup` wakes on
+project changes and a bounded poll; `tick` defaults to one due cleanup attempt
+per day, configurable through `cleanup.interval`. It checks project automations
+and `cleanup.auto` before invoking `CleanupService::run_pending`. Failed attempts
+wait for the next cadence. `tick_closures` separately services due durable closure
+requests. `story daemon gc` is a different operation for abandoned temporary
+store runtime directories; it is not a build-cache scheduler.
+
+No new daemon or launch agent is needed. The intended **periodic integration**
+is a separate retention phase of that existing per-project cleanup tick, using
+its cadence, project permission fence and activity reporting. It must discover
+only registered retention namespaces with exact project/private-Git identities,
+apply the same policy as the CLI, and spend at most one generation of deletion
+work per due project attempt. It must preserve and surface incomplete-purge
+receipts and defer active/unknown ownership. It must not infer authority by
+walking every worktree or target directory. This integration is not implemented
+or activated by this PR.
+
+The existing `reclaim_handoff` foreground hook is already a suitable **staging
+trigger**, after its native custody/state/lease checks. Staging does not itself
+schedule a later purge. Replacing the hook with `stage` alone cannot make a
+seven-day periodic policy run, and `cleanup.interval` currently schedules only
+workspace cleanup, not this script.
+
+**Approval scope for this PR is dormant merge plus explicit read-only previews.**
+Activation remains blocked on a lifecycle integration: ordinary worktree cleanup
+can remove its private Git quarantine before seven days and despite a pin.
+Merely plugging the CLI into the daily tick would not fix that. Prefer a separately
+owned repository retention store, with a journaled identity-preserving handoff
+before worktree administration can be removed. Alternatively every ordinary
+worktree-removal path would need to preserve retained/pinned products; that must
+not weaken the existing unconditional Reset contract. Resolve and test this
+choice before approving stage-hook activation or unattended deletion. The
+present implementation does not claim durable pins across those operations.
+
+Normal recovery is **rebuild on demand**, not undo. Before purge the detached
+bytes remain available for explicit inspection/copy; there is no normal automatic
+restore to the current target. Once `--apply` unlinks bytes, neither Reset nor Git
+can recover them. The retained source and locked dependencies can rebuild
+functionality, without guaranteeing historical byte identity. Current campaign
+artifacts, release products, logs and receipts remain outside this mechanism.
 
 ## Validation
 

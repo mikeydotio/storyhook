@@ -1,5 +1,8 @@
 """Focused retention regressions; synthetic products and real file locks only."""
 import fcntl
+import contextlib
+import io
+import copy
 import importlib.util
 import json
 import os
@@ -31,6 +34,15 @@ class Retention(unittest.TestCase):
         self.custody.mkdir(mode=0o700)
         self.lock = self.custody / 'products.lock'
         self.lock.touch(mode=0o600)
+        self.token = '0123456789abcdef0123456789abcdef'
+        self.owner = self.custody / ('build-' + self.token)
+        self.owner.mkdir(mode=0o700)
+        self.owner_record = dict(version=1, id=self.token, token=self.token, state='finished',
+                                 executions=[], command=['fixture'],
+                                 owner={'pid': 42, 'start': 'fixture:1', 'boot': 'fixture'},
+                                 settled_execution={'id': 'fixture', 'session': 43,
+                                                    'guard': 'lease-' + self.token + '.lock'})
+        self.write(self.owner / 'record.json', self.owner_record)
         self.original = self.root / 'current-target'
         self.original.mkdir()
         for name in ('source', 'release', 'frozen-input', 'log', 'receipt'):
@@ -128,7 +140,7 @@ class Retention(unittest.TestCase):
 
     def test_missing_custody_is_not_created_by_apply(self):
         self.make(1); self.make(2); self.make(3)
-        self.lock.unlink(); self.custody.rmdir()
+        self.lock.unlink(); (self.owner / 'record.json').unlink(); self.owner.rmdir(); self.custody.rmdir()
         with self.assertRaisesRegex(ValueError, 'no managed'): self.plan(apply=True)
         self.assertFalse(self.custody.exists())
 
@@ -243,7 +255,7 @@ class Retention(unittest.TestCase):
             changed.append(path.read_bytes())
             return real(path, **kw)
         with patch.object(r.purge, 'purge', side_effect=race): result = self.plan(apply=True)
-        self.assertEqual(self.actions(result)['generation-1'], 'keep')
+        self.assertEqual(self.actions(result)['generation-1'], 'purge-incomplete')
         self.assertEqual(first.read_bytes(), changed[0])
 
     def test_plain_purge_legacy_contract_unchanged(self):
@@ -283,6 +295,56 @@ class Retention(unittest.TestCase):
         (first.parent / 'products/unknown').write_text('preserve')
         self.assertTrue(all(v == 'keep' for v in self.actions(self.plan(apply=True)).values()))
         self.assertEqual((first.parent / 'products/unknown').read_text(), 'preserve')
+
+    def test_incomplete_finished_custody_never_authorizes_deletion(self):
+        first = self.make(1); self.make(2); self.make(3)
+        mutations = [dict(version=1, state='finished')]
+        for field in ('version', 'id', 'token', 'executions', 'command', 'owner', 'settled_execution'):
+            row = copy.deepcopy(self.owner_record); row.pop(field); mutations.append(row)
+        for field, value in (('id', 'different'), ('token', 'different'), ('command', []),
+                             ('command', [5]), ('executions', None), ('owner', []),
+                             ('settled_execution', []), ('version', True)):
+            row = copy.deepcopy(self.owner_record); row[field] = value; mutations.append(row)
+        for group, field, value in (('owner', 'pid', True), ('owner', 'pid', 0),
+                                    ('owner', 'start', ''), ('owner', 'boot', ''),
+                                    ('settled_execution', 'id', ''),
+                                    ('settled_execution', 'guard', 'wrong.lock'),
+                                    ('settled_execution', 'session', '43')):
+            row = copy.deepcopy(self.owner_record); row[group][field] = value; mutations.append(row)
+        for row in mutations:
+            self.write(self.owner / 'record.json', row)
+            with self.subTest(row=row), self.assertRaises((ValueError, RuntimeError)):
+                self.plan(apply=True)
+            self.assertTrue(first.parent.joinpath('products/debug/deps/test-binary').exists())
+
+    def test_no_owner_records_and_invalid_token_defer(self):
+        first = self.make(1); self.make(2); self.make(3)
+        (self.owner / 'record.json').unlink(); self.owner.rmdir()
+        with self.assertRaisesRegex(ValueError, 'no completed managed'): self.plan(apply=True)
+        self.owner = self.custody / 'build-malformed'; self.owner.mkdir(mode=0o700)
+        self.write(self.owner / 'record.json', dict(version=1, state='finished', executions=[]))
+        with self.assertRaisesRegex(ValueError, 'unknown product'): self.plan(apply=True)
+        self.assertTrue(first.parent.joinpath('products').exists())
+
+    def test_partial_io_failure_reports_incomplete_and_unsuccessful_cli(self):
+        first = self.make(1); self.make(2); self.make(3)
+        def partial(fd, dev):
+            os.unlink('debug/deps/test-binary', dir_fd=fd)
+            raise OSError('fixture storage failure after unlink')
+        output = io.StringIO()
+        with patch.object(r.purge, 'remove_contents', side_effect=partial), \
+                patch.object(r, 'git_path', return_value=self.private), \
+                patch.object(r.time, 'time', return_value=NOW), contextlib.redirect_stdout(output):
+            result = r.main(['prune', '--apply'])
+        self.assertEqual(result, 1)
+        report = json.loads(output.getvalue())
+        item = report['jobs'][0]
+        self.assertEqual(item['action'], 'purge-incomplete')
+        self.assertEqual(item['journal_state'], 'purging')
+        self.assertIn('bytes may be missing', item['recovery'])
+        self.assertFalse(first.parent.joinpath('products/debug/deps/test-binary').exists())
+        self.assertEqual(json.loads(first.read_text())['state'], 'purging')
+        self.assertTrue(all(v == 'keep' for v in self.actions(self.plan(apply=True)).values()))
 
     def test_cli_defaults_to_dry_run_without_creating_authority(self):
         repo = self.root / 'repo'; repo.mkdir()
