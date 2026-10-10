@@ -1,0 +1,334 @@
+{
+  "kind": "Retained historical evidence index, not a new gate receipt",
+  "as_of": "2026-10-10",
+  "source_base": "73257ca56328679f34ad554e2d9c204a9639e1ed",
+  "raw_records": "Retained locally; fingerprints identify originals. Private logs and machine metadata intentionally not published.",
+  "merged_prs": [
+    {
+      "pr": 979,
+      "url": "https://github.com/mikeydotio/storyhook/pull/979",
+      "head": "b96fea8c9f63cbe7f3365d304a9f3eb2716e0fe3",
+      "merge": "2995774b248c99a719a08b8b16cad9ba470b2643",
+      "merged_at": "2026-10-08T14:13:36Z",
+      "retained_receipt_sha256": "3a0d94344b696a632283b1666d82459228e0145d069c240e5fd5de2dd086fdc0"
+    },
+    {
+      "pr": 981,
+      "url": "https://github.com/mikeydotio/storyhook/pull/981",
+      "head": "e73315310273315c2cd07db6c7595d5a2fbc3585",
+      "merge": "06a5061c710f8f5281b7f3b3f9f6867982c1d58d",
+      "merged_at": "2026-10-08T21:16:31Z",
+      "retained_receipt_sha256": "f635309b47631a1ddd1191e7306ddd8d99f07f9ef5fe12787d7398ac891fde47"
+    },
+    {
+      "pr": 983,
+      "url": "https://github.com/mikeydotio/storyhook/pull/983",
+      "head": "c390303c3bff2059d7a97e830c2a05ec75fdc97c",
+      "merge": "bc00ef67172720328212f4b30e2f449425abfaae",
+      "merged_at": "2026-10-08T21:16:03Z",
+      "retained_receipt_sha256": "9242201592229dffe16affc198376279d881c933fd1b20fdc0c8a33abd339531"
+    },
+    {
+      "pr": 984,
+      "url": "https://github.com/mikeydotio/storyhook/pull/984",
+      "head": "61526c513b4eac10aedc3a24c5f33111084f550c",
+      "merge": "1303110e8f2e490ae45585f7e2c30192c00ea366",
+      "merged_at": "2026-10-08T23:32:44Z",
+      "retained_receipt_sha256": "c0234b8965cf94cd0a22abde9eea743cf80cf53a0465e362f6fb19ded94c24ee"
+    },
+    {
+      "pr": 985,
+      "url": "https://github.com/mikeydotio/storyhook/pull/985",
+      "head": "ef1f8270f38fdd91b0fd65b0968eea636d04a696",
+      "merge": "3947edbee7285adb1bafde2f6f11719a5b94be82",
+      "merged_at": "2026-10-09T01:26:55Z",
+      "retained_receipt_sha256": "6e030bc47aefd98d73d90d6ded5f39f1555306ffaaa2dc80e27f9b28cea48ab0"
+    },
+    {
+      "pr": 986,
+      "url": "https://github.com/mikeydotio/storyhook/pull/986",
+      "head": "0beb9fbfb323fef766fc23ce480c2bdfd5bebadb",
+      "merge": "e304f8f85915332110ccee9b4da2a3f664524136",
+      "merged_at": "2026-10-08T23:33:47Z",
+      "retained_receipt_sha256": "547fa9ec8b850b5a04fab102ffdab0cc8c995d905f457d7cb1c6e03b86251518"
+    },
+    {
+      "pr": 987,
+      "url": "https://github.com/mikeydotio/storyhook/pull/987",
+      "head": "feec9aa017b2baee59481ea77bff6951f4ece315",
+      "merge": "968ea695d6b407a84e246999f95900c0b8f7827f",
+      "merged_at": "2026-10-09T01:17:32Z",
+      "retained_receipt_sha256": "9e4061c6cf095d994610ebf1f77eb80933e2fb70397febad6594dfc005d151d8"
+    },
+    {
+      "pr": 988,
+      "url": "https://github.com/mikeydotio/storyhook/pull/988",
+      "head": "6555bd885d5b2ecf2cab3b7292a2432d3257f3d3",
+      "merge": "16397f7550526041a96139ff97fe9765a1ed1ced",
+      "merged_at": "2026-10-09T01:18:28Z",
+      "retained_receipt_sha256": "05735a8c0d807b3cde43c87f51f9b1f83f4f970a801a8ad144fbafca39a49e66"
+    },
+    {
+      "pr": 989,
+      "url": "https://github.com/mikeydotio/storyhook/pull/989",
+      "head": "76d8a9da4656628a06c69230559c17a38c0d2824",
+      "merge": "b6e2069fc663999753bc85cc11fa0b2d1d4a3425",
+      "merged_at": "2026-10-09T01:19:42Z",
+      "retained_receipt_sha256": "3715c2c37439ec47545971d501b877e544e6cbb372c3f7a123e003f52a679a92"
+    },
+    {
+      "pr": 990,
+      "url": "https://github.com/mikeydotio/storyhook/pull/990",
+      "head": "682d176516fb38f18da1677f683b8f3d3f365a0f",
+      "merge": "b0cf5b369c1d60cd5d5d60088f9a1cba891ee3c2",
+      "merged_at": "2026-10-09T23:08:36Z",
+      "retained_receipt_sha256": "44e22d49f0af21bad68fe00aee1ff224d347ebe0cea195bf879264059d9825fa"
+    },
+    {
+      "pr": 994,
+      "url": "https://github.com/mikeydotio/storyhook/pull/994",
+      "head": "8f3c0c19aa31af8182c9668f8ded1f0f6ab8add5",
+      "merge": "a5caa5f000545bf164bb795970dfd24ca58af1d7",
+      "merged_at": "2026-10-09T23:09:04Z",
+      "retained_receipt_sha256": "1099f299529c350d79dfac602884282f5ce05b34437d030552144ca099fe86cb"
+    },
+    {
+      "pr": 995,
+      "url": "https://github.com/mikeydotio/storyhook/pull/995",
+      "head": "cf12538b7a697e2d8f093a898913d1a0da573514",
+      "merge": "73257ca56328679f34ad554e2d9c204a9639e1ed",
+      "merged_at": "2026-10-10T14:01:53Z",
+      "retained_receipt_sha256": "1448b2a96376c38f41e37fe2b491f1a169e42f6b26128a82536371dcacfb5e9a"
+    }
+  ],
+  "retained_records": [
+    {
+      "record": "SH-835-detachment-native-a5.json",
+      "sha256": "7dc7f50fc212d693660d7a731f06398330ab50e6ed6632fb3801e5f2cc416dbc",
+      "state": "passed",
+      "head": "ef1f8270f38fdd91b0fd65b0968eea636d04a696",
+      "final_head": "ef1f8270f38fdd91b0fd65b0968eea636d04a696"
+    },
+    {
+      "record": "SH-835-detachment-python-a3.json",
+      "sha256": "4f846643de96a0147a479cbb2866519f596d5428e870b3d89fe3abf4b14bb84d",
+      "state": "passed",
+      "head": "ef1f8270f38fdd91b0fd65b0968eea636d04a696",
+      "final_head": "ef1f8270f38fdd91b0fd65b0968eea636d04a696"
+    },
+    {
+      "record": "SH-871-focused-a15-summary.json",
+      "sha256": "34071492734c418fcd981415009b5dd09fe11a9d775f89780f69670e8f4bee61",
+      "state": "passed",
+      "head": "c390303c3bff2059d7a97e830c2a05ec75fdc97c"
+    },
+    {
+      "record": "PR987-resolution-focused-a1.json",
+      "sha256": "e87e5feec2e8fab11da91e265c1fbe960cfb78494ab31cd60dab39531edb23b4",
+      "state": "passed",
+      "head": "feec9aa017b2baee59481ea77bff6951f4ece315",
+      "final_head": "feec9aa017b2baee59481ea77bff6951f4ece315",
+      "reported_test_results": [
+        {
+          "passed": 13,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 8,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    {
+      "record": "SH-899-focused-a1.json",
+      "sha256": "c9496c59df5df4626c080a02500ba9469ec273af2680a5a54c639c3e03d90f7e",
+      "state": "passed",
+      "head": "0beb9fbfb323fef766fc23ce480c2bdfd5bebadb",
+      "final_head": "0beb9fbfb323fef766fc23ce480c2bdfd5bebadb",
+      "reported_test_results": [
+        {
+          "passed": 8,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    {
+      "record": "SH-900-focused-a2.json",
+      "sha256": "1aaea4cc64be7863b7c03a2da71b445b9cfe26fdd49cce704175bb9f4d384b82",
+      "state": "passed",
+      "head": "6555bd885d5b2ecf2cab3b7292a2432d3257f3d3",
+      "final_head": "6555bd885d5b2ecf2cab3b7292a2432d3257f3d3",
+      "reported_test_results": [
+        {
+          "passed": 12,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    {
+      "record": "SH-901-focused-a4.json",
+      "sha256": "5952d8fca216c4e5fc4b974cd34067360f3a9395133240cb6bd1f1723028ab4b",
+      "state": "passed",
+      "head": "76d8a9da4656628a06c69230559c17a38c0d2824",
+      "final_head": "76d8a9da4656628a06c69230559c17a38c0d2824",
+      "reported_test_results": [
+        {
+          "passed": 9,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    {
+      "record": "release-correctness-native-validation-a1.json",
+      "sha256": "f268a8433e384ba4b3d361eb20f8a50ca29df5c33db32c89ce11cfb2b72897c5",
+      "state": "passed"
+    },
+    {
+      "record": "final-amendment-outcome.json",
+      "sha256": "43a7685e4ca97ad4cfcf14bc7c0770915056be2d183ea5e4705d88fbdb81ffe9",
+      "state": "Final approved investigation complete with failed partial-warm launch; no slots remain"
+    },
+    {
+      "record": "initial-baseline-retained-telemetry-analysis.json",
+      "sha256": "1fb6cd8bf0fe9ddcb05dcfa9342fb9e7cdaa3986bfec4bee7fd9fda019d00154"
+    },
+    {
+      "record": "SH-797-source-path-diagnosis-20261010.json",
+      "sha256": "b467878be56c2dd2bb12484001c90f2186ad5be28947248aa34d22dbba9a29a1"
+    },
+    {
+      "record": "SH-895-current-assessor-and-pilot.json",
+      "sha256": "6e8260125568eb3df0117dcf37460716d10b28d471521aa137d9bf7c8c4d5787"
+    },
+    {
+      "record": "backlog-after-final-amendment.json",
+      "sha256": "56fd2d1b76e59477c4ed4807479de07d7e05795f8926d8a62148b3c47cf3a585"
+    },
+    {
+      "record": "SH-797-representative-local-shim.md",
+      "sha256": "871ae08d5f6ea81a049ef3d064c8904aab61715716142826592a69bf64d9ecfd"
+    },
+    {
+      "record": "inventory.json",
+      "sha256": "10fa40050778f98bdafc568b69b5432f6baaed8ce61214af9825511584adf0e7"
+    },
+    {
+      "record": "replacement-owner-approval.json",
+      "sha256": "510513ddef53f5ffff52c926df9392a4552fbd34c6f17d24252f393c01854245"
+    },
+    {
+      "record": "replacement-slot9-outcome.json",
+      "sha256": "63e87cf8c6ed6caedb8dc354cad703c4d751b622fa02ef46cb1cf65e2b857ea7"
+    },
+    {
+      "record": "replacement-retained-telemetry-analysis.json",
+      "sha256": "7a0d580cb5f5d1fe5da37e09aae4b99cbff5b0e6ade8dfebc426a71f42ad2241"
+    },
+    {
+      "record": "replacement-terminal-native-settlement.json",
+      "sha256": "1e6b1a2ac787ae7dfe1320c04782b2f4c6dbceac0e5ee22f26efb4789839a888"
+    }
+  ],
+  "board": [
+    {
+      "id": "SH-757",
+      "state": "verifying"
+    },
+    {
+      "id": "SH-797",
+      "state": "in-progress"
+    },
+    {
+      "id": "SH-801",
+      "state": "in-progress"
+    },
+    {
+      "id": "SH-835",
+      "state": "verifying"
+    },
+    {
+      "id": "SH-841",
+      "state": "todo"
+    },
+    {
+      "id": "SH-845",
+      "state": "todo"
+    },
+    {
+      "id": "SH-866",
+      "state": "todo"
+    },
+    {
+      "id": "SH-871",
+      "state": "verifying"
+    },
+    {
+      "id": "SH-872",
+      "state": "in-progress"
+    },
+    {
+      "id": "SH-873",
+      "state": "todo"
+    },
+    {
+      "id": "SH-874",
+      "state": "todo"
+    },
+    {
+      "id": "SH-895",
+      "state": "in-progress"
+    },
+    {
+      "id": "SH-896",
+      "state": "todo"
+    },
+    {
+      "id": "SH-897",
+      "state": "todo"
+    },
+    {
+      "id": "SH-898",
+      "state": "verifying"
+    },
+    {
+      "id": "SH-899",
+      "state": "verifying"
+    },
+    {
+      "id": "SH-900",
+      "state": "verifying"
+    },
+    {
+      "id": "SH-901",
+      "state": "verifying"
+    }
+  ],
+  "final_investigation": {
+    "charged_attempts": 9,
+    "accepted_original_cohort_samples": 0,
+    "successful_observer_diagnostics": 1,
+    "remaining_slots": 0,
+    "last_slot_gate_started": true,
+    "full_gate_performance_result": false,
+    "replacement_slot": 9,
+    "replacement_success": false,
+    "replacement_elapsed_seconds": 143.59866020799382,
+    "passed_replacement_legs": [
+      "fmt",
+      "clippy"
+    ],
+    "complete_gate_result": false
+  },
+  "actions_in_this_packet": {
+    "tests_run": false,
+    "story_state_changes": false,
+    "production_enablement": false,
+    "provider_selection": false,
+    "merge": false
+  }
+}
