@@ -89,6 +89,49 @@ fn compiler_adapter_changes_invalidate_compilation_and_test_evidence() {
 }
 
 #[test]
+fn managed_cargo_custody_changes_invalidate_every_leg() {
+    // SH-872: Makefile entries now use whole-Cargo custody. All three
+    // components can change whether and how the detector actually executes.
+    // Exercise real receipt reuse, rather than matching fingerprint source.
+    for input in [
+        "scripts/managed-cargo.sh",
+        "scripts/cargo-managed.py",
+        "scripts/build_products.py",
+    ] {
+        let repo = Repo::new();
+        repo.replace_with_tracked_copy(input, "\n# original custody contract\n");
+        repo.git(&["add", input]);
+        repo.git(&["commit", "-qm", "managed Cargo input"]);
+        let legs = [
+            "fmt",
+            "clippy",
+            "rust-suite",
+            "rust-contracts",
+            "build",
+            "plugin",
+            "e2e",
+        ];
+        for leg in legs {
+            for _ in 0..2 {
+                let result = repo.run_leg(leg, true);
+                assert!(result.status.success(), "{input}: {leg}: {result:?}");
+            }
+            assert_eq!(repo.executions(leg), 1, "unchanged {leg} must reuse");
+        }
+        repo.replace_with_tracked_copy(input, "\n# changed custody contract\n");
+        for leg in legs {
+            let result = repo.run_leg(leg, true);
+            assert!(result.status.success(), "{input}: {leg}: {result:?}");
+            assert_eq!(
+                repo.executions(leg),
+                2,
+                "{leg} reused stale evidence after {input} changed"
+            );
+        }
+    }
+}
+
+#[test]
 fn orchestration_changes_invalidate_every_leg() {
     for input in [
         "scripts/gate-legs.sh",

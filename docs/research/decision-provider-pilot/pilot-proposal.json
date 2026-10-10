@@ -1,0 +1,126 @@
+{
+  "status": "DRAFT; external execution not authorized; offline preparation only",
+  "story": "SH-895",
+  "schema_version": 1,
+  "source_files": [
+    {
+      "path": "fixtures/seed-cases.jsonl",
+      "sha256": "83a0359137d8a12e945953d1bb1f082d8d26bf4b6b9700c02f34ff7a22482be9"
+    },
+    {
+      "path": "fixtures/protocol.json",
+      "sha256": "0b04762f25cf808c73400b63303702525064bad5fe47d0fad8510c5d91325465"
+    },
+    {
+      "path": "fixtures/human-labels.jsonl",
+      "sha256": "3f44e98da59c0928e754e16e49c0ef653b3f085f53ed264d9462fcf6f032d5e6"
+    }
+  ],
+  "request_manifest_sha256": "017463f34ddb3897b1034cbe26a443ed6e09ac038e5e44d98c9c7ae2c68a194a",
+  "models": {
+    "decisions": {
+      "model": "gpt-6-luna",
+      "endpoint": "https://api.openai.com/v1/decisions",
+      "input_usd_per_million": "0.10"
+    },
+    "jev": {
+      "model": "jev-1.13.0",
+      "endpoint": "https://api.typesafe.ai/v1/systemone",
+      "input_usd_per_million": "0.042"
+    }
+  },
+  "model_identity_limit": "Jev uses the published version ID jev-1.13.0. Decisions publishes gpt-6-luna; an immutable snapshot was not established. Record the returned model; stop that arm on any mismatch. No silent alias/version substitution.",
+  "data": "Only synthetic subject_id, task_kind and text, plus frozen rubric/class instructions. No labels, author notes, family/split metadata, local paths, real stories, repository code or logs in request bodies.",
+  "request_order": "Case order from the source packet, Decisions then Jev per case. Serial; 20 cases per provider per use case; descriptive latency only, not a randomized performance comparison.",
+  "cases": {
+    "runtime": 20,
+    "complexity": 20,
+    "families": 20,
+    "variants_per_family": 2,
+    "all_development": true
+  },
+  "maximum_requests": 80,
+  "maximum_per_provider": 40,
+  "attempts_per_pair": 1,
+  "retries": 0,
+  "concurrency": 1,
+  "limits": {
+    "campaign_wall_seconds": 900,
+    "runtime_deadline_seconds": 3,
+    "complexity_deadline_seconds": 10,
+    "input_tokens_per_request": 8000,
+    "prepared_body_bytes": 8000,
+    "response_bytes": 65536,
+    "spend_usd": "1.00"
+  },
+  "price_basis": {
+    "verified_date": "2026-10-09",
+    "decisions_input_usd_per_million": "0.10",
+    "jev_input_usd_per_million": "0.042",
+    "output_charge": "None for these decision endpoints",
+    "maximum_base_estimate_usd": "0.04544",
+    "calculation": "40 * 8000 * (0.10 + 0.042) / 1000000",
+    "sources": [
+      "https://developers.openai.com/api/docs/guides/decisions",
+      "https://docs.typesafe.ai/models"
+    ],
+    "limitations": "Base published rates only; account contract, region, token overhead, taxes or surcharges are not verified. No provider request was made to check them."
+  },
+  "cap_enforcement": {
+    "mock_implemented": "Before each attempt, permanently reserve $0.0125. Never refund failed, timed-out or unknown usage. Refuse before attempt 81, provider attempt 41, or a reservation over $1. Stop provider on authentication refusal, model mismatch or reported token-bound violation. All attempts counted; no automatic retry.",
+    "live_prerequisites": "A separately approved live executor must prove a worst-case all-in request cost <= $0.0125 using an established billed-token bound and applicable price contract BEFORE sending. Byte size is not a tokenizer. Stop if a bound cannot be proven. Persist reservations and request IDs before sending; crash/restart may not reset budget or resend uncertain requests.",
+    "deadline": "Use an absolute monotonic campaign deadline and per-call minimum of remaining campaign time and 3s/10s. Network transport must enforce total connection/read/cancellation deadlines and bounded body streaming. Mock arithmetic does not prove OS cancellation."
+  },
+  "missing_approval_fields": {
+    "approved_accounts": null,
+    "approved_region_and_retention": null,
+    "approved_price_adjustments_and_token_bound": null,
+    "approved_taxonomy_and_prompt_hashes": null,
+    "human_adjudication_receipt": null,
+    "explicit_user_paid_pilot_authorization": null
+  },
+  "scope_limit": "No production integration, provider choice, global setting, story write or native lane. Runtime and complexity groups remain separate. No quality scores from mock replies or provisional labels.",
+  "future_executor": "Not implemented. This packet has no credential loader or live HTTP adapter. Later external execution requires the missing approval fields and a tested bounded live executor; approval alone cannot make this offline script send requests.",
+  "taxonomy_pending": {
+    "runtime_general": "Protocol lists class names without operational definitions, precedence, multi-cause handling, or explicit out-of-domain policy. Non-null runtime labels use the ordinary causal/outcome interpretations stated per case.",
+    "protected_branch_refusal": {
+      "affected_case_ids": [
+        "run-10-1",
+        "run-10-2"
+      ],
+      "resolution_needed": "Define a policy_refusal/held state or explicitly specify a documented mapping into the existing ontology. Preserve a definitive refused outcome independently of label.",
+      "guard_affected_by_label_ambiguity": false
+    },
+    "scope_revision": {
+      "affected_case_ids": [
+        "com-09-1",
+        "com-09-2"
+      ],
+      "resolution_needed": "Freeze whether labels target the submitted snapshot or current scope, and keep version freshness as a separate applicability field.",
+      "guard_affected_by_label_ambiguity": false
+    },
+    "manual_overrides": {
+      "affected_case_ids": [
+        "com-08-1",
+        "com-08-2"
+      ],
+      "resolution_needed": "Distinguish inferred complexity from observed manual selection. Decide sufficiency of the supplied bounded-work description; explicit selection never grants overwrite authority.",
+      "guard_affected_by_label_ambiguity": false
+    },
+    "typed_epics": {
+      "affected_case_ids": [
+        "com-10-1",
+        "com-10-2"
+      ],
+      "resolution_needed": "Define non-executable/inapplicable handling before scoring: exclude epic inputs or add an explicit applicability status/class. Child dispatch must continue to use child complexity.",
+      "guard_affected_by_label_ambiguity": false
+    },
+    "missing_scope_vs_default": "insufficient_evidence denotes inability to assess scope; missing product values default to medium and remain unassessed. These are separate concepts.",
+    "human_work_required": [
+      "Review and freeze taxonomy and target-version semantics before expanding the corpus or scoring.",
+      "Have two humans independently label cases without exposure to author hypotheses; adjudicate disagreements and unresolved applicability afterward.",
+      "Record guard disposition independently of outcome/complexity label and validate preservation using separately authorized execution evidence."
+    ]
+  },
+  "design_approval": "This offline script/test preparation is explicitly authorized. Production integration remains outside scope; no provider selection or live execution is authorized."
+}

@@ -1,0 +1,116 @@
+{
+  "status": "cases_defined_not_executed_no_adapter",
+  "attempts_per_case": 1,
+  "cases": [
+    {
+      "name": "disabled",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "unconfigured",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "HTTP_401",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "HTTP_403",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "HTTP_422",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "HTTP_429",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "HTTP_529",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "HTTP_500",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "disconnect",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "timeout",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "refusal",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "malformed_json",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "truncated_response",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "wrong_question_id",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "duplicate_question_id",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "missing_class",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "duplicate_class",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "nan_probability",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "negative_probability",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "over_one_probability",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "sum_outside_tolerance",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "cancelled",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "late_result",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "manual_override",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "stale_input_revision",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "stale_configuration_generation",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    },
+    {
+      "name": "duplicate_delivery",
+      "expectation": "no story write, no authority grant; abstain/discard or make zero calls when disabled/unconfigured; no retry cascade"
+    }
+  ],
+  "valid_vector": "Each class exactly once; finite [0,1]; absolute sum error <=0.001; normalize only accepted rounding and retain raw vector; stable original class order breaks exact ties.",
+  "probability_rejection": "Invalid/missing vector means abstention; never fabricate probabilities from deterministic baseline."
+}

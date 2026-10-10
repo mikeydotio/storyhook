@@ -417,3 +417,20 @@ fn status_query_failures_are_not_converted_to_invalid_rows() {
         );
     }
 }
+
+#[test]
+fn recovery_status_malformed_observation_preserves_empty_and_invalid_diagnostics() {
+    let f = fixture();
+    let ctx = f
+        .ctx()
+        .clock(storyhook::service::Clock::Fixed("not-a-timestamp".into()));
+    let activity = VerificationActivity::new();
+    assert!(activity.status(&ctx).unwrap().project_recoveries.is_empty());
+    let record = insert_invalid(&f, "invalid-observation", json!({}), true);
+    let status = activity.status(&ctx).unwrap();
+    assert_eq!(status.project_recoveries.len(), 1);
+    let row = &status.project_recoveries[0];
+    assert_invalid(row, &record, "missing field `version`");
+    assert_eq!(row.started_at, None);
+    assert_eq!(row.elapsed_milliseconds, None);
+}

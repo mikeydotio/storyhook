@@ -231,12 +231,16 @@ fn managed_integration_status_reports_original_time_and_isolates_invalid_evidenc
     let proof = proof(&f);
     let record = f.reserve(&proof);
     let ctx = f.ctx();
+    let now = "2026-10-05T00:00:01.250Z";
     let statuses = f
         .store
-        .read(|tx| crate::service::integration_recovery::status_snapshot(tx, f.candidate.project))
+        .read(|tx| {
+            crate::service::integration_recovery::status_snapshot(tx, f.candidate.project, now)
+        })
         .unwrap();
     assert_eq!(statuses.len(), 1);
     assert_eq!(statuses[0].started_at.as_deref(), Some(AT));
+    assert_eq!(statuses[0].elapsed_milliseconds, Some(1_250));
     assert_eq!(
         statuses[0].original_head.as_deref(),
         Some(f.native.head.as_str())
@@ -266,12 +270,15 @@ fn managed_integration_status_reports_original_time_and_isolates_invalid_evidenc
         .unwrap();
     let statuses = f
         .store
-        .read(|tx| crate::service::integration_recovery::status_snapshot(tx, f.candidate.project))
+        .read(|tx| {
+            crate::service::integration_recovery::status_snapshot(tx, f.candidate.project, now)
+        })
         .unwrap();
     assert_eq!(statuses.len(), 2);
     assert!(statuses.iter().any(|s| s.id == record.id
         && s.phase == "reserved"
-        && s.started_at.as_deref() == Some(AT)));
+        && s.started_at.as_deref() == Some(AT)
+        && s.elapsed_milliseconds == Some(1_250)));
     let invalid = statuses.iter().find(|s| s.phase == "invalid").unwrap();
     assert_eq!(invalid.original_head, None);
     assert_eq!(invalid.elapsed_milliseconds, None);
@@ -1494,7 +1501,13 @@ fn managed_completed_owner_retains_cleanup_failure_without_reactivating_effects(
     let residue = before.1.workspace.display().to_string();
     let prior_status = f
         .store
-        .read(|tx| crate::service::integration_recovery::status_snapshot(tx, f.candidate.project))
+        .read(|tx| {
+            crate::service::integration_recovery::status_snapshot(
+                tx,
+                f.candidate.project,
+                &ctx.now(),
+            )
+        })
         .unwrap();
     let later_env = ctx
         .env()
@@ -1522,10 +1535,30 @@ fn managed_completed_owner_retains_cleanup_failure_without_reactivating_effects(
     assert_eq!(after.1.updated_at, before.1.updated_at);
     let later_status = f
         .store
-        .read(|tx| crate::service::integration_recovery::status_snapshot(tx, f.candidate.project))
+        .read(|tx| {
+            crate::service::integration_recovery::status_snapshot(
+                tx,
+                f.candidate.project,
+                &later_ctx.now(),
+            )
+        })
         .unwrap();
     assert_eq!(
         later_status[0].elapsed_milliseconds,
+        prior_status[0].elapsed_milliseconds
+    );
+    let malformed_status = f
+        .store
+        .read(|tx| {
+            crate::service::integration_recovery::status_snapshot(
+                tx,
+                f.candidate.project,
+                "not-a-timestamp",
+            )
+        })
+        .unwrap();
+    assert_eq!(
+        malformed_status[0].elapsed_milliseconds,
         prior_status[0].elapsed_milliseconds
     );
     assert!(after.1.hold.as_deref().unwrap().contains(&residue));
@@ -1594,7 +1627,13 @@ fn retained_branch_diagnostic_cannot_replace_owner_custody_or_claim_landing() {
     );
     let status = f
         .store
-        .read(|tx| crate::service::integration_recovery::status_snapshot(tx, f.candidate.project))
+        .read(|tx| {
+            crate::service::integration_recovery::status_snapshot(
+                tx,
+                f.candidate.project,
+                &ctx.now(),
+            )
+        })
         .unwrap();
     assert_eq!(status[0].retained_branch, Some(observed));
     proof.settle().unwrap();
@@ -1786,10 +1825,11 @@ fn integration_recovery_status_distinguishes_admissions_from_effect_epochs() {
             Ok(())
         })
         .unwrap();
+    let now = ctx.now();
     let status = || {
         f.store
             .read(|tx| {
-                crate::service::integration_recovery::status_snapshot(tx, f.candidate.project)
+                crate::service::integration_recovery::status_snapshot(tx, f.candidate.project, &now)
             })
             .unwrap()
             .remove(0)
@@ -1810,7 +1850,9 @@ fn integration_recovery_status_distinguishes_admissions_from_effect_epochs() {
     assert_eq!(after.started_at, before.started_at);
     let reopened = SqliteStore::open(f.store.path()).unwrap();
     let restarted = reopened
-        .read(|tx| crate::service::integration_recovery::status_snapshot(tx, f.candidate.project))
+        .read(|tx| {
+            crate::service::integration_recovery::status_snapshot(tx, f.candidate.project, &now)
+        })
         .unwrap();
     assert_eq!(restarted[0].retained_submission, after.retained_submission);
     assert_eq!(
@@ -1889,5 +1931,91 @@ fn managed_landing_resource_hold_excludes_only_its_exact_validated_intent() {
         service.landing_permitted(&claim).unwrap(),
         "rolled-back reset left an invented hold"
     );
+    proof.settle().unwrap();
+}
+
+#[test]
+fn managed_integration_status_elapsed_uses_observation_clock() {
+    let f = OwnedFixture::new(true);
+    let proof = proof(&f);
+    let record = f.reserve(&proof);
+    let before = f
+        .store
+        .read(|tx| tx.integration_recoveries(f.candidate.project))
+        .unwrap();
+    let elapsed = [
+        "2026-10-05T00:00:01.250Z",
+        "2026-10-05T00:00:01.250Z",
+        "2026-10-05T01:00:01.250+01:00",
+        "2026-10-05T00:00:02.750Z",
+        "2026-10-04T23:59:59Z",
+    ]
+    .map(|now| {
+        let rows = f
+            .store
+            .read(|tx| {
+                crate::service::integration_recovery::status_snapshot(tx, f.candidate.project, now)
+            })
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.id, record.id);
+        assert_eq!(row.phase, "reserved");
+        assert_eq!(row.started_at.as_deref(), Some(AT));
+        assert_eq!(row.original_head.as_deref(), Some(f.native.head.as_str()));
+        assert_eq!(row.effect_epoch, Some(0));
+        row.elapsed_milliseconds
+    });
+    assert_eq!(
+        elapsed,
+        [Some(1_250), Some(1_250), Some(1_250), Some(2_750), Some(0)]
+    );
+    assert_eq!(
+        f.store
+            .read(|tx| tx.integration_recoveries(f.candidate.project))
+            .unwrap(),
+        before
+    );
+    proof.settle().unwrap();
+}
+
+#[test]
+fn managed_integration_status_malformed_observation_preserves_diagnostics() {
+    let f = OwnedFixture::new(true);
+    let status = || {
+        f.store.read(|tx| {
+            crate::service::integration_recovery::status_snapshot(
+                tx,
+                f.candidate.project,
+                "not-a-timestamp",
+            )
+        })
+    };
+    assert!(status().unwrap().is_empty());
+    let proof = proof(&f);
+    let record = f.reserve(&proof);
+    assert!(matches!(
+        status(),
+        Err(crate::store::StoreError::Corrupt(_))
+    ));
+    f.store
+        .write(|tx| {
+            let mut invalid = record.clone();
+            invalid.revision += 1;
+            invalid.state = serde_json::json!({"version":1,"started_at":"invalid"});
+            assert!(tx.update_integration_recovery(&invalid, record.revision)?);
+            Ok(())
+        })
+        .unwrap();
+    let rows = status().unwrap();
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row.id, record.id);
+    assert_eq!(row.phase, "invalid");
+    assert_eq!(row.started_at, None);
+    assert_eq!(row.elapsed_milliseconds, None);
+    assert_eq!(row.original_head, None);
+    assert_eq!(row.effect_epoch, None);
+    assert!(row.next_action.contains("invalid"));
     proof.settle().unwrap();
 }

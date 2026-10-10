@@ -6,6 +6,11 @@ fn host_resource_admission_contract() {
 }
 
 #[test]
+fn host_admission_native_observation_preserves_custody() {
+    run("test_host_native_observation.py");
+}
+
+#[test]
 fn host_admission_native_process_contract() {
     run("test_host_admission_system.py");
 }

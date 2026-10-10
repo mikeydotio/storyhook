@@ -1,5 +1,12 @@
 # Decision-provider evaluation proposal (SH-895)
 
+The [offline pilot packet](../research/decision-provider-pilot/README.md) contains
+the self-contained mock harness, exact synthetic request previews, a blank human
+worksheet and independent provisional AI labels. Start with its
+[human review guide](../research/decision-provider-pilot/REVIEW.md). It records
+six unresolved cases and the proposed bounded authorization; publication does
+not authorize provider calls, select either provider or complete this spike.
+
 Research date: 2026-10-08. Source baseline: StoryHook v3.0.3, `2995774b`.
 This is a documentation study and proposed experiment, not a measured evaluation
 or an implementation. No provider requests, account setup, credential inspection,
