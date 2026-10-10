@@ -65,6 +65,11 @@ fn host_admission_native_restoration_contract() {
     run("test_host_restoration.py");
 }
 
+#[test]
+fn measurement_helper_boundary_diagnostics_contract() {
+    run("test_helper_boundaries.py");
+}
+
 /// These suites drive their own fixture authorities. A grant inherited from
 /// the production runner that admitted this test binary (SH-869) would make
 /// the client refuse every fixture root, so the bearer capability is removed;

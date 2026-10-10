@@ -16,6 +16,7 @@ import time
 import uuid
 
 from host_admission import native
+from host_admission.diagnostics import boundary
 from host_admission.namespace import directory, open_private
 from host_admission.policy import Refusal
 from host_admission.supervisor import ManagedProcess
@@ -36,7 +37,7 @@ def namespace(cwd):
     return directory(private / "storyhook-build-products-v1", create=True)
 
 
-def write_record(path, value, *, create=False):
+def write_record(path, value, *, create=False, trace=None):
     """Publish an fsynced record; new owners cannot replace an older owner."""
     temporary = path.with_name(".record-" + uuid.uuid4().hex)
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -45,7 +46,7 @@ def write_record(path, value, *, create=False):
             json.dump(value, stream, sort_keys=True)
             stream.write("\n")
             stream.flush()
-            os.fsync(stream.fileno())
+            boundary(trace, "custody_fsync", os.fsync, stream.fileno())
         if create:
             os.link(temporary, path)
             temporary.unlink()
@@ -53,7 +54,7 @@ def write_record(path, value, *, create=False):
             os.replace(temporary, path)
         parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
-            os.fsync(parent)
+            boundary(trace, "custody_directory_fsync", os.fsync, parent)
         finally:
             os.close(parent)
     finally:
@@ -172,14 +173,20 @@ class ProductCustody:
     require explicit recovery; neither age nor an absent process erases them.
     """
 
-    def __init__(self, root, command):
+    def __init__(self, root, command, *, trace=None):
+        self.trace = trace
         token = uuid.uuid4().hex
         self.root = Path(root) / ("build-" + token)
         self.root.mkdir(mode=0o700)
         self.lease = {"id": token, "token": token}
         self.row = dict(version=1, **self.lease, state="reserved", executions=[],
                         command=command, owner=native.identity(os.getpid(), native.boot_identity()))
-        write_record(self.root / "record.json", self.row, create=True)
+        try:
+            write_record(self.root / "record.json", self.row, create=True, trace=self.trace)
+        except BaseException:
+            if self.trace is not None:
+                self.trace.save(self.root / "boundaries.json")
+            raise
 
     def call(self, operation, **arguments):
         if operation == "status":
@@ -220,7 +227,7 @@ class ProductCustody:
             self.row["state"] = "finished"
         else:
             raise Refusal(f"unknown product custody operation: {operation}")
-        write_record(self.root / "record.json", self.row)
+        write_record(self.root / "record.json", self.row, trace=self.trace)
         return True
 
 
