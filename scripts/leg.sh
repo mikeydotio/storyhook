@@ -63,6 +63,10 @@ shift
 
 fingerprint=""
 receipt=""
+. "$script_dir/gate-measurement-context.sh"
+if [ "$gate_measurement" = 1 ]; then
+    reuse=0
+fi
 if [ "$reuse" = 1 ]; then
     case "$label" in
     (*[!a-z0-9-]* | '')

@@ -1219,6 +1219,11 @@ fn dispatch_verifier<S: Store>(
         VerifierAction::GateConfig { .. } => {
             return dispatch_without_store(Invocation::Verifier { action });
         }
+        VerifierAction::MeasureGateClass { .. } => {
+            return Err(AppError::Validation(
+                "gate measurement is a local-only verifier operation".into(),
+            ));
+        }
         VerifierAction::Status => None,
         VerifierAction::Start => Some(
             activity
@@ -2692,7 +2697,7 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
         invocation,
         Invocation::Daemon { .. }
             | Invocation::Verifier {
-                action: VerifierAction::GateConfig { .. }
+                action: VerifierAction::GateConfig { .. } | VerifierAction::MeasureGateClass { .. }
             }
             | Invocation::Web { .. }
             | Invocation::Token { .. }

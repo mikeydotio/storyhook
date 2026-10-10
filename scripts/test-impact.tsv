@@ -153,6 +153,8 @@ gate_evidence_cli	src/output.rs
 gate_evidence_cli	src/service/gate_cost.rs
 gate_leg_reuse	:(glob)**/*
 gate_lock	:(glob)**/*
+gate_measurement	:(glob)plugins/story/**
+gate_measurement	:(glob)scripts/**
 gate_output_reporting	scripts/gate-progress.sh
 gate_tiers	:(glob)**/*
 git_fixture_isolation	:(glob)**/*

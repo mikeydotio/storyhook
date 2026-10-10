@@ -28,6 +28,13 @@ note() {
     printf 'tree-receipt: %s\n' "$1" >&2
 }
 
+_receipt_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 2
+. "$_receipt_script_dir/gate-measurement-context.sh" || exit 2
+if [ "$gate_measurement" = 1 ]; then
+    case "$phase" in preflight | postlude) exit 0 ;; esac
+    die "invalid measurement receipt phase: $phase"
+fi
+
 root="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || die "not inside a git worktree"
 cd "$root" || die "cannot enter $root"

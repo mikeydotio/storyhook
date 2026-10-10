@@ -289,6 +289,25 @@ fn main() {
     // helper owns that work itself, and its exact JSON streams and exit status
     // are part of the skill contract.
     match cli::model::before_store(&invocation) {
+        Some(cli::model::BeforeStore::MeasureGateClass {
+            checkout,
+            commit,
+            output,
+        }) => {
+            use std::os::unix::process::CommandExt;
+            match storyhook::service::gate_measurement::command(checkout, commit, output) {
+                Ok(mut command) => {
+                    let error = command.exec();
+                    fail(
+                        &storyhook::error::AppError::Storage(format!(
+                            "starting verifier measurement: {error}"
+                        )),
+                        json,
+                    );
+                }
+                Err(error) => fail(&error, json),
+            }
+        }
         Some(cli::model::BeforeStore::Plugin { target, args }) => {
             match storyhook::plugin::run_helper(target, args) {
                 Ok(status) if status.success() => return,
