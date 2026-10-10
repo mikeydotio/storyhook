@@ -9,6 +9,7 @@ from pathlib import Path
 import stat
 import subprocess
 import sys
+import uuid
 
 
 def identity(path):
@@ -29,10 +30,11 @@ def enroll(worktree, fresh):
         raise ValueError('enrollment requires Python >=3.11; configure STORYHOOK_PYTHON')
     worktree = Path(worktree)
     with (worktree / '.storyhook.toml').open('rb') as stream:
-        config = tomllib.load(stream).get('build_products')
+        pointer = tomllib.load(stream)
+        config = pointer.get('build_products')
     if not config or config.get('enabled') is not True:
         return ''
-    if set(config) != {'enabled', 'path', 'managed_entry', 'hook', 'timeout_seconds'}:
+    if set(config) - {'retention'} != {'enabled', 'path', 'managed_entry', 'hook', 'timeout_seconds'}:
         raise ValueError('invalid build product contract fields')
     name = config['path']
     if not isinstance(name, str) or name.startswith('.') or Path(name).name != name or not name:
@@ -43,6 +45,16 @@ def enroll(worktree, fresh):
         raise ValueError('foreground purge argv is required')
     if type(config['timeout_seconds']) is not int or not 1 <= config['timeout_seconds'] <= 300:
         raise ValueError('purge timeout must be between 1 and 300 seconds')
+    retention = config.get('retention')
+    if retention is not None:
+        if not isinstance(retention, dict) or set(retention) - {'mode', 'keep', 'min_age_days', 'runner'}:
+            raise ValueError('invalid retention contract fields')
+        if (retention.get('mode', 'dry-run') not in ('dry-run', 'apply')
+                or type(retention.get('keep', 2)) is not int or retention.get('keep', 2) < 1
+                or type(retention.get('min_age_days', 7)) is not int or not 1 <= retention.get('min_age_days', 7) <= 36500
+                or not isinstance(retention.get('runner'), list) or not retention['runner']
+                or not all(isinstance(x, str) and x for x in retention['runner'])):
+            raise ValueError('invalid retention policy or runner')
     target = worktree / name
     if target.exists() or target.is_symlink():
         raise ValueError('pre-existing products have unknown ownership')
@@ -59,6 +71,12 @@ def enroll(worktree, fresh):
         raise ValueError('cleanup lease worktree mismatch')
     value = {'version': 1, 'lease': lease, 'config': config,
              'worktree': identity(worktree), 'private_git': identity(private)}
+    if retention is not None:
+        project_uuid = pointer.get('uuid')
+        if not isinstance(project_uuid, str) or str(uuid.UUID(project_uuid)) != project_uuid:
+            raise ValueError('retention requires a canonical stable project UUID')
+        value['project_uuid'] = project_uuid
+        value['nonce'] = uuid.uuid4().hex
     fd = os.open(private / 'storyhook-products-enrollment-v1.json',
                  os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'w') as stream:
