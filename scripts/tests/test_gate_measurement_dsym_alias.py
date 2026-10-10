@@ -4,7 +4,9 @@ from contextlib import contextmanager, nullcontext
 import errno
 import os
 from pathlib import Path
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -378,6 +380,56 @@ class DsymPolicy(unittest.TestCase):
         with self.assertRaisesRegex(Refusal, 'identity changed'):
             pool.dispose('baseline-0', settled=substitute, lease=nullcontext,
                 remove=lambda _: self.fail('must not delete'))
+
+
+
+class DsymBundle(unittest.TestCase):
+    def test_embedded_bundle_imports_storage_and_accounts_dsym(self):
+        repository = Path(__file__).resolve().parents[2]
+        manifest = re.search(r'const VERIFIER_SCRIPTS: &\[&str\] = &\[(.*?)\];',
+                             (repository / 'build.rs').read_text(), re.DOTALL)
+        self.assertIsNotNone(manifest)
+        names = re.findall(r'"([^"\n]+)"', manifest[1])
+        self.assertTrue(names)
+        with tempfile.TemporaryDirectory(prefix='sh872-dsym-bundle-', dir='/tmp') as temp:
+            root = Path(temp).resolve()
+            bundle = root / 'bundle'
+            bundle.mkdir()
+            for name in names:
+                destination = bundle / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes((repository / 'scripts' / name).read_bytes())
+            program = """
+from pathlib import Path
+import sys
+from types import SimpleNamespace
+bundle = Path.cwd()
+sys.path.insert(0, str(bundle))
+import gate_measurement_storage as storage
+import gate_measurement_dsym as dsym
+assert Path(storage.__file__).parent == bundle
+assert Path(dsym.__file__).parent == bundle
+root = bundle.parent / 'campaign'
+root.mkdir()
+description = storage.reserve_description(root)
+target = Path(description['targets'][0]['path'])
+debug = target / 'debug'
+destination = debug / 'deps' / 'story-0123456789abcdef.dSYM'
+destination.mkdir(parents=True)
+payload = destination / 'symbols'
+payload.write_bytes(b'packed debug symbols' * 1024)
+assert payload.stat().st_blocks > 0
+alias = debug / 'story.dSYM'
+alias.symlink_to('deps/' + destination.name)
+expected = sum(path.lstat().st_blocks * 512 for path in (debug, debug / 'deps', destination, payload, alias))
+result = storage.check_storage(description, disk=lambda _: SimpleNamespace(free=200 * storage.GIB))
+assert result['target_bytes'][str(target)] == expected
+print('bundled dSYM accounting passed')
+"""
+            result = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', program],
+                                    cwd=bundle, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(result.stdout.strip(), 'bundled dSYM accounting passed')
 
 
 if __name__ == '__main__':

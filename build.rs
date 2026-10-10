@@ -230,6 +230,7 @@ const VERIFIER_SCRIPTS: &[&str] = &[
     "gate_measurement_runtime.py",
     "gate_measurement_setup.py",
     "gate_measurement_storage.py",
+    "gate_measurement_dsym.py",
     "measure-gate-class.sh",
     "github-access.sh",
     "host-admission.py",
