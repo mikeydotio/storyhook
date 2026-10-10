@@ -587,7 +587,9 @@ fn sh871_native_assembly_rejects_substituted_final_index_blob_and_mode() {
         );
         let raw_oid: Vec<u8> = expected_oid
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect();
         let before = snapshot(&fixture.source);

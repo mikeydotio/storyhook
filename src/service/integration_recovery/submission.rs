@@ -32,7 +32,7 @@ pub struct SubmissionObservation {
 /// let _: BoundIntegrationProposal = serde_json::from_str("{}").unwrap();
 /// ```
 pub struct BoundIntegrationProposal {
-    pub(super) proposal: IntegrationProposal,
+    pub(super) proposal: Box<IntegrationProposal>,
     pub(super) submission: SubmissionObservation,
     pub(super) deadline: Instant,
     pub(super) cancellation: Cancellation,

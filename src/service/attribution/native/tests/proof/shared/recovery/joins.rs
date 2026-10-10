@@ -197,7 +197,7 @@ fn distinct_faults_share_one_explicit_repair_and_cumulative_budget_after_restart
         }
     ));
     let status = reopened
-        .read(|tx| crate::service::project_recovery::status_snapshot(tx, ctx.project()))
+        .read(|tx| crate::service::project_recovery::status_snapshot(tx, ctx.project(), &ctx.now()))
         .unwrap();
     assert_eq!(status.len(), 2);
     assert!(status.iter().all(|row| row.completed_attempts == 3));

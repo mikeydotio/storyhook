@@ -735,9 +735,7 @@ fn integration_claim_rechecks_cancellation_after_transaction_admission() {
 fn assert_cancelled_inspection_cleanup(
     result: Result<(IntegrationPlan, SubmissionObservation), AppError>,
 ) {
-    let error = result
-        .err()
-        .expect("cancelled native inspection returned a proof receipt");
+    let error = result.expect_err("cancelled native inspection returned a proof receipt");
     assert!(
         error
             .to_string()

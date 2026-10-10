@@ -349,9 +349,12 @@ pub struct HostRecoveryStatus {
     pub next_action: String,
 }
 
+/// Uses the enclosing snapshot's observation time for visible live elapsed rows.
+/// Empty, invalid-only and filtered collections do not require a valid `now`.
 pub(crate) fn status_snapshot(
     tx: &impl ReadOps,
     project: crate::store::ProjectId,
+    now: &str,
 ) -> Result<Vec<HostRecoveryStatus>, StoreError> {
     let mut result = Vec::new();
     let metadata = tx
@@ -425,7 +428,9 @@ pub(crate) fn status_snapshot(
         }
         let started = chrono::DateTime::parse_from_rfc3339(&state.started_at)
             .map_err(|e| StoreError::Corrupt(e.to_string()))?;
-        result.push(HostRecoveryStatus { fault: Some(HostFaultStatus { kind: "native-host-pressure".into(), key: record.fault_key.clone(), sequence: state.fault.sequence }), retained_submissions, id: record.id, phase: if record.active { "waiting-native-restoration" } else { "restored-requires-fresh-gate" }.into(), elapsed_milliseconds: Some((chrono::Utc::now()-started.with_timezone(&chrono::Utc)).num_milliseconds().max(0) as u64), started_at: Some(state.started_at), submissions, pauses_admission: record.active, next_action: if record.active { "Wait for fresh native pressure restoration, completed hysteresis and all affected execution custody; JSON status or a later green sample cannot release this hold." } else { "Each retained subject still needs its own fresh restoration proof and an exact-original-head central gate. Manual stops and independent holds remain authoritative." }.into() });
+        let observed = chrono::DateTime::parse_from_rfc3339(now)
+            .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        result.push(HostRecoveryStatus { fault: Some(HostFaultStatus { kind: "native-host-pressure".into(), key: record.fault_key.clone(), sequence: state.fault.sequence }), retained_submissions, id: record.id, phase: if record.active { "waiting-native-restoration" } else { "restored-requires-fresh-gate" }.into(), elapsed_milliseconds: Some((observed.with_timezone(&chrono::Utc)-started.with_timezone(&chrono::Utc)).num_milliseconds().max(0) as u64), started_at: Some(state.started_at), submissions, pauses_admission: record.active, next_action: if record.active { "Wait for fresh native pressure restoration, completed hysteresis and all affected execution custody; JSON status or a later green sample cannot release this hold." } else { "Each retained subject still needs its own fresh restoration proof and an exact-original-head central gate. Manual stops and independent holds remain authoritative." }.into() });
     }
     Ok(result)
 }

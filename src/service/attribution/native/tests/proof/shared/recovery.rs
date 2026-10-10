@@ -759,7 +759,7 @@ fn matching_shared_submissions_join_one_owner_across_different_candidate_heads()
         .unwrap();
     let status = evidence
         .store
-        .read(|tx| crate::service::project_recovery::status_snapshot(tx, ctx.project()))
+        .read(|tx| crate::service::project_recovery::status_snapshot(tx, ctx.project(), &ctx.now()))
         .unwrap();
     assert_eq!(status.len(), 2);
     assert!(

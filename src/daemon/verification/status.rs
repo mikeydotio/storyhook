@@ -385,11 +385,17 @@ pub(crate) fn snapshot(
             project_recoveries: crate::service::project_recovery::status_snapshot(
                 tx,
                 ctx.project(),
+                &now,
             )?,
-            host_recoveries: crate::service::host_recovery::status_snapshot(tx, ctx.project())?,
+            host_recoveries: crate::service::host_recovery::status_snapshot(
+                tx,
+                ctx.project(),
+                &now,
+            )?,
             integration_recoveries: crate::service::integration_recovery::status_snapshot(
                 tx,
                 ctx.project(),
+                &now,
             )?,
             command_receipt: None,
             last_evidence_at,

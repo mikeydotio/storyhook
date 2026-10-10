@@ -201,7 +201,7 @@ pub enum Inspection {
         reason: String,
     },
     /// Exact deterministic insertion-only proposal in private object custody.
-    Proposed(IntegrationProposal),
+    Proposed(Box<IntegrationProposal>),
 }
 
 /// Inspect exact parents under one bounded deadline. No author index, worktree,
@@ -282,11 +282,11 @@ pub fn inspect(
             })
             .collect(),
     };
-    Ok(Inspection::Proposed(IntegrationProposal {
+    Ok(Inspection::Proposed(Box::new(IntegrationProposal {
         plan,
         files,
         objects,
-    }))
+    })))
 }
 
 #[cfg(test)]

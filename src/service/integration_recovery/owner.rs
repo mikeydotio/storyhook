@@ -228,7 +228,7 @@ impl<'a, S: Store> IntegrationOwnerService<'a, S> {
             proof.check_live().map_err(StoreError::from)?;
             let prefix = crate::service::project_prefix(tx, candidate.project)?;
             let story = StoryNo::parse_id(&prefix, &candidate.story_id)?;
-            for record in tx.integration_recoveries(candidate.project)?.into_iter().filter(|record| record.active && record.story == story) {
+            if let Some(record) = tx.integration_recoveries(candidate.project)?.into_iter().find(|record| record.active && record.story == story) {
                 let state = decode(&record)?;
                 if state.candidate == *candidate && state.attribution.id == attribution && state.component == component && state.plan == *proof.plan() && state.submission == *proof.submission() {
                     proof.check_live().map_err(StoreError::from)?;
@@ -637,9 +637,12 @@ pub struct IntegrationRecoveryStatus {
     pub next_action: String,
 }
 
+/// Uses the enclosing snapshot's `now` only for valid live elapsed endpoints.
+/// Landed rows retain `updated_at`; empty and invalid rows need no observation.
 pub(crate) fn status_snapshot(
     tx: &impl ReadOps,
     project: crate::store::ProjectId,
+    now: &str,
 ) -> Result<Vec<IntegrationRecoveryStatus>, StoreError> {
     let metadata = tx
         .project(project)?
@@ -651,7 +654,7 @@ pub(crate) fn status_snapshot(
         let state = match decode(&record) {
             Ok(state) => state,
             Err(error) => {
-                result.push(IntegrationRecoveryStatus { retained_submission: None, id: record.id, story: record.story.to_id(&prefix), phase: "invalid".into(), started_at: None, elapsed_milliseconds: None, original_head: None, assembled_tree: None, effect_epoch: None, retained_branch: None, next_action: format!("Retained integration ownership is invalid; reconcile it without replaying effects: {error}") });
+                result.push(IntegrationRecoveryStatus { retained_submission: None, id: record.id, story: record.story.to_id(prefix), phase: "invalid".into(), started_at: None, elapsed_milliseconds: None, original_head: None, assembled_tree: None, effect_epoch: None, retained_branch: None, next_action: format!("Retained integration ownership is invalid; reconcile it without replaying effects: {error}") });
                 continue;
             }
         };
@@ -712,7 +715,9 @@ pub(crate) fn status_snapshot(
                 .map_err(|e| StoreError::Corrupt(e.to_string()))?
                 .with_timezone(&chrono::Utc)
         } else {
-            chrono::Utc::now()
+            chrono::DateTime::parse_from_rfc3339(now)
+                .map_err(|e| StoreError::Corrupt(e.to_string()))?
+                .with_timezone(&chrono::Utc)
         };
         result.push(IntegrationRecoveryStatus {
             retained_submission: Some(

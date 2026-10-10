@@ -2,8 +2,6 @@ use std::env;
 use std::process;
 
 use storyhook::cli::{self, Invocation};
-#[cfg(test)]
-use storyhook::cli::{DaemonAction, WebAction};
 use storyhook::invoke::{HttpInvoker, InvokeRequest, Invoker};
 use storyhook::output::{self, Response};
 
@@ -752,34 +750,6 @@ fn read_stdin() -> Result<String, storyhook::error::AppError> {
         .read_to_string(&mut buffer)
         .map_err(|e| storyhook::error::AppError::Storage(format!("failed to read stdin: {e}")))?;
     Ok(buffer)
-}
-
-/// The port a foreground `--serve` was asked to bind, if this invocation is one.
-///
-/// `Some(None)` means "serve, on whatever port the environment prefers";
-/// `Some(Some(port))` names one. Both spellings land here so that there is
-/// exactly one place in the program where the daemon is started in the
-/// foreground.
-#[cfg(test)]
-fn foreground_serve_port(invocation: &Invocation) -> Option<Option<u16>> {
-    match cli::model::before_environment(invocation) {
-        Some(cli::model::BeforeEnvironment::Serve { port, .. }) => Some(port),
-        _ => None,
-    }
-}
-
-/// The `--owner` flag `daemon --serve` was invoked with, or `None` when
-/// absent — including every `story web --serve` invocation, which carries no
-/// such flag (SH-784). `None` resolves to
-/// [`storyhook::daemon::lifecycle::ForkReason::Manual`] inside `run`: nothing
-/// internal ever calls `web --serve` with `--owner`, so reaching this alias
-/// at all already means a human typed the command by hand.
-#[cfg(test)]
-fn foreground_serve_owner(invocation: &Invocation) -> Option<&str> {
-    match cli::model::before_environment(invocation) {
-        Some(cli::model::BeforeEnvironment::Serve { owner, .. }) => owner,
-        _ => None,
-    }
 }
 
 #[cfg(test)]
