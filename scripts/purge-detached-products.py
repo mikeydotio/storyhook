@@ -5,12 +5,19 @@ The sole argument is a detached journal, NEVER an original product directory.
 No directory scanning, age inference, orphan inference, or live-cache sweeping.
 """
 import fcntl
+import importlib.util
 import json
 import os
 from pathlib import Path
 import stat
 import sys
 import uuid
+
+# Keep the existing importlib-based recovery/test entry independent of sys.path.
+_common_spec = importlib.util.spec_from_file_location(
+    'retention_common', Path(__file__).with_name('retention_common.py'))
+common = importlib.util.module_from_spec(_common_spec)
+_common_spec.loader.exec_module(common)
 
 
 def identity(info):
@@ -40,7 +47,7 @@ def remove_contents(fd, device):
 
 def purge(journal, *, authorize=None):
     path = Path(journal)
-    if path.name != 'journal.json' or path.parent.parent.name != 'storyhook-detached-products-v1':
+    if not common.journal_path(path) and (path.name != 'journal.json' or path.parent.parent.name != 'storyhook-detached-products-v1'):
         raise ValueError('not a detached product journal')
     # Walk every ancestor without following links, then retain the actual job
     # inode throughout deletion. Reset may rename/remove these names meanwhile.
@@ -65,9 +72,9 @@ def purge(journal, *, authorize=None):
                 if not stat.S_ISREG(record_info.st_mode) or record_info.st_nlink != 1 or record_info.st_uid != os.geteuid():
                     raise ValueError('unsafe detached journal')
                 record = json.load(stream)
-            if record.get('version') != 1 or record.get('directory') != identity(info):
+            if record.get('version') != (2 if common.journal_path(path) else 1) or record.get('directory') != identity(info):
                 raise ValueError('detached directory identity mismatch')
-            if 'retention' in record and authorize is None:
+            if ('retention' in record or common.journal_path(path)) and authorize is None:
                 raise ValueError('retention-enrolled products require the retention policy')
             if record.get('state') not in ('prepared', 'detached', 'purging', 'purged'):
                 raise ValueError('unknown detached journal state')

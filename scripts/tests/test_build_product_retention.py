@@ -346,6 +346,15 @@ class Retention(unittest.TestCase):
         self.assertEqual(json.loads(first.read_text())['state'], 'purging')
         self.assertTrue(all(v == 'keep' for v in self.actions(self.plan(apply=True)).values()))
 
+    def test_purger_importlib_entry_resolves_its_sibling_without_sys_path_changes(self):
+        code = ("import importlib.util; "
+                "s=importlib.util.spec_from_file_location('isolated_purger'," +
+                repr(str(ROOT / 'scripts/purge-detached-products.py')) +
+                "); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)")
+        result = subprocess.run([sys.executable, '-I', '-B', '-c', code], cwd=self.root,
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_cli_defaults_to_dry_run_without_creating_authority(self):
         repo = self.root / 'repo'; repo.mkdir()
         subprocess.run(['git', 'init', '-q', str(repo)], check=True)
@@ -353,6 +362,253 @@ class Retention(unittest.TestCase):
         result = subprocess.run(command, cwd=repo, capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout)['mode'], 'dry-run')
         self.assertFalse((repo / '.git' / r.NAMESPACE).exists())
+
+
+
+
+
+class CommonRetention(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='story-common-retention-')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.common = self.root / 'common-git'
+        self.common.mkdir()
+        self.uuid = '01234567-89ab-cdef-0123-456789abcdef'
+        self.other_uuid = '11234567-89ab-cdef-0123-456789abcdef'
+        self.common_id = r.purge.identity(self.common.stat())
+        self.namespace = self.register_project(self.uuid)
+        self.token = '0123456789abcdef0123456789abcdef'
+        self.owner = dict(version=1, id=self.token, token=self.token, state='finished', executions=[],
+                          command=['fixture'], owner=dict(pid=42,start='fixture:1',boot='fixture'),
+                          settled_execution=dict(id='fixture',session=43,guard='lease-'+self.token+'.lock'))
+        self.original = self.root / 'original'
+        self.original.mkdir()
+        (self.original / 'evidence').write_text('preserve')
+
+    def write(self, path, value):
+        path.write_text(json.dumps(value)); path.chmod(0o600)
+
+    def register_project(self, uuid):
+        root = self.common / r.common.ROOT
+        root.mkdir(mode=0o700, exist_ok=True)
+        project = root / r.common.project_name(uuid)
+        project.mkdir(mode=0o700)
+        (project / 'retention.lock').touch(mode=0o600)
+        self.write(project / 'namespace.json', dict(version=2, project_uuid=uuid,
+                   common_git=dict(path=str(self.common),identity=self.common_id),
+                   directory=r.purge.identity(project.stat())))
+        return project
+
+    def make(self, generation, *, uuid=None, nonce=None, age=10):
+        uuid = uuid or self.uuid
+        project = self.common / r.common.ROOT / r.common.project_name(uuid)
+        nonce = nonce or f'{generation:032x}'
+        source = project / ('source-' + nonce)
+        lease = dict(version=1,project_slug='fixture',story_id='SH-1',repository_path=str(self.root),
+                     worktree_path=str(self.original),branch='fixture',tmux=dict(socket_path=str(self.root/'tmux.sock')))
+        if not source.exists():
+            source.mkdir(mode=0o700)
+            self.write(source / 'source.json', dict(version=2,project_uuid=uuid,nonce=nonce,
+                 directory=r.purge.identity(source.stat()),private_git=dict(path=str(self.root/'removed-private'),
+                 identity=dict(dev=1,ino=2)),worktree=dict(dev=1,ino=3),lease=lease,
+                 config=dict(enabled=True,path='products',managed_entry='scripts/managed-cargo.sh',hook=['fixture'],
+                 timeout_seconds=120,retention=dict(mode='dry-run',keep=2,min_age_days=7,runner=['fixture']))))
+        job = source / ('generation-' + str(generation)); job.mkdir(mode=0o700)
+        product = job / 'products'; (product / 'debug/deps').mkdir(parents=True)
+        (product / 'debug/deps/fixture').write_text('reproducible')
+        row = dict(version=2,generation=generation,state='detached',lease=lease,
+                   directory=r.purge.identity(job.stat()),product=r.purge.identity(product.stat()),
+                   retained=dict(namespace=json.loads((project/'namespace.json').read_text()),
+                                 source=json.loads((source/'source.json').read_text()),custody=[self.owner]),
+                   retention=dict(version=1,policy=r.POLICY,pinned=False,staged_at=NOW-age*r.DAY))
+        journal = job / 'journal.json'; self.write(journal,row)
+        r.stage(journal)
+        return journal
+
+    def plan(self, **kwargs):
+        return r.common.prune(r._api(),self.common,self.uuid,self.common_id,now=NOW,**kwargs)
+
+    def all_keep(self, result):
+        return all(item['action'] == 'keep' for item in result['jobs'])
+
+    def edit(self, journal, **changes):
+        row = json.loads(journal.read_text());row.update(changes);self.write(journal,row)
+
+    def test_project_pool_keeps_two_across_sources_without_reopening_private_git(self):
+        jobs = [self.make(n) for n in range(1,5)]
+        result = self.plan(apply=True)
+        self.assertEqual([j['action'] for j in result['jobs']], ['purged','keep','keep','keep'])
+        self.assertTrue(all(j.exists() for j in jobs))
+        self.assertEqual((self.original/'evidence').read_text(),'preserve')
+        self.assertFalse((self.root/'removed-private').exists())
+        self.plan(apply=True)
+        self.assertFalse(jobs[1].parent.joinpath('products').exists())
+        self.assertTrue(all(j.parent.joinpath('products').exists() for j in jobs[2:]))
+
+    def test_shared_git_projects_are_isolated_even_with_same_generations(self):
+        other = self.register_project(self.other_uuid)
+        theirs = [self.make(n,uuid=self.other_uuid) for n in range(1,4)]
+        ours = [self.make(n) for n in range(1,4)]
+        before = {p:p.read_bytes() for p in other.rglob('*') if p.is_file()}
+        self.plan(apply=True)
+        self.assertEqual(before,{p:p.read_bytes() for p in other.rglob('*') if p.is_file()})
+        self.assertFalse(ours[0].parent.joinpath('products').exists())
+        self.assertTrue(all(j.parent.joinpath('products').exists() for j in theirs))
+
+    def test_dry_run_changes_no_bytes_and_future_and_young_are_kept(self):
+        first=self.make(1,age=-1);self.make(2,age=1);self.make(3)
+        before={p:p.read_bytes() for p in self.common.rglob('*') if p.is_file()}
+        self.assertTrue(self.all_keep(self.plan(keep=1)))
+        self.assertEqual(before,{p:p.read_bytes() for p in self.common.rglob('*') if p.is_file()})
+
+    def test_pin_persists_across_stage_and_native_source_disappearance(self):
+        first=self.make(1);self.make(2);self.make(3)
+        r.pin(first,True);before=first.read_bytes();r.stage(first)
+        self.assertEqual(first.read_bytes(),before)
+        self.assertTrue(self.all_keep(self.plan(apply=True)))
+        with self.assertRaisesRegex(ValueError,'retention policy'): r.purge.purge(first)
+        r.pin(first,False);self.plan(apply=True)
+        self.assertFalse(first.parent.joinpath('products').exists())
+
+    def test_pin_after_selection_wins_and_pin_during_purge_refuses(self):
+        first=self.make(1);self.make(2);self.make(3)
+        real=r.purge.purge
+        def race(path,**kw):
+            r.pin(path,True)
+            return real(path,**kw)
+        with patch.object(r.purge,'purge',side_effect=race):
+            self.assertTrue(self.all_keep(self.plan(apply=True)))
+        r.pin(first,False)
+        remove=r.purge.remove_contents
+        def overlap(fd,dev):
+            with self.assertRaises(BlockingIOError): r.pin(first,True)
+            return remove(fd,dev)
+        with patch.object(r.purge,'remove_contents',side_effect=overlap):self.plan(apply=True)
+
+    def test_namespace_released_during_purge_but_second_pruner_defers(self):
+        first=self.make(1);self.make(2);self.make(3)
+        real=r.purge.remove_contents
+        observed=[]
+        def overlap(fd,dev):
+            lock=r.common.NamespaceLock(r._api(),self.namespace);lock.close()
+            second=self.plan(apply=True)
+            self.assertEqual(second['action'],'retain');observed.append(True)
+            (self.original/'new-build').write_text('new')
+            return real(fd,dev)
+        with patch.object(r.purge,'remove_contents',side_effect=overlap):self.plan(apply=True)
+        self.assertTrue(observed)
+        self.assertEqual((self.original/'new-build').read_text(),'new')
+
+    def test_native_namespace_publication_lock_defers_inventory(self):
+        first=self.make(1);self.make(2);self.make(3)
+        lock=r.common.NamespaceLock(r._api(),self.namespace)
+        try:
+            with self.assertRaises(BlockingIOError):self.plan(apply=True)
+        finally:lock.close()
+        self.assertTrue(first.parent.joinpath('products').exists())
+
+    def test_incomplete_publication_and_unknown_jobs_block_whole_pool(self):
+        first=self.make(1);self.make(2);self.make(3)
+        initial=first.read_bytes()
+        for state in ('prepared','purging','unknown'):
+            self.edit(first,state=state)
+            self.assertEqual(self.plan(apply=True)['action'],'retain')
+            self.assertTrue(first.parent.joinpath('products').exists())
+        first.write_bytes(initial)
+        source=first.parent.parent
+        unknown=source/'generation-99';unknown.mkdir(mode=0o700)
+        self.assertEqual(self.plan(apply=True)['action'],'retain')
+
+    def test_copied_settlement_must_be_complete_and_enrollment_cannot_be_adopted(self):
+        first=self.make(1);self.make(2);self.make(3)
+        row=json.loads(first.read_text())
+        for proof in ({},dict(namespace=row['retained']['namespace'],source=row['retained']['source'],custody=[]),
+                      dict(namespace=row['retained']['namespace'],source=row['retained']['source'],custody=[dict(version=1,state='finished')])):
+            self.edit(first,retained=proof)
+            self.assertEqual(self.plan(apply=True)['action'],'retain')
+            with self.assertRaises(ValueError):r.stage(first)
+        self.assertTrue(first.parent.joinpath('products').exists())
+
+    def test_incomplete_native_enrollment_schema_preserves_entire_pool(self):
+        first=self.make(1);self.make(2);self.make(3)
+        manifest=first.parent.parent/'source.json'
+        original=json.loads(manifest.read_text());journal=json.loads(first.read_text())
+        mutations=[]
+        for group in ('config','lease'):
+            for field in original[group]:
+                row=copy.deepcopy(original);row[group].pop(field);mutations.append(row)
+        for group,field,value in (('config','timeout_seconds',True),('config','hook',[]),
+                                  ('config','retention',{}),('lease','tmux',{})):
+            row=copy.deepcopy(original);row[group][field]=value;mutations.append(row)
+        for row in mutations:
+            self.write(manifest,row)
+            changed=copy.deepcopy(journal);changed['retained']['source']=row;changed['lease']=row['lease']
+            self.write(first,changed)
+            with self.subTest(row=row):self.assertEqual(self.plan(apply=True)['action'],'retain')
+            self.assertTrue(first.parent.joinpath('products').exists())
+
+    def test_source_nonce_or_project_manifest_substitution_refuses(self):
+        first=self.make(1);self.make(2);self.make(3)
+        manifest=first.parent.parent/'source.json'
+        original=manifest.read_bytes();row=json.loads(original);row['nonce']='f'*32;self.write(manifest,row)
+        self.assertEqual(self.plan(apply=True)['action'],'retain')
+        manifest.write_bytes(original)
+        ns=self.namespace/'namespace.json';row=json.loads(ns.read_text());row['project_uuid']=self.other_uuid;self.write(ns,row)
+        with self.assertRaises(ValueError):self.plan(apply=True)
+        self.assertTrue(first.parent.joinpath('products').exists())
+
+    def test_changed_common_identity_and_symlink_are_never_followed(self):
+        first=self.make(1)
+        with self.assertRaises(ValueError):r.common.prune(r._api(),self.common,self.uuid,dict(dev=1,ino=1),apply=True)
+        saved=self.root/'saved';self.common.rename(saved);self.common.symlink_to(saved,target_is_directory=True)
+        with self.assertRaises(OSError):self.plan(apply=True)
+        self.assertTrue((saved/r.common.ROOT/self.namespace.name/first.relative_to(self.namespace)).exists())
+
+    def test_partial_purge_stops_future_automatic_recovery(self):
+        first=self.make(1);self.make(2);self.make(3)
+        def partial(fd,dev):
+            os.unlink('debug/deps/fixture',dir_fd=fd);raise OSError('fixture storage fault')
+        with patch.object(r.purge,'remove_contents',side_effect=partial):result=self.plan(apply=True)
+        self.assertEqual(result['jobs'][0]['action'],'purge-incomplete')
+        self.assertEqual(json.loads(first.read_text())['state'],'purging')
+        self.assertEqual(self.plan(apply=True)['action'],'retain')
+
+    def test_unknown_release_layout_at_final_authorization_preserves_products(self):
+        first=self.make(1);self.make(2);self.make(3)
+        (first.parent/'products/release').mkdir()
+        self.assertTrue(self.all_keep(self.plan(apply=True)))
+        self.assertEqual(json.loads(first.read_text())['state'],'detached')
+
+    def test_dispatch_retention_enrollment_requires_fresh_lane_and_stable_uuid(self):
+        spec=importlib.util.spec_from_file_location('enrollment',ROOT/'plugins/story/lib/product_enrollment.py')
+        enrollment=importlib.util.module_from_spec(spec);spec.loader.exec_module(enrollment)
+        cfg=('uuid = '+json.dumps(self.uuid)+'\n[build_products]\nenabled = true\npath = "products"\n'
+             'managed_entry = "scripts/managed-cargo.sh"\nhook = ["fixture"]\ntimeout_seconds = 120\n'
+             '[build_products.retention]\nrunner = ["fixture"]\n')
+        config=self.original/'.storyhook.toml';config.write_text(cfg)
+        private=self.root/'private';private.mkdir()
+        self.write(private/'storyhook-cleanup-lease-v1.json',dict(version=1,worktree_path=str(self.original)))
+        result=type('Result',(),{'stdout':str(private)})()
+        with patch.object(enrollment.subprocess,'run',return_value=result):
+            self.assertEqual(enrollment.enroll(self.original,False),'')
+            self.assertFalse((private/'storyhook-products-enrollment-v1.json').exists())
+            config.write_text(cfg.replace(self.uuid,'unknown'))
+            with self.assertRaises(ValueError):enrollment.enroll(self.original,True)
+            config.write_text(cfg)
+            enrollment.enroll(self.original,True)
+            row=json.loads((private/'storyhook-products-enrollment-v1.json').read_text())
+            self.assertEqual(row['project_uuid'],self.uuid)
+            self.assertRegex(row['nonce'],r'^[0-9a-f]{32}$')
+            with self.assertRaises(FileExistsError):enrollment.enroll(self.original,True)
+
+    def test_missing_namespace_cli_default_is_read_only(self):
+        command=[sys.executable,'-B',str(ROOT/'scripts/retain-detached-products.py'),'prune-common',
+                 '--project-uuid',self.other_uuid,'--common-git',str(self.common),
+                 '--common-dev',str(self.common_id['dev']),'--common-ino',str(self.common_id['ino'])]
+        result=subprocess.run(command,capture_output=True,text=True,check=True)
+        self.assertEqual(json.loads(result.stdout)['mode'],'dry-run')
+        self.assertFalse((self.common/r.common.ROOT/r.common.project_name(self.other_uuid)).exists())
 
 
 if __name__ == '__main__':

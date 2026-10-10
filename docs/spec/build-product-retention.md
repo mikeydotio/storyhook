@@ -1,97 +1,150 @@
 # Retention for detached StoryHook debug products
 
-StoryHook v3.0.3. This is an opt-in draft; no project setting, scheduler, live
-cache, provider enrollment, automation or verifier setting changes with it.
+StoryHook v3.0.3. This opt-in implementation changes no project configuration,
+installed binary, automation setting or verifier setting. Absent configuration
+is inactive. An opted-in retention policy defaults to dry-run.
 
-## Boundary
+## Ownership and worktree removal
 
-SH-835 already proves fresh managed dispatch enrollment, exact Verifying
-submission generation, project permission, cleanup lease, Git-private identity,
-and exclusive settled build custody before atomically detaching products. Its
-existing foreground hook immediately purges the detached inode. The retention
-hook instead leaves that quarantine intact and records a retention enrollment.
-Neither hook follows the original product path. Recreated current products are
-outside its authority.
+SH-835 already proves fresh managed dispatch enrollment, the exact Verifying
+submission generation, project permission, cleanup lease, private Git identity,
+and exclusive settled build custody before atomically detaching products.
+Retention adds a fresh enrollment nonce and stable project UUID. The UUID must
+match both the store project and the checkout pointer. Old or reused worktrees
+are not adopted.
 
-This policy covers only a dedicated StoryHook **debug-only** Cargo target from
-that existing protocol. It refuses release/custom-target layouts, unknown root
-outputs, debug fixtures, uncertain ownership, unfinished detachment and legacy
-jobs without explicit retention enrollment. It cannot infer safety from age,
-process absence, directory names, or a successful build. It does not inspect or
-adopt shared task targets, global Cargo caches, retired verifier directories,
-source, release installations, logs, campaign inputs, backups or user data.
-The debug layout allowlist is an additional check, not evidence of ownership.
-The native fresh-enrollment and cooperating managed-entry contract remain the
-ownership proof. A target carrying any non-reproducible evidence is ineligible.
+With `[build_products.retention]`, native detachment renames directly into:
 
-Do not enroll campaign inputs. Pin an enrolled job **before** intentionally using
-one of its artifacts as an input. Pins protect the entire detached generation;
-they are never cleared by stage retries. External file references cannot be
-inferred by the pruner. Current frozen campaigns and legacy caches require their
-existing separate ownership and approval procedures.
-
-## Retention and commands
-
-All commands use the repository's selected Python runtime:
-
-```sh
-# Read-only report for the current checkout's private Git namespace.
-bash scripts/retain-detached-products.sh prune
-
-# A previously authorized native detachment hook supplies this exact journal.
-# This step only preserves/enrolls the existing quarantine; it frees no space.
-bash scripts/retain-detached-products.sh stage /absolute/private-git/storyhook-detached-products-v1/generation-123/journal.json
-
-bash scripts/retain-detached-products.sh pin /absolute/private-git/storyhook-detached-products-v1/generation-123/journal.json
-# Unpin is a separate explicit action, after the artifact is no longer needed.
-bash scripts/retain-detached-products.sh unpin /absolute/private-git/storyhook-detached-products-v1/generation-123/journal.json
-
-# Destructive, opt-in application of the freshly recomputed policy.
-# Do not enable this in an unattended job until its scope/policy is reviewed.
-bash scripts/retain-detached-products.sh prune --keep 2 --min-age-days 7 --apply
+```
+<common-git>/storyhook-retained-products-v2/
+  project-<SHA256(stable-project-UUID)>/
+    namespace.json
+    retention.lock
+    source-<fresh-enrollment-nonce>/
+      source.json
+      generation-<submission-sequence>/
+        journal.json
+        purge.lock
+        products/
 ```
 
-The default keeps the newest two intact generation numbers in this **one**
-private Git namespace, all pins, and everything staged less than seven days ago.
-Pinned older generations are retained in addition to that count. Future clocks
-retain products. There is no directory-mtime inference, size/pressure override,
-or automatic tightening of retention when a disk fills. Arguments must retain
-at least one generation and one day. Reports name every job and its action and
-reason; `would-purge` is a proposal, never evidence that space was reclaimed.
+The common-Git namespace survives ordinary linked-worktree removal and Reset.
+It does not survive deletion of the repository itself and is not a backup.
+The namespace records common-Git and project-directory identities. Each source
+records its private-Git/worktree identities, nonce, complete cleanup lease and
+configuration. Each journal copies those records and every complete native
+whole-build settlement receipt. No later prune needs the disposable source
+worktree or its private Git directory to exist. Shared Git administration keeps
+each project's authority and retention count separate.
 
-Only `--apply` removes bytes, using the existing descriptor-anchored detached
-purger. It acquires exclusive whole-build custody nonblockingly and checks every
-custody record. Any current build, unfinished owner or unknown record defers.
-The ownership records must match the native SH-835 settlement schema, including
-matching token/id, command, native owner identity, empty executions and the
-settled session/guard. Missing fields or an empty owner set refuse.
-The inventory is revalidated under exclusion; the selected exact journal, inode,
-layout and pin are rechecked inside the permanent job lock before deletion.
-Each apply removes at most one eligible generation, oldest first. Once that job
-lock protects the decision, build exclusion is released before recursive I/O so
-a returned story can rebuild its separate current target. Another pruner sees
-the busy job and defers. Further generations require a fresh invocation. Pin and
-stage writes use that same lock. The older direct purge command refuses
-retention-enrolled jobs, so it cannot accidentally bypass their pins or policy.
-A held job lock, malformed entry, or partial inventory retains the whole set.
-The scan is bounded to 1,024 jobs and never searches other worktrees.
+The same-filesystem rename remains inside the existing workspace, product and
+store-generation guards. Reset reserved before the rename prevents detachment.
+Reset after the rename may remove the worktree while its retained products,
+pins and receipts survive in common Git. Rebuilt original products stay outside
+prune authority. Reset's existing removal and patience guarantees are unchanged.
 
-Purged journals and locks remain as receipts and do not consume the retained
-intact-generation count. Interrupted purges remain `purging` and stop automatic
-pruning for that namespace; exact operator recovery must be reviewed. An I/O
-failure after purge starts reports `purge-incomplete`, the durable journal state,
-and an unsuccessful CLI status. It never reports that partially deleted bytes
-were kept. Pre-deletion refusals retain their distinct `keep` result. No retry
-silently expands to the original path. Before deletion the products are still
-in the native quarantine and can be inspected or copied out to a separately
-owned destination while holding the job lock. No restore command overwrites a
-current target. Deleted products require a rebuild from retained source and
-locked dependencies; byte-identical historical reconstruction is not promised.
+A permanent project namespace lock serializes native publication with inventory
+and selection. It is acquired nonblockingly before the store write, and released
+before foreground project code. A fully published `detached` journal is eligible;
+prepared, unknown, malformed and interrupted entries stop that project's pruning.
+Incomplete manifest publication fails closed and requires exact manual review.
+No retention operation restores products over the original target.
 
-## Future activation, deliberately not performed here
+## Eligible products and policy
 
-After review, an operator may choose this foreground hook for a **new**, dedicated
-debug-only managed worktree target:
+This policy covers only a dedicated, reproducible StoryHook **debug-only** Cargo
+target from the managed protocol. It refuses release/custom-target layouts,
+unknown root outputs, debug fixtures, uncertain ownership and legacy jobs.
+The debug layout allowlist is an additional check, not ownership evidence.
+Never put source, evidence or non-reproducible inputs in an enrolled target.
+
+It does not adopt task targets, global Cargo caches, old verifier directories,
+current targets, release installations, logs, frozen campaign inputs, backups
+or user data. Process absence, age, names and successful builds cannot establish
+ownership. Current frozen campaigns and legacy caches retain their separate
+ownership and approval procedures.
+
+**Proposed activation policy:** retain the newest two intact submission
+sequences across this project's registered common-Git pool, plus all pins and
+all generations younger than seven days. This is explicitly a project-wide
+count, including retired worktrees, rather than two generations for every
+retired source. Pins add to the retained floor. Future timestamps retain bytes.
+There is no disk-pressure override or automatic tightening of the policy.
+
+Each apply deletes at most one eligible generation, oldest first. Dry-run is
+the CLI and configuration default; only explicit `--apply` / `mode = "apply"`
+permits deletion. The inventory is bounded to 1,024 jobs and 1,024 source entries.
+Unknown, locked or incomplete jobs retain the entire pool. Purged journals and
+permanent locks remain as receipts and do not consume the intact-generation
+count. Receipt aging/removal is not implemented; reaching the bound requires
+manual review, not automatic evidence deletion.
+
+Selection is revalidated while holding namespace exclusion. The selected
+permanent job lock protects the final journal, product identity, layout and pin
+checks through deletion. A pin written before that lock is acquired wins; a pin
+attempt during deletion refuses rather than claiming success. Namespace
+exclusion is released before recursive I/O, allowing other native detachments
+and current builds to proceed. A second pruner observes the busy job and defers.
+The old direct purger refuses all v2 jobs without the retention callback.
+
+## Pins, previews and recovery
+
+The supported wrapper chooses a compatible Python runtime. The native worker
+supplies the project UUID and common-Git path/device/inode from its registered
+checkout; it does not discover arbitrary worktrees or scan target directories.
+
+```sh
+# J is an exact already-detached common-store journal from the native handoff.
+bash scripts/retain-detached-products.sh stage "$J"
+bash scripts/retain-detached-products.sh pin "$J"
+# Explicit operator action only, after the artifact is no longer needed:
+bash scripts/retain-detached-products.sh unpin "$J"
+
+# UUID, COMMON_GIT, DEV and INO must be checked against the registered checkout.
+# The scheduled native runner supplies these values without shell interpolation.
+bash scripts/retain-detached-products.sh prune-common \
+  --project-uuid "$UUID" --common-git "$COMMON_GIT" \
+  --common-dev "$DEV" --common-ino "$INO" --keep 2 --min-age-days 7
+```
+
+Stage preserves a native v2 retention record and never refreshes its clock or
+clears its pin. Pin an enrolled generation before using it as an external input;
+references cannot be inferred. Retained bytes can be inspected or copied to a
+separately owned destination while holding the job lock. Normal recovery after
+purge is a rebuild from retained source and locked dependencies, without a
+promise of byte-identical historical reconstruction.
+
+Deletion uses the existing descriptor-anchored purger. Its write-ahead `purging`
+state precedes recursive I/O. A partial I/O failure reports `purge-incomplete`,
+the durable journal state, and unsuccessful CLI status; it never reports that
+partially deleted bytes were kept. Subsequent automatic passes preserve the
+entire pool pending exact recovery review. Original paths are never inspected
+or adopted by recovery. There is no automatic recovery of uncertain publication.
+
+The old v1 `prune` command remains an explicit compatibility operation in one
+private-Git namespace with its original custody checks. It is not used by the
+scheduler, migrated to v2, or made durable across worktree removal by this change.
+
+## Existing cleanup worker integration
+
+`src/daemon/cleanup.rs::tick` calls the configured retention runner once per due
+project attempt, then performs its existing workspace cleanup. It retains the
+existing `automations.enabled` permit, `cleanup.auto`, `cleanup.interval` (daily
+by default), registered checkout, bounded subprocess custody and activity report.
+Failures are reported under `build-retention` and wait for the next cadence.
+Closure retries do not invoke retention. `story daemon gc` remains unrelated.
+No new daemon, launch agent, cron job or host-wide sweep is introduced.
+
+Turning off project automations or `cleanup.auto` suppresses scheduled retention.
+Stopping only the verifier is not a retention permission control. Configuration
+absent/disabled runs nothing. Retention enabled with no mode remains dry-run.
+The runner is project-owned executable argv, like the existing foreground hook;
+configure a trusted script, not unreviewed project code.
+
+## Activation proposal — no activation performed
+
+After code review, authorized merge, release/install validation and separate
+activation approval, configure a **fresh**, dedicated debug-only target:
 
 ```toml
 [build_products]
@@ -100,73 +153,44 @@ path = "products"
 managed_entry = "scripts/managed-cargo.sh"
 hook = ["bash", "scripts/retain-detached-products.sh", "stage"]
 timeout_seconds = 120
+
+[build_products.retention]
+mode = "dry-run"
+keep = 2
+min_age_days = 7
+runner = ["bash", "scripts/retain-detached-products.sh"]
 ```
 
-This example stays disabled. Changing it is a separate deployment decision.
-Automations disabled, missing enrollment, restored/manual lanes, or unleased
-handoffs still suppress detachment. No scheduler is installed in this draft.
-A future approved scheduler can invoke the same `prune --apply` command in one
-explicit checkout; it must retain reports, surface deferrals and never substitute
-a broad `find`, `cargo clean`, or worktree sweep. Start with dry-run reports and
-review the observed candidate set and policy before enabling deletion.
+The example remains disabled. Approval should explicitly select the dedicated
+target, project-wide two-generation/seven-day policy, and whether future manual
+previews or normal daily worker execution is wanted. For StoryHook, automations
+are intentionally off; leave them off. Manually invoke read-only `prune-common`
+for the preview phase. Do not silently turn project automations on to obtain
+scheduled pruning: that also permits other project automation. If automations
+must remain off permanently, the existing scheduler intentionally stays inactive;
+a separate permission design would need approval before implementation.
 
-The quarantine lives in the worktree's private Git administration, as in SH-835.
-Retention is a constraint on **this pruner**, not a backup or a guard against
-separate `git worktree remove`, reset, or manual deletion. Removing that worktree
-can remove its quarantine. Durable campaign inputs must live outside disposable
-worktree administration. Extending retention across worktree removal requires a
-separate common-store custody design; this draft does not claim that behavior.
+Once the installed build and configured hook are approved, enable build-product
+enrollment only for newly dispatched managed lanes. First prove a synthetic
+fresh-lane handoff, ordinary removal with retained pin, and a production read-only
+inventory excluding all historical/frozen products. Review actual candidate
+reports and filesystem identities before separately approving `mode = "apply"`.
+Approve project automations independently if scheduled execution is wanted.
+Keep the existing daily cadence and one-generation cap. Record exact pre/post
+journals and filesystem free-space observations; `would-purge` is not reclaimed
+space. No merge, install, stage-hook change, provider enrollment or deletion is
+performed by this draft.
 
-## Scheduling assessment and approval scope
+Rollback before deletion: set mode to dry-run or disable build products; keep
+common-store records and pins. Rollback after deletion: preserve receipts and
+rebuild the affected output. Do not remove common-store evidence to roll back.
 
-There is already a scheduler in `src/daemon/cleanup.rs`: `poll_cleanup` wakes on
-project changes and a bounded poll; `tick` defaults to one due cleanup attempt
-per day, configurable through `cleanup.interval`. It checks project automations
-and `cleanup.auto` before invoking `CleanupService::run_pending`. Failed attempts
-wait for the next cadence. `tick_closures` separately services due durable closure
-requests. `story daemon gc` is a different operation for abandoned temporary
-store runtime directories; it is not a build-cache scheduler.
+## Validation scope
 
-No new daemon or launch agent is needed. The intended **periodic integration**
-is a separate retention phase of that existing per-project cleanup tick, using
-its cadence, project permission fence and activity reporting. It must discover
-only registered retention namespaces with exact project/private-Git identities,
-apply the same policy as the CLI, and spend at most one generation of deletion
-work per due project attempt. It must preserve and surface incomplete-purge
-receipts and defer active/unknown ownership. It must not infer authority by
-walking every worktree or target directory. This integration is not implemented
-or activated by this PR.
-
-The existing `reclaim_handoff` foreground hook is already a suitable **staging
-trigger**, after its native custody/state/lease checks. Staging does not itself
-schedule a later purge. Replacing the hook with `stage` alone cannot make a
-seven-day periodic policy run, and `cleanup.interval` currently schedules only
-workspace cleanup, not this script.
-
-**Approval scope for this PR is dormant merge plus explicit read-only previews.**
-Activation remains blocked on a lifecycle integration: ordinary worktree cleanup
-can remove its private Git quarantine before seven days and despite a pin.
-Merely plugging the CLI into the daily tick would not fix that. Prefer a separately
-owned repository retention store, with a journaled identity-preserving handoff
-before worktree administration can be removed. Alternatively every ordinary
-worktree-removal path would need to preserve retained/pinned products; that must
-not weaken the existing unconditional Reset contract. Resolve and test this
-choice before approving stage-hook activation or unattended deletion. The
-present implementation does not claim durable pins across those operations.
-
-Normal recovery is **rebuild on demand**, not undo. Before purge the detached
-bytes remain available for explicit inspection/copy; there is no normal automatic
-restore to the current target. Once `--apply` unlinks bytes, neither Reset nor Git
-can recover them. The retained source and locked dependencies can rebuild
-functionality, without guaranteeing historical byte identity. Current campaign
-artifacts, release products, logs and receipts remain outside this mechanism.
-
-## Validation
-
-`scripts/tests/test_build_product_retention.py` uses synthetic target contents
-and real local file locks. It covers dry-run preservation, age/count/pins, stale
-plans, exclusive build custody, crash records, symlink and inode substitution,
-release/evidence refusal, interrupted purge and preserved receipts/current data.
-`tests/build_product_retention.rs` registers that suite in the normal Rust gate.
-Focused direct Python validation does not certify the Rust wrapper, integrated
-merge gate, deployment or a performance campaign.
+Focused Python regressions use synthetic targets and real local locks. Native
+integration tests exercise actual Git worktree removal, Reset reservations,
+common-store publication and the existing cleanup worker. They cover project
+isolation, count/age/pins, stale selection, uncertain publication, copied custody,
+substituted identities, partial purge, and rebuilt-original preservation.
+The normal Rust retention wrapper includes the Python suite. Focused validation
+is not the integrated merge gate, release validation or a performance campaign.

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Retain or prune explicitly enrolled, already detached debug build products.
 
-Default action is a read-only plan. No legacy targets, original paths, worktree
-sweep, scheduler, or project enablement. See docs/spec/build-product-retention.md.
+Default action is a read-only plan. The existing project cleanup worker may
+invoke the common-store policy; no legacy adoption or project enablement. See docs/spec/build-product-retention.md.
 """
 import argparse
 from contextlib import contextmanager
 import fcntl
+import retention_common as common
 import importlib.util
 import json
 import math
@@ -26,6 +27,11 @@ _spec.loader.exec_module(purge)
 NAMESPACE = 'storyhook-detached-products-v1'
 POLICY = 'reproducible-debug-v1'
 DAY = 86400
+
+
+def _api():
+    from types import SimpleNamespace
+    return SimpleNamespace(**globals())
 
 
 def private(info, kind):
@@ -84,7 +90,7 @@ def publish(fd, record):
 @contextmanager
 def job(journal, *, create_lock=False):
     path = Path(journal)
-    if (path.name != 'journal.json' or path.parent.parent.name != NAMESPACE
+    if not common.journal_path(path) and (path.name != 'journal.json' or path.parent.parent.name != NAMESPACE
             or not re.fullmatch(r'generation-[1-9][0-9]*', path.parent.name)):
         raise ValueError('not a managed detachment generation')
     fd = open_directory(path.parent)
@@ -96,10 +102,12 @@ def job(journal, *, create_lock=False):
         private(os.fstat(lock), stat.S_ISREG)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         row = read_at(fd, 'journal.json')
-        if (row.get('version') != 1 or type(row.get('generation')) is not int
+        if (row.get('version') != (2 if common.journal_path(path) else 1) or type(row.get('generation')) is not int
                 or row.get('directory') != purge.identity(os.fstat(fd))
                 or row.get('generation') != int(path.parent.name.split('-')[1])):
             raise ValueError('detached generation identity mismatch')
+        if common.journal_path(path):
+            common.validate_job(_api(), path, row)
         yield fd, row
     finally:
         if lock is not None:
@@ -197,6 +205,27 @@ def snapshot(journal):
         return row
 
 
+def validate_settlement(row, token):
+    owner = row.get('owner')
+    execution = row.get('settled_execution')
+    command = row.get('command')
+    def nonempty(value):
+        return isinstance(value, str) and bool(value)
+    def process_id(value):
+        return type(value) is int and 1 < value <= 2**64 - 1
+    if not (type(row.get('version')) is int and row['version'] == 1
+            and row.get('id') == token and row.get('token') == token
+            and row.get('state') == 'finished' and row.get('executions') == []
+            and isinstance(command, list) and command
+            and all(isinstance(part, str) for part in command)
+            and isinstance(owner, dict) and process_id(owner.get('pid'))
+            and nonempty(owner.get('start')) and nonempty(owner.get('boot'))
+            and isinstance(execution, dict) and nonempty(execution.get('id'))
+            and execution.get('guard') == 'lease-' + token + '.lock'
+            and process_id(execution.get('session'))):
+        raise ValueError('unfinished or unknown whole-build owner')
+
+
 def require_settlement(custody):
     """Match SH-835's native settled_record contract under the product lease.
 
@@ -220,24 +249,7 @@ def require_settlement(custody):
                 row = read_at(child, 'record.json')
             finally:
                 os.close(child)
-            owner = row.get('owner')
-            execution = row.get('settled_execution')
-            command = row.get('command')
-            def nonempty(value):
-                return isinstance(value, str) and bool(value)
-            def process_id(value):
-                return type(value) is int and 1 < value <= 2**64 - 1
-            if not (type(row.get('version')) is int and row['version'] == 1
-                    and row.get('id') == token and row.get('token') == token
-                    and row.get('state') == 'finished' and row.get('executions') == []
-                    and isinstance(command, list) and command
-                    and all(isinstance(part, str) for part in command)
-                    and isinstance(owner, dict) and process_id(owner.get('pid'))
-                    and nonempty(owner.get('start')) and nonempty(owner.get('boot'))
-                    and isinstance(execution, dict) and nonempty(execution.get('id'))
-                    and execution.get('guard') == 'lease-' + token + '.lock'
-                    and process_id(execution.get('session'))):
-                raise ValueError('unfinished or unknown whole-build owner')
+            validate_settlement(row, token)
             owners += 1
         if not owners:
             raise ValueError('no completed managed build owns these products')
@@ -370,11 +382,23 @@ def main(argv=None):
     clean.add_argument('--keep', type=int, default=2)
     clean.add_argument('--min-age-days', type=float, default=7)
     clean.add_argument('--apply', action='store_true', help='irreversibly purge eligible detached products')
+    shared = sub.add_parser('prune-common', help='one registered project in common Git; default dry-run')
+    shared.add_argument('--project-uuid', required=True)
+    shared.add_argument('--common-git', type=Path, required=True)
+    shared.add_argument('--common-dev', type=int, required=True)
+    shared.add_argument('--common-ino', type=int, required=True)
+    shared.add_argument('--keep', type=int, default=2)
+    shared.add_argument('--min-age-days', type=float, default=7)
+    shared.add_argument('--apply', action='store_true')
     args = parser.parse_args(argv)
     if args.command == 'stage':
         result = stage(args.journal)
     elif args.command in ('pin', 'unpin'):
         result = pin(args.journal, args.command == 'pin')
+    elif args.command == 'prune-common':
+        result = common.prune(_api(), args.common_git, args.project_uuid,
+                              {'dev': args.common_dev, 'ino': args.common_ino},
+                              keep=args.keep, min_age_days=args.min_age_days, apply=args.apply)
     else:
         result = prune(git_path(Path.cwd(), '--absolute-git-dir'), keep=args.keep,
                        min_age_days=args.min_age_days, apply=args.apply)

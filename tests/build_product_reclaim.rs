@@ -499,3 +499,376 @@ fn nonprivate_custody_authority_is_retained() {
     );
     assert!(f.original().join("old").exists());
 }
+
+impl Fixture {
+    fn retention(&self) -> PathBuf {
+        let enrollment = self.private.join("storyhook-products-enrollment-v1.json");
+        let mut row: Value = serde_json::from_slice(&fs::read(&enrollment).unwrap()).unwrap();
+        row["nonce"] = json!("abcdef0123456789abcdef0123456789");
+        row["config"]["retention"] = json!({"runner":["/usr/bin/true"]});
+        let config: storyhook::service::build_products::Config =
+            serde_json::from_value(row["config"].clone()).unwrap();
+        row["config"] = serde_json::to_value(&config).unwrap();
+        private_json(&enrollment, &row);
+        let uuid = self
+            .service
+            .store()
+            .read(|tx| Ok(tx.project(self.service.project())?.unwrap().uuid))
+            .unwrap();
+        row["project_uuid"] = json!(uuid);
+        private_json(&enrollment, &row);
+        fs::write(
+            self.lane.join(".storyhook.toml"),
+            format!(
+                "uuid = {uuid:?}\n[build_products]\n{}",
+                toml::to_string(&config).unwrap()
+            ),
+        )
+        .unwrap();
+        fs::remove_file(self.original().join("old")).unwrap();
+        fs::create_dir_all(self.original().join("debug/deps")).unwrap();
+        fs::write(self.original().join("debug/deps/fixture"), "reproducible").unwrap();
+        use sha2::{Digest, Sha256};
+        self.lease
+            .repository_path
+            .join(".git/storyhook-retained-products-v2")
+            .join(format!("project-{:x}", Sha256::digest(uuid.as_bytes())))
+            .join("source-abcdef0123456789abcdef0123456789")
+            .join(format!("generation-{}", self.expected.0))
+            .join("journal.json")
+    }
+    fn retention_cli(&self, command: &str, journal: &Path) {
+        let mut c = Command::new("python3");
+        c.args(["-B"])
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/retain-detached-products.py"))
+            .arg(command)
+            .arg(journal);
+        let out = run_bounded(
+            c,
+            "retention fixture CLI",
+            storyhook_test_support::load_grace::graced_now(Duration::from_secs(30)),
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn retention_common_pin_and_complete_proof_survive_worktree_removal() {
+    let f = Fixture::new(no_purge());
+    let journal = f.retention();
+    f.reclaim().unwrap();
+    // Native publication owns the permanent lock; no successful stage hook is required.
+    f.retention_cli("pin", &journal);
+    let before = fs::read(&journal).unwrap();
+    let row: Value = serde_json::from_slice(&before).unwrap();
+    assert_eq!(row["version"], 2);
+    assert_eq!(row["retained"]["custody"][0]["state"], "finished");
+    assert_eq!(
+        row["retained"]["source"]["config"]["retention"]["mode"],
+        "dry-run"
+    );
+    git(
+        &f.lease.repository_path,
+        &["worktree", "remove", "--force", f.lane.to_str().unwrap()],
+    );
+    assert!(!f.private.exists());
+    assert_eq!(fs::read(&journal).unwrap(), before);
+    assert_eq!(
+        fs::read_to_string(
+            journal
+                .parent()
+                .unwrap()
+                .join("products/debug/deps/fixture")
+        )
+        .unwrap(),
+        "reproducible"
+    );
+    f.retention_cli("stage", &journal);
+    assert_eq!(fs::read(&journal).unwrap(), before);
+    let common = f.lease.repository_path.join(".git");
+    let common_id = identity(&common);
+    let uuid = row["retained"]["namespace"]["project_uuid"]
+        .as_str()
+        .unwrap();
+    let mut c = Command::new("python3");
+    c.arg("-B")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/retain-detached-products.py"))
+        .args(["prune-common", "--project-uuid", uuid, "--common-git"])
+        .arg(&common)
+        .arg("--common-dev")
+        .arg(common_id["dev"].to_string())
+        .arg("--common-ino")
+        .arg(common_id["ino"].to_string());
+    let out = run_bounded(
+        c,
+        "retention after real removal",
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(30)),
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["jobs"][0]["reason"], "pinned");
+}
+
+#[test]
+fn retention_reset_reservation_before_detach_preserves_original() {
+    let f = Fixture::new(no_purge());
+    let journal = f.retention();
+    let ctx = f.ctx().no_hooks(true);
+    let reset = storyhook::service::story_reset::StoryResetService::new(&ctx);
+    let _reserved = reset.reserve("SH-1", "SH-1").unwrap();
+    assert!(f.reclaim().is_err());
+    assert!(!journal.exists());
+    assert!(f.original().join("debug/deps/fixture").exists());
+}
+
+#[test]
+fn retention_reset_after_detach_preserves_common_pin_and_recreated_target() {
+    let f = Fixture::new(no_purge());
+    let journal = f.retention();
+    f.reclaim().unwrap();
+    f.retention_cli("stage", &journal);
+    f.retention_cli("pin", &journal);
+    let before = fs::read(&journal).unwrap();
+    let ctx = f.ctx().no_hooks(true);
+    let reset = storyhook::service::story_reset::StoryResetService::new(&ctx)
+        .with_workspace_patience(Duration::ZERO);
+    let reserved = reset.reserve("SH-1", "SH-1").unwrap();
+    assert!(
+        reset
+            .execute("SH-1", &reserved.token, || Ok(()))
+            .unwrap()
+            .completed
+    );
+    fs::create_dir_all(f.original()).unwrap();
+    fs::write(f.original().join("new"), "new build").unwrap();
+    assert_eq!(fs::read(&journal).unwrap(), before);
+    f.retention_cli("stage", &journal);
+    assert_eq!(
+        fs::read_to_string(f.original().join("new")).unwrap(),
+        "new build"
+    );
+}
+
+#[test]
+fn retention_busy_namespace_and_incomplete_publication_preserve_products() {
+    let f = Fixture::new(no_purge());
+    let journal = f.retention();
+    let project = journal
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    fs::create_dir_all(project).unwrap();
+    fs::set_permissions(project, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(project.parent().unwrap(), fs::Permissions::from_mode(0o700)).unwrap();
+    let lock_path = project.join("retention.lock");
+    fs::write(&lock_path, "").unwrap();
+    fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o600)).unwrap();
+    let lock = fs::File::open(&lock_path).unwrap();
+    lock.lock().unwrap();
+    assert!(
+        f.reclaim()
+            .unwrap_err()
+            .to_string()
+            .contains("namespace busy")
+    );
+    assert!(f.original().exists());
+    drop(lock);
+    private_json(
+        &project.join("namespace.json"),
+        &json!({"interrupted":true}),
+    );
+    assert!(f.reclaim().is_err());
+    assert!(f.original().exists());
+}
+
+#[test]
+fn retention_scheduler_defaults_and_existing_tick_fences() {
+    use storyhook::daemon::cleanup::{tick, tick_closures};
+    let f = Fixture::new(no_purge());
+    let _ = f.retention();
+    let config_path = f.lane.join(".storyhook.toml");
+    let mut config: toml::Value =
+        toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    let output = f.lease.repository_path.join("retention-argv");
+    let script = f.lease.repository_path.join("retention-runner.py");
+    fs::write(
+        &script,
+        format!(
+            "import sys,json\nwith open({:?},'a') as f: f.write(json.dumps(sys.argv[1:])+'\\n')\n",
+            output.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    config["build_products"]["retention"]["runner"] =
+        toml::Value::Array(vec!["python3".into(), script.to_str().unwrap().into()]);
+    fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
+    f.service
+        .store()
+        .write(|tx| {
+            tx.set_checkout_path(f.service.project(), Some(&f.lane))?;
+            let mut settings = tx.settings(f.service.project())?;
+            settings.cleanup_auto = Some(false);
+            tx.put_settings(f.service.project(), &settings)
+        })
+        .unwrap();
+    tick(f.service.store(), f.service.env());
+    assert!(!output.exists());
+    f.service
+        .store()
+        .write(|tx| {
+            let mut settings = tx.settings(f.service.project())?;
+            settings.cleanup_auto = Some(true);
+            tx.put_settings(f.service.project(), &settings)
+        })
+        .unwrap();
+    f.service
+        .store()
+        .write(|tx| {
+            let mut settings = tx.settings(f.service.project())?;
+            settings.automations_enabled = Some(false);
+            tx.put_settings(f.service.project(), &settings)
+        })
+        .unwrap();
+    tick(f.service.store(), f.service.env());
+    assert!(!output.exists());
+    f.service
+        .store()
+        .write(|tx| {
+            let mut settings = tx.settings(f.service.project())?;
+            settings.automations_enabled = Some(true);
+            tx.put_settings(f.service.project(), &settings)
+        })
+        .unwrap();
+    tick(f.service.store(), f.service.env());
+    let first = fs::read_to_string(&output).unwrap();
+    assert!(first.contains("prune-common") && first.contains("--project-uuid"));
+    assert!(!first.contains("--apply"));
+    tick(f.service.store(), f.service.env());
+    tick_closures(f.service.store(), f.service.env()).unwrap();
+    assert_eq!(fs::read_to_string(&output).unwrap(), first);
+    config["build_products"]["retention"]["mode"] = "apply".into();
+    fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
+    storyhook::service::build_products::scheduled_retention(&f.ctx()).unwrap();
+    assert!(fs::read_to_string(&output).unwrap().contains("--apply"));
+    config["build_products"]["enabled"] = false.into();
+    fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
+    let before = fs::read(&output).unwrap();
+    assert!(
+        storyhook::service::build_products::scheduled_retention(&f.ctx())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(fs::read(&output).unwrap(), before);
+}
+
+#[test]
+fn retention_enrollment_wrong_project_and_missing_nonce_refuse() {
+    let f = Fixture::new(no_purge());
+    let journal = f.retention();
+    let enrollment = f.private.join("storyhook-products-enrollment-v1.json");
+    let row: Value = serde_json::from_slice(&fs::read(&enrollment).unwrap()).unwrap();
+    for field in ["project_uuid", "nonce"] {
+        let mut invalid = row.clone();
+        invalid.as_object_mut().unwrap().remove(field);
+        private_json(&enrollment, &invalid);
+        assert!(f.reclaim().is_err());
+        assert!(f.original().exists());
+        assert!(!journal.exists());
+    }
+    private_json(&enrollment, &row);
+    let pointer = f.lane.join(".storyhook.toml");
+    let text = fs::read_to_string(&pointer).unwrap();
+    fs::write(
+        pointer,
+        text.replace(
+            row["project_uuid"].as_str().unwrap(),
+            "11234567-89ab-cdef-0123-456789abcdef",
+        ),
+    )
+    .unwrap();
+    assert!(f.reclaim().is_err());
+    assert!(f.original().exists());
+}
+
+#[test]
+fn retention_reset_during_post_detach_hook_preserves_pin_without_waiting() {
+    let f = Fixture::new(no_purge());
+    let journal = f.retention();
+    let ready = f.lease.repository_path.join("retention-hook-ready");
+    let release = f.lease.repository_path.join("retention-hook-release");
+    let script = f.lease.repository_path.join("retention-hook.py");
+    fs::write(&script, format!("import pathlib,time\npathlib.Path({:?}).touch()\nend=time.monotonic()+90\nwhile not pathlib.Path({:?}).exists():\n if time.monotonic()>end: raise SystemExit(70)\n time.sleep(.02)\n", ready.to_str().unwrap(), release.to_str().unwrap())).unwrap();
+    let enrollment = f.private.join("storyhook-products-enrollment-v1.json");
+    let mut row: Value = serde_json::from_slice(&fs::read(&enrollment).unwrap()).unwrap();
+    row["config"]["hook"] = json!(["python3", script]);
+    private_json(&enrollment, &row);
+    let config: storyhook::service::build_products::Config =
+        serde_json::from_value(row["config"].clone()).unwrap();
+    fs::write(
+        f.lane.join(".storyhook.toml"),
+        format!(
+            "uuid = {}\n[build_products]\n{}",
+            row["project_uuid"],
+            toml::to_string(&config).unwrap()
+        ),
+    )
+    .unwrap();
+    struct Release(PathBuf);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let _ = fs::write(&self.0, "release");
+        }
+    }
+    std::thread::scope(|scope| {
+        let pending = scope.spawn(|| f.reclaim());
+        let _release = Release(release.clone());
+        let deadline = std::time::Instant::now()
+            + storyhook_test_support::load_grace::graced_now(Duration::from_secs(30));
+        while !ready.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(ready.exists(), "hook did not reach detached phase");
+        f.retention_cli("pin", &journal);
+        let before = fs::read(&journal).unwrap();
+        let ctx = f.ctx().no_hooks(true);
+        let reset = storyhook::service::story_reset::StoryResetService::new(&ctx)
+            .with_workspace_patience(Duration::ZERO);
+        let reserved = reset.reserve("SH-1", "SH-1").unwrap();
+        assert!(
+            reset
+                .execute("SH-1", &reserved.token, || Ok(()))
+                .unwrap()
+                .completed
+        );
+        // Actual forced retirement also removes the private Git directory if
+        // the fixture Reset backend retained it for another independent reason.
+        if f.private.exists() {
+            git(
+                &f.lease.repository_path,
+                &["worktree", "remove", "--force", f.lane.to_str().unwrap()],
+            );
+        }
+        assert!(!f.private.exists());
+        fs::create_dir_all(f.original()).unwrap();
+        fs::write(f.original().join("new"), "new build").unwrap();
+        assert_eq!(fs::read(&journal).unwrap(), before);
+        fs::write(&release, "release").unwrap();
+        pending.join().unwrap().unwrap();
+        assert_eq!(fs::read(&journal).unwrap(), before);
+        assert_eq!(
+            fs::read_to_string(f.original().join("new")).unwrap(),
+            "new build"
+        );
+    });
+}

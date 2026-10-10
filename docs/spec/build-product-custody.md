@@ -133,5 +133,7 @@ or production rollout. Those are separate operator actions.
 An optional [retention hook](build-product-retention.md) can keep already detached,
 debug-only products in quarantine, report candidates, and apply an explicit
 age/count/pin policy. It is disabled by default and does not enroll legacy caches
-or enable unattended deletion. Its lifetime is limited to the private Git
-administration containing the quarantine.
+or enable unattended deletion. Opted-in fresh enrollments detach directly into a
+project-scoped common-Git store, preserving pins and receipts across linked-worktree
+removal. The existing cleanup worker invokes the configured policy only when its
+normal project permission and cadence allow it; dry-run remains the default.
