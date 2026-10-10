@@ -58,6 +58,11 @@ def validate(record):
         if story in seen:
             raise ValueError("duplicate story in members")
         seen.add(story)
+        if "smoothed" in member:
+            paths = member["smoothed"]
+            if (not isinstance(paths, list)
+                    or any(not isinstance(path, str) or not path for path in paths)):
+                raise ValueError("smoothed must be an array of nonempty paths")
     if members and members[0]["story_id"] != record["story_id"]:
         raise ValueError("first member must be the head")
     if preview.get("outcome") not in {"batch", "head-conflict", "unavailable"}:

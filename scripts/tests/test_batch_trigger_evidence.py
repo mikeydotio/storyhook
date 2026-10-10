@@ -96,6 +96,19 @@ class BatchTriggerEvidenceTests(unittest.TestCase):
         rows[0]["preview"]["members"][1]["smoothed"] = ["docs/spec/a.md"]
         self.assertEqual(audit.analyze(rows)["pairs"]["eligible_dequeues"], 0)
 
+    def test_malformed_smoothing_metadata_refuses_instead_of_changing_denominator(self):
+        for value in (False, 0, None, "", {}, "path", [None], [3], [""]):
+            with self.subTest(value=value):
+                rows = pair()
+                rows[0]["preview"]["members"][1]["smoothed"] = value
+                with self.assertRaises(ValueError):
+                    audit.analyze(rows)
+
+    def test_empty_smoothing_path_list_is_clean(self):
+        rows = pair()
+        rows[0]["preview"]["members"][1]["smoothed"] = []
+        self.assertEqual(audit.analyze(rows)["pairs"]["green"], 1)
+
     def test_duplicate_attempts_do_not_inflate_sample(self):
         rows = pair()
         self.assertEqual(audit.analyze(rows + copy.deepcopy(rows))["records"], 2)
