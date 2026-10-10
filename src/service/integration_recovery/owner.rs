@@ -637,9 +637,12 @@ pub struct IntegrationRecoveryStatus {
     pub next_action: String,
 }
 
+/// Uses the enclosing snapshot's `now` only for valid live elapsed endpoints.
+/// Landed rows retain `updated_at`; empty and invalid rows need no observation.
 pub(crate) fn status_snapshot(
     tx: &impl ReadOps,
     project: crate::store::ProjectId,
+    now: &str,
 ) -> Result<Vec<IntegrationRecoveryStatus>, StoreError> {
     let metadata = tx
         .project(project)?
@@ -712,7 +715,9 @@ pub(crate) fn status_snapshot(
                 .map_err(|e| StoreError::Corrupt(e.to_string()))?
                 .with_timezone(&chrono::Utc)
         } else {
-            chrono::Utc::now()
+            chrono::DateTime::parse_from_rfc3339(now)
+                .map_err(|e| StoreError::Corrupt(e.to_string()))?
+                .with_timezone(&chrono::Utc)
         };
         result.push(IntegrationRecoveryStatus {
             retained_submission: Some(

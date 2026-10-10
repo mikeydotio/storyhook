@@ -764,12 +764,18 @@ fn native_host_status_isolates_invalid_owner_and_preserves_original_elapsed_orig
         .unwrap();
     let statuses = f
         .store
-        .read(|tx| crate::service::host_recovery::status_snapshot(tx, f.subject.candidate.project))
+        .read(|tx| {
+            crate::service::host_recovery::status_snapshot(
+                tx,
+                f.subject.candidate.project,
+                "2026-10-08T00:00:01.250Z",
+            )
+        })
         .unwrap();
     assert_eq!(statuses.len(), 2);
     let valid = statuses.iter().find(|s| s.id == owner.id).unwrap();
     assert_eq!(valid.started_at.as_deref(), Some(AT));
-    assert!(valid.elapsed_milliseconds.is_some());
+    assert_eq!(valid.elapsed_milliseconds, Some(1_250));
     assert!(valid.pauses_admission);
     let invalid = statuses.iter().find(|s| s.phase == "invalid").unwrap();
     assert_eq!(invalid.started_at, None);
@@ -805,7 +811,8 @@ fn restored_host_status_keeps_history_without_claiming_completed_story_needs_gat
         f.store
             .read(|tx| crate::service::host_recovery::status_snapshot(
                 tx,
-                f.subject.candidate.project
+                f.subject.candidate.project,
+                &ctx.now()
             ))
             .unwrap()
             .len(),
@@ -842,7 +849,8 @@ fn restored_host_status_keeps_history_without_claiming_completed_story_needs_gat
         f.store
             .read(|tx| crate::service::host_recovery::status_snapshot(
                 tx,
-                f.subject.candidate.project
+                f.subject.candidate.project,
+                "not-a-timestamp"
             ))
             .unwrap()
             .is_empty()
@@ -940,8 +948,9 @@ fn host_recovery_status_exposes_exact_fault_and_only_selected_project_admissions
         .unwrap();
     let reopened = SqliteStore::open(f.store.path()).unwrap();
     let before = reopened.read(|tx| tx.host_recoveries()).unwrap();
+    let now = f.ctx().now();
     let statuses = reopened
-        .read(|tx| crate::service::host_recovery::status_snapshot(tx, original.project))
+        .read(|tx| crate::service::host_recovery::status_snapshot(tx, original.project, &now))
         .unwrap();
     let status = statuses.iter().find(|s| s.id == owner.id).unwrap();
     let fault = status.fault.as_ref().unwrap();
@@ -957,7 +966,7 @@ fn host_recovery_status_exposes_exact_fault_and_only_selected_project_admissions
     assert_eq!(status.retained_submissions[0].admission_count, Some(2));
     assert!(!serde_json::to_string(status).unwrap().contains("OTHER-"));
     let foreign = reopened
-        .read(|tx| crate::service::host_recovery::status_snapshot(tx, other))
+        .read(|tx| crate::service::host_recovery::status_snapshot(tx, other, &now))
         .unwrap();
     let selected = foreign.iter().find(|s| s.id == owner.id).unwrap();
     assert_eq!(selected.retained_submissions.len(), 1);
@@ -1022,7 +1031,11 @@ fn host_recovery_status_refuses_mixed_candidate_and_attribution_binding() {
         let statuses = f
             .store
             .read(|tx| {
-                crate::service::host_recovery::status_snapshot(tx, f.subject.candidate.project)
+                crate::service::host_recovery::status_snapshot(
+                    tx,
+                    f.subject.candidate.project,
+                    &f.ctx().now(),
+                )
             })
             .unwrap();
         let status = statuses.iter().find(|s| s.id == owner.id).unwrap();
@@ -1093,4 +1106,98 @@ fn pending_native_host_refuses_existing_attribution_without_adopting_or_replacin
             .is_empty()
     );
     assert!(f.store.read(|tx| tx.host_recoveries()).unwrap().is_empty());
+}
+
+#[test]
+fn native_host_status_elapsed_uses_observation_clock() {
+    let f = Fixture::new();
+    let owner = HostRecoveryService::new(&f.ctx())
+        .enroll(&HostFaultEvidence {
+            live: f.proof(false),
+        })
+        .unwrap();
+    let before = f.store.read(|tx| tx.host_recoveries()).unwrap();
+    let elapsed = [
+        "2026-10-08T00:00:01.250Z",
+        "2026-10-08T00:00:01.250Z",
+        "2026-10-08T01:00:01.250+01:00",
+        "2026-10-08T00:00:02.750Z",
+        "2026-10-07T23:59:59Z",
+    ]
+    .map(|now| {
+        let statuses = f
+            .store
+            .read(|tx| {
+                crate::service::host_recovery::status_snapshot(tx, f.subject.candidate.project, now)
+            })
+            .unwrap();
+        assert_eq!(statuses.len(), 1);
+        let row = &statuses[0];
+        assert_eq!(row.id, owner.id);
+        assert_eq!(row.started_at.as_deref(), Some(AT));
+        assert_eq!(row.phase, "waiting-native-restoration");
+        assert!(row.pauses_admission);
+        assert_eq!(
+            row.submissions,
+            std::slice::from_ref(&f.subject.candidate.story_id)
+        );
+        assert_eq!(row.retained_submissions.len(), 1);
+        assert_eq!(
+            row.retained_submissions[0].submission,
+            f.subject.attribution.submission
+        );
+        row.elapsed_milliseconds
+    });
+    assert_eq!(
+        elapsed,
+        [Some(1_250), Some(1_250), Some(1_250), Some(2_750), Some(0)]
+    );
+    assert_eq!(f.store.read(|tx| tx.host_recoveries()).unwrap(), before);
+}
+
+#[test]
+fn native_host_status_malformed_observation_preserves_diagnostics() {
+    let f = Fixture::new();
+    let status = || {
+        f.store.read(|tx| {
+            crate::service::host_recovery::status_snapshot(
+                tx,
+                f.subject.candidate.project,
+                "not-a-timestamp",
+            )
+        })
+    };
+    assert!(status().unwrap().is_empty());
+    let owner = HostRecoveryService::new(&f.ctx())
+        .enroll(&HostFaultEvidence {
+            live: f.proof(false),
+        })
+        .unwrap();
+    assert!(matches!(
+        status(),
+        Err(crate::store::StoreError::Corrupt(_))
+    ));
+    f.store
+        .write(|tx| {
+            let mut record = tx
+                .host_recoveries()?
+                .into_iter()
+                .find(|record| record.id == owner.id)
+                .unwrap();
+            let revision = record.revision;
+            record.revision += 1;
+            record.state = json!({"version":1,"started_at":"not-a-timestamp"});
+            assert!(tx.update_host_recovery(&record, revision)?);
+            Ok(())
+        })
+        .unwrap();
+    let rows = status().unwrap();
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row.id, owner.id);
+    assert_eq!(row.phase, "invalid");
+    assert_eq!(row.started_at, None);
+    assert_eq!(row.elapsed_milliseconds, None);
+    assert!(row.pauses_admission);
+    assert!(row.next_action.contains("invalid"));
 }

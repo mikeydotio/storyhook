@@ -55,10 +55,12 @@ pub struct RecoveryStatus {
 
 /// Unresolved recoveries and invalid diagnostic rows. A valid resolved
 /// recovery is left out, while its durable record stays for coordination,
-/// resume ownership and `verifier repair show`.
+/// resume ownership and `verifier repair show`. `now` is the enclosing snapshot's
+/// observation time, required only for visible rows with live elapsed timing.
 pub(crate) fn snapshot(
     tx: &impl ReadOps,
     project: ProjectId,
+    now: &str,
 ) -> Result<Vec<RecoveryStatus>, StoreError> {
     let metadata = tx
         .project(project)?
@@ -112,7 +114,7 @@ pub(crate) fn snapshot(
         };
         current.push(RecoveryStatus {
             elapsed_milliseconds: Some(
-                (chrono::Utc::now()
+                (persistence::timestamp(now)?.with_timezone(&chrono::Utc)
                     - persistence::timestamp(&view.state.created_at)?.with_timezone(&chrono::Utc))
                 .num_milliseconds()
                 .max(0) as u64,
