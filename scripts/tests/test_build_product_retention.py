@@ -233,6 +233,19 @@ class Retention(unittest.TestCase):
         self.assertEqual(json.loads(first.read_text())['state'], 'purging')
         self.assertTrue(all(v == 'keep' for v in self.actions(self.plan(apply=True)).values()))
 
+    def test_stale_missing_product_cannot_publish_a_completion_receipt(self):
+        first = self.make(1); self.make(2); self.make(3)
+        real = r.purge.purge
+        changed = []
+        def race(path, **kw):
+            (path.parent / 'products').rename(path.parent / 'retained-elsewhere')
+            self.edit(path, state='purging')
+            changed.append(path.read_bytes())
+            return real(path, **kw)
+        with patch.object(r.purge, 'purge', side_effect=race): result = self.plan(apply=True)
+        self.assertEqual(self.actions(result)['generation-1'], 'keep')
+        self.assertEqual(first.read_bytes(), changed[0])
+
     def test_plain_purge_legacy_contract_unchanged(self):
         first = self.make(1, stage=False)
         r.purge.purge(first)

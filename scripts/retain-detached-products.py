@@ -275,7 +275,7 @@ def prune(private_git, *, keep=2, min_age_days=7, apply=False, now=None):
                 item.update(action='keep', reason='one generation per apply; preview next pass')
                 continue
             def authorize(current, fd, expected=expected):
-                # Called inside purge.lock, after the final inode check. Includes
+                # Called inside purge.lock, before any journal mutation. Includes
                 # pins and original enrollment timestamp; stale plans refuse.
                 if current != expected or current['retention']['pinned']:
                     raise ValueError('retention decision changed; products retained')

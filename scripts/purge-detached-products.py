@@ -71,6 +71,10 @@ def purge(journal, *, authorize=None):
                 raise ValueError('retention-enrolled products require the retention policy')
             if record.get('state') not in ('prepared', 'detached', 'purging', 'purged'):
                 raise ValueError('unknown detached journal state')
+            # Retention decisions run under the same permanent job lock as deletion.
+            # A stale preview or a pin added before lock acquisition cannot authorize it.
+            if authorize is not None:
+                authorize(record, fd)
             def publish(state):
                 record['state'] = state
                 temp = '.journal-' + uuid.uuid4().hex
@@ -92,10 +96,6 @@ def purge(journal, *, authorize=None):
                 raise ValueError('detached product identity mismatch')
             if record['state'] == 'purged':
                 raise ValueError('products appeared after completed purge')
-            # Retention decisions run under the same permanent job lock as deletion.
-            # A stale preview or a pin added before lock acquisition cannot authorize it.
-            if authorize is not None:
-                authorize(record, fd)
             # Durable intent before recursive work: cancellation retains the job;
             # retry is authorized only against this same detached root identity.
             root = os.open('products', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
