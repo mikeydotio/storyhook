@@ -51,6 +51,13 @@ def validate(path=None):
     digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
     if owner.get("measurement_sha256") != digest:
         raise Refusal("measurement manifest changed after ownership admission")
+    validate_workspace(value)
+    return value
+
+
+def validate_workspace(value):
+    """Check pinned tracked inputs after the caller proves its owner capability."""
+    common, worktree, _ = paths(value["common"], value["worktree"])
     observed = [subprocess.check_output(["git", *args], text=True, timeout=30).strip() for args in (
         ["rev-parse", "--show-toplevel"], ["rev-parse", "HEAD"],
         ["rev-parse", "HEAD^{tree}"], ["status", "--porcelain", "--untracked-files=no"],

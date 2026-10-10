@@ -8,19 +8,24 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import signal
 import sys
 import time
 
 from host_admission.diagnostics import ChildTrace, Trace, boundary
 
 
-def bounded(argv, *, root, seconds=30, cwd=None, env=None, input=""):
+def bounded(argv, *, root, seconds=30, cwd=None, env=None, input="",
+            optional_overall_end=None):
     from build_products import ProductCustody
     from host_admission.supervisor import ManagedProcess
     from host_admission.policy import Refusal as CustodyRefusal
     from gate_measurement_bounds import Deadline
     from verifier_state import Refusal
 
+    if optional_overall_end is not None:
+        from gate_measurement_optional import require_optional
+        require_optional(argv, seconds, optional_overall_end)
     root = Path(root)
     if root.is_symlink() or root.resolve() != root:
         raise Refusal("measurement command namespace must be physical")
@@ -29,21 +34,28 @@ def bounded(argv, *, root, seconds=30, cwd=None, env=None, input=""):
         trace = Trace()
     except OSError:
         trace = None  # Diagnostic setup cannot change custody or command results.
-    process, directory = None, None
+    process, directory, local_timeout = None, None, None
     try:
         custody = ProductCustody(root, argv, trace=trace)
         directory = custody.root
         (directory / "input").write_text(input)
         (directory / "request.json").write_text(json.dumps({"argv": argv}))
-        limit = Deadline(seconds)
+        limit = Deadline(seconds, end=optional_overall_end)
 
         class Observe:
             def publish(self):
+                nonlocal local_timeout
+                if optional_overall_end is not None and time.monotonic() >= optional_overall_end:
+                    raise CustodyRefusal("overall observation deadline expired")
                 try:
                     limit.require("measurement helper")
                 except Refusal as error:
                     if trace is not None:
                         trace.emit("deadline", "error")
+                    if optional_overall_end is not None:
+                        from gate_measurement_optional import LocalDeadline
+                        local_timeout = LocalDeadline("descriptive helper local deadline expired")
+                        raise local_timeout from error
                     raise CustodyRefusal(str(error)) from error
 
         command = [sys.executable, "-B", str(Path(__file__).resolve()), "exec", str(directory)]
@@ -57,6 +69,28 @@ def bounded(argv, *, root, seconds=30, cwd=None, env=None, input=""):
                                trace=trace, pass_fds=descriptors)
             code = boundary(trace, "supervision", process.wait)
         except (CustodyRefusal, OSError) as error:
+            if (local_timeout is not None and process is not None
+                    and process.failure_cause is local_timeout and process.finished
+                    and not process.cancelled and not process.drain_reason
+                    and process.observation_failure is None
+                    and (process.child.returncode == 0 or
+                         (process.child.returncode in (-signal.SIGTERM, -signal.SIGKILL)
+                          and -process.child.returncode in process.leader_signals))
+                    and isinstance(error, CustodyRefusal)
+                    and time.monotonic() < optional_overall_end):
+                from gate_measurement_optional import ExposureTimeout, quiescence
+                result_path = directory / "result.json"
+                if result_path.exists():
+                    try:
+                        known = json.loads(result_path.read_text())
+                    except (ValueError, UnicodeError) as failure:
+                        raise Refusal("timed-out helper has malformed result evidence") from failure
+                    if not isinstance(known, dict) or type(known.get("exit_code")) is not int or known["exit_code"] != 0:
+                        raise Refusal("timed-out helper already reported a command failure")
+                proof = quiescence(directory)
+                if time.monotonic() >= optional_overall_end:
+                    raise Refusal("overall deadline expired during helper cleanup") from error
+                raise ExposureTimeout(proof) from error
             raise Refusal(f"measurement helper failed; retained {directory}: {error}") from error
         finally:
             if process is not None:
@@ -71,6 +105,9 @@ def bounded(argv, *, root, seconds=30, cwd=None, env=None, input=""):
     result = json.loads((directory / "result.json").read_text())
     if result["exit_code"] != code:
         raise Refusal(f"measurement helper supervision mismatch: {directory}")
+    if optional_overall_end is not None and any(
+            (directory / name).stat().st_size > 4 * 1024 * 1024 for name in ("stdout", "stderr")):
+        raise Refusal("descriptive helper output exceeds its retained-data bound")
     answer = subprocess.CompletedProcess(argv, code, (directory / "stdout").read_text(),
                                          (directory / "stderr").read_text())
     answer.wall_seconds = result["wall_seconds"]

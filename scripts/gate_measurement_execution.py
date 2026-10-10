@@ -12,7 +12,9 @@ import subprocess
 import sys
 import time
 
-from gate_measurement_cohorts import fingerprint
+from gate_measurement_cohorts import ORDER, fingerprint
+from gate_measurement_optional import CONTRACT, completeness
+from gate_measurement_worker import Worker
 from gate_measurement_context import validate
 from gate_measurement_runtime import journal, mirror_progress, observation_deadline, records
 from verifier_result import EXECUTION_FILE, execution
@@ -66,7 +68,13 @@ def run_observation(cohort, *, observe, launch, remaining_window,
     never manufacture an exit or a successful cleanup observation.
     """
     started = clock()
-    before = observe()
+    _, pending, index = cohort.history()
+    if pending or index >= len(ORDER):
+        raise Refusal('measurement has no available settled slot')
+    ceiling = 600 if ORDER[index] == 'reuse' else 4500
+    deadline = started + min(ceiling, remaining_window, remaining_campaign)
+    with observation_deadline(deadline, clock=clock) as deadline:
+        before = observe()
     key = fingerprint(before)
     captured = clock() - started
     if captured < 0:
@@ -76,15 +84,18 @@ def run_observation(cohort, *, observe, launch, remaining_window,
     attempt = cohort.root / f"slot-{slot['slot']:02}"
     try:
         attempt.mkdir(mode=0o700)  # retained/foreign attempts cannot be replaced
-        result = launch(slot, attempt, started + slot['ceiling_seconds'])
+        result = launch(slot, attempt, deadline)
         if (not isinstance(result, dict) or type(result.get('exit_code')) is not int
                 or type(result.get('settled')) is not bool):
             raise Refusal('owned gate returned no exact exit/settlement observation')
-        if fingerprint(observe()) != key:
-            raise Refusal('measurement inputs changed during gate execution')
+        completeness(result.get('telemetry'))
+        with observation_deadline(deadline, clock=clock):
+            if fingerprint(observe()) != key:
+                raise Refusal('measurement inputs changed during gate execution')
         executed, reused = coverage(result['progress'], before['applicable_legs'], slot['mode'])
         return cohort.finish(exit_code=result['exit_code'], settled=result['settled'],
-                             executed=executed, reused=reused, elapsed=clock() - started)
+                             executed=executed, reused=reused, elapsed=clock() - started,
+                             telemetry=result['telemetry'])
     except BaseException as error:
         journal(cohort.root / 'failures.jsonl', {
             'kind': 'interruption', 'slot': slot['slot'],
@@ -102,14 +113,16 @@ class OwnedGate:
     The operator campaign entry owns preparation and admission before this call.
     """
 
-    def __init__(self, manifest_path, gate_command, *, health):
+    def __init__(self, manifest_path, gate_command, *, health, running_health=None):
         self.manifest_path = manifest_path
         self.gate_command = gate_command
         self.health = health
+        self.running_health = running_health or health
 
     def __call__(self, slot, directory, deadline):
         identity = validate(self.manifest_path)
         if (identity.get('kind') != 'gate-throughput-measurement'
+                or identity.get('policy', {}).get('optional_telemetry') != CONTRACT
                 or self.gate_command != identity.get('gate', {}).get('argv')
                 or slot['identity']['source_commit'] != identity['commit']
                 or slot['identity']['source_tree'] != identity['tree']):
@@ -144,30 +157,57 @@ class OwnedGate:
                    'measurement-gate', identity['common'], identity['worktree'], '--',
                    'control', *self.gate_command]
         offset = 0
-        last_health = time.monotonic()
-        with (directory / 'supervisor.log').open('x') as log:
-            if time.monotonic() >= deadline:
-                raise Refusal('measurement gate admission exhausted its allowance')
-            process = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
-            try:
+        worker = Worker(directory, self.manifest_path, deadline)
+        process = None
+        def safety():
+            with observation_deadline(deadline):
+                self.running_health()
+        try:
+            # Prove the exact launcher/validator boundary before starting costly
+            # work. No optional request is released during strict admission.
+            last_health = time.monotonic()
+            while not worker.ready:
+                if time.monotonic() >= deadline:
+                    raise Refusal('measurement worker admission exhausted its allowance')
+                worker.poll()
+                if time.monotonic() - last_health >= 5:
+                    with observation_deadline(deadline):
+                        self.health()
+                    last_health = time.monotonic()
+                if not worker.ready:
+                    time.sleep(.05)
+            with (directory / 'supervisor.log').open('x') as log:
+                if time.monotonic() >= deadline:
+                    raise Refusal('measurement gate admission exhausted its allowance')
+                process = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
+                last_request = 0
                 while process.poll() is None:
                     if time.monotonic() >= deadline:
                         raise Refusal('measurement gate exhausted its allowance')
+                    worker.poll()
                     now = time.monotonic()
                     if now - last_health >= 5:
-                        with observation_deadline(deadline):
-                            self.health()
-                        last_health = now
+                        safety()
+                        last_health = time.monotonic()
+                    if now - last_request >= 5:
+                        worker.request()
+                        last_request = now
                     offset = mirror_progress(progress_path, outer_progress, offset)
                     time.sleep(.5)
-            except BaseException:
-                if process.poll() is None:
-                    process.send_signal(signal.SIGTERM)
-                try:
-                    process.wait(timeout=35)
-                except subprocess.TimeoutExpired as error:
-                    raise Refusal('gate cleanup observation expired; owner and evidence retained') from error
-                raise
+            telemetry = worker.close(safety=safety)
+        except BaseException:
+            try:
+                if process is not None:
+                    if process.poll() is None:
+                        process.send_signal(signal.SIGTERM)
+                    try:
+                        process.wait(timeout=35)
+                    except subprocess.TimeoutExpired as error:
+                        raise Refusal('gate cleanup observation expired; owner and evidence retained') from error
+            finally:
+                if not worker.closed:
+                    worker.close(cancel=True)
+            raise
         mirror_progress(progress_path, outer_progress, offset)
         result = execution(result_path)
         if (result.get('state') != 'completed' or type(result.get('exit_status')) is not int
@@ -180,4 +220,4 @@ class OwnedGate:
                        and owner.get('gate_session') is None)
         validate(self.manifest_path)
         return {'exit_code': result['exit_status'], 'settled': settled,
-                'progress': records(progress_path)}
+                'progress': records(progress_path), 'telemetry': telemetry}

@@ -212,3 +212,24 @@ fn launch_preserves_the_reference_locale() {
         .unwrap();
     assert!(output.status.success(), "{output:?}");
 }
+
+#[test]
+fn optional_exposure_timeout_contract() {
+    for test in [
+        "scripts/tests/test_gate_measurement_optional.py",
+        "scripts/tests/test_gate_measurement_fixture.py",
+        "scripts/tests/test_gate_measurement_worker.py",
+    ] {
+        let result = std::process::Command::new("python3")
+            .args(["-B", test])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .expect("run focused optional exposure contract");
+        assert!(
+            result.status.success(),
+            "{test}: {}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+}

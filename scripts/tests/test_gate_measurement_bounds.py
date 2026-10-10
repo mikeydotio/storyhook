@@ -72,6 +72,8 @@ class Observation(unittest.TestCase):
         process = ManagedProcess.__new__(ManagedProcess)
         process.child = SimpleNamespace(pid=100)
         process.boot = 'fixture'
+        process.trace = None
+        process.leader_signals = set()
         process.observation_failure = None
         with mock.patch('host_admission.supervisor.native.session_members', return_value=[101, 102]), \
                 mock.patch('host_admission.supervisor.native.session_member_is_live',

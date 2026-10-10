@@ -16,6 +16,7 @@ import statistics
 import sys
 import time
 
+from gate_measurement_optional import CONTRACT
 from gate_measurement_bounds import Deadline
 from gate_measurement_cohorts import Cohort, WINDOW_SECONDS, CAMPAIGN_SECONDS
 from gate_measurement_context import validate, manifest, VARIABLE
@@ -29,7 +30,7 @@ from gate_measurement_targets import TargetPool
 from verifier_state import Refusal, boot, paths, read, save
 
 LEGS = ['fmt', 'clippy', 'rust-suite', 'rust-contracts', 'build', 'plugin']
-POLICY = {'version': 2, 'windows': 2, 'window_seconds': WINDOW_SECONDS,
+POLICY = {'version': 3, 'optional_telemetry': CONTRACT, 'windows': 2, 'window_seconds': WINDOW_SECONDS,
           'campaign_seconds': CAMPAIGN_SECONDS, 'slots_per_window': 9,
           'cold_warm_seconds': 4500, 'reuse_seconds': 600,
           'host_load': PROTOCOL}
@@ -38,7 +39,7 @@ TOOL_ENV = {'HOME', 'XDG_STATE_HOME', 'PATH', 'USER', 'LOGNAME', 'TMPDIR', 'TZ',
             'LANG', 'LC_ALL', 'LC_CTYPE', 'LC_COLLATE', 'LC_MESSAGES', 'LC_MONETARY',
             'LC_NUMERIC', 'LC_TIME', 'CARGO_HOME', 'RUSTUP_HOME', 'RUSTUP_TOOLCHAIN',
             'DEVELOPER_DIR', 'SDKROOT', 'TOOLCHAINS', 'STORYHOOK_PYTHON',
-            'CARGO_INCREMENTAL', 'RUSTFLAGS', 'RUSTDOCFLAGS'}
+            'CARGO_INCREMENTAL', 'RUSTFLAGS', 'RUSTDOCFLAGS', 'STORY_TEST_REVIVIFY_REPO'}
 
 
 def campaign_environment(source):
@@ -216,10 +217,12 @@ def collect(path):
     os.environ['STORYHOOK_MEASUREMENT_END'] = str(window.end)
     initial = True
 
-    def health():
+    def health(*, running=False):
         nonlocal initial
         window.require('campaign window'); campaign.require('campaign')
-        observed = annotate_processes(pressure(), os.getpid())
+        observed = pressure(include_processes=not running)
+        if not running:
+            observed = annotate_processes(observed, os.getpid())
         observed['storage'] = check_storage(pool.storage(), initial=initial)
         journal(root / 'pressure.jsonl', dict(observed, kind='health', revision=revision))
         window.require('campaign health observation'); campaign.require('campaign health observation')
@@ -254,11 +257,13 @@ def collect(path):
         for _ in range(3):
             health()
             def observer():
-                return observe(value, inputs, os.environ, target, window.child(2400),
+                boundary = Deadline(2400, end=min(window.end,
+                    float(os.environ['STORYHOOK_MEASUREMENT_END'])))
+                return observe(value, inputs, os.environ, target, boundary,
                                validate_source=lambda: validate(path), versions=tools_identity,
                                resolve_inventory=lambda: inventory(worktree, os.environ))
             result = run_observation(cohort, observe=observer,
-                                     launch=OwnedGate(path, value['gate']['argv'], health=health),
+                                     launch=OwnedGate(path, value['gate']['argv'], health=health, running_health=lambda: health(running=True)),
                                      remaining_window=window.remaining(), remaining_campaign=campaign.remaining())
             if not result['accepted']:
                 raise Refusal('failed measurement retained; campaign stopped')
@@ -284,14 +289,19 @@ def report(root, revision, error=None):
                                     'maximum': max(durations), 'all': durations} if durations else None)}
     resources = [r['owned_resources'] for r in records(Path(root) / 'pressure.jsonl')
                  if 'owned_resources' in r and r.get('revision') == revision]
-    result = {'version': 1, 'revision': revision, 'modes': modes,
+    for sample in cohort.root.glob('slot-*/telemetry/sample-*.json'):
+        row = read(sample)
+        if row and row.get('state') == 'complete':
+            resources.append(row['sample']['owned_resources'])
+    result = {'version': 2, 'revision': revision, 'modes': modes,
+              'telemetry': [dict(slot=r['slot'], **r['telemetry']) for r in rows if r['kind'] == 'finish'],
               'complete': error is None and pending is None and count == 9 and all(r['accepted'] for r in rows if r['kind']=='finish'),
               'pending_slot': pending['slot'] if pending else None, 'error': error,
               'production_certification': False, 'host_load_protocol': PROTOCOL,
               'inference': 'inconclusive pending matched timing and exposure review',
               'observed_peak_resources': {field: max(r[field] for r in resources)
                                           for field in resources[0]} if resources else None,
-              'resource_limit': 'Five-second observations include collector descendants; summed RSS can count shared pages more than once and is not a calibrated host cap.',
+              'resource_limit': 'Optional single-flight observations are requested at five-second intervals; missing or in-flight samples have no resource verdict. Observations include collector descendants; summed RSS can count shared pages more than once and is not a calibrated host cap.',
               'cost_evidence': 'Per-slot progress.jsonl retains raw queue, discovery, compile/link, execution and cleanup boundaries; absent intervals remain unknown.'}
     save(Path(root) / revision / 'summary.json', result)
     return result

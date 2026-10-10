@@ -13,6 +13,7 @@ from gate_measurement_execution import coverage, run_observation, OwnedGate
 from gate_measurement_legs import command_key, current_slot, prepare, finish
 from gate_measurement_runtime import records
 from verifier_state import Refusal
+from gate_measurement_optional import complete
 from test_gate_measurement_cohorts import identity
 
 
@@ -33,14 +34,34 @@ class Execution(unittest.TestCase):
     def run_slot(self, launch=None, observe=None):
         return run_observation(self.cohort, observe=observe or self.observe,
                                launch=launch or self.launch, remaining_window=36000,
-                               remaining_campaign=72000, clock=mock.Mock(side_effect=[10, 10, 910]))
+                               remaining_campaign=72000, clock=mock.Mock(side_effect=[10, 10, 10, 10, 910, 910, 910]))
 
     def launch(self, slot, directory, deadline):
         self.assertEqual(deadline, 10 + slot['ceiling_seconds'])
         self.assertTrue(directory.is_dir())
         self.assertEqual(self.cohort.history()[1]['slot'], slot['slot'])
-        return {'exit_code': 0, 'settled': True,
+        return {'exit_code': 0, 'settled': True, 'telemetry': complete(),
                 'progress': progress(self.identity['applicable_legs'], slot['mode'])}
+
+    def test_input_capture_and_terminal_recheck_share_the_original_slot_deadline(self):
+        import os
+        now = [10]
+        ends = []
+        def observer():
+            ends.append(float(os.environ['STORYHOOK_MEASUREMENT_END']))
+            now[0] += 1
+            return self.identity
+        def launch(slot, directory, end):
+            self.assertEqual(end, 4510)
+            now[0] = 4509
+            return self.launch(slot, directory, end)
+        with mock.patch.dict(os.environ):
+            os.environ.pop('STORYHOOK_MEASUREMENT_END', None)
+            with self.assertRaisesRegex(Refusal, 'original allowance'):
+                run_observation(self.cohort, observe=observer, launch=launch,
+                    remaining_window=36000, remaining_campaign=72000, clock=lambda:now[0])
+        self.assertEqual(ends, [4510, 4510])
+        self.assertIsNotNone(self.cohort.history()[1])
 
     def test_actual_progress_and_settlement_complete_slot_with_target_breach(self):
         result = self.run_slot()
@@ -116,7 +137,7 @@ class Legs(unittest.TestCase):
         return slot, directory
 
     def complete(self, slot):
-        return self.cohort.finish(exit_code=0, settled=True, executed=[] if slot['mode']=='reuse' else ['fmt'],
+        return self.cohort.finish(telemetry=complete(), exit_code=0, settled=True, executed=[] if slot['mode']=='reuse' else ['fmt'],
                                   reused=['fmt'] if slot['mode']=='reuse' else [], elapsed=10)
 
     def warm(self):

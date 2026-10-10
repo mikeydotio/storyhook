@@ -483,7 +483,10 @@ def inventory(worktree, env, *, query=capture):
                     common / 'config', private / 'config.worktree'])
     origins = git_config_origins(query(['git', 'config', '--show-origin', '--name-only', '--list']), worktree)
     configs.extend(Path(p) for p in origins if Path(p) not in configs)
+    from gate_measurement_fixture import revivify_fixture
+    fixtures = {'revivify': revivify_fixture(worktree, env, query)}
     return {'version': 1, 'tools': tools, 'dependency_roots': roots, 'external_files': external_files,
+            'fixture_inputs': fixtures,
             'cargo_configs': [str(p) for p in configs]}
 
 
@@ -518,7 +521,8 @@ def observe(manifest, inventory_record, env, target, deadline, *, validate_sourc
         raise Refusal('measurement target identity changed')
     result = {
         'source_commit': manifest['commit'], 'source_tree': manifest['tree'],
-        'toolchain': {'executables': tools, 'versions': versions(), 'dependencies': dependencies},
+        'toolchain': {'executables': tools, 'versions': versions(), 'dependencies': dependencies,
+                      'fixtures': inventory_record.get('fixture_inputs', {})},
         'environment_digest': digest({k: v for k, v in env.items() if k not in CONTEXT_ENV}),
         'configuration_digest': digest({'external_cargo_configs': configs, 'gate_argv': manifest['gate']['argv'],
                                         'project_configuration': manifest['gate'].get('configuration')}),

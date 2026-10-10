@@ -44,7 +44,7 @@ def observation_deadline(end, *, clock=None):
     require()
     os.environ[name] = str(end)
     try:
-        yield
+        yield end
         require()
     finally:
         if previous is None:
@@ -222,12 +222,14 @@ def require_resource_limits(identity):
     return observed
 
 
-def pressure():
+def pressure(*, include_processes=True):
     """Capture read-only host pressure and process activity with no command arguments."""
     from gate_measurement_exposure import snapshot
-    return {**snapshot(),
+    observed = {**snapshot(),
             'at': datetime.datetime.now().astimezone().isoformat(),
             'load': list(os.getloadavg()), 'cores': os.cpu_count(),
-            'memory': capture(['/usr/bin/memory_pressure', '-Q']),
-            'processes': capture(['ps', '-axo', 'pid=,ppid=,pcpu=,comm=']),
-            'resource_processes': capture(['ps', '-axo', 'pid=,ppid=,pcpu=,rss=,comm='])}
+            'memory': capture(['/usr/bin/memory_pressure', '-Q'])}
+    if include_processes:
+        observed['processes'] = capture(['ps', '-axo', 'pid=,ppid=,pcpu=,comm='])
+        observed['resource_processes'] = capture(['ps', '-axo', 'pid=,ppid=,pcpu=,rss=,comm='])
+    return observed

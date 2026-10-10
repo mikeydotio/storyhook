@@ -42,6 +42,9 @@ class ManagedProcess:
         # The authority's reason for withdrawing this grant, once observed.
         self.drain_reason = None
         self.observation_failure = None
+        self.failure_cause = None
+        self.cancelled = False
+        self.leader_signals = set()
         self.finished = False
         self.result, self.failure = None, None
         self.execution_id = uuid.uuid4().hex
@@ -145,6 +148,8 @@ class ManagedProcess:
             try:
                 if os.getsid(pid) == self.child.pid:
                     os.kill(pid, signum)
+                    if pid == self.child.pid:
+                        self.leader_signals.add(signum)
             except ProcessLookupError:
                 continue
 
@@ -154,6 +159,7 @@ class ManagedProcess:
             if self.failure is not None:
                 raise Refusal(self.failure)
             return self.result
+        self.cancelled = self.cancelled or force_cancel
         requested, sent_term, sent_kill = force_cancel, None, False
         first_signal = signal.SIGTERM
         draining, failure = force_cancel, None
@@ -165,6 +171,7 @@ class ManagedProcess:
         def cancel(_signal, _frame):
             nonlocal requested, first_signal
             requested = True
+            self.cancelled = True
             if self.forward_signals:
                 first_signal = _signal
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
@@ -180,11 +187,13 @@ class ManagedProcess:
                             boundary(self.trace, "cancellation", self.call, "cancel"); requested = False
                         row = self.call("inspect")
                         if row["state"] in {"draining", "quarantined"}:
+                            self.cancelled = True
                             draining = True
                             self.drain_reason = self.drain_reason or row.get("reason")
                         if self.publisher:
                             boundary(self.trace, "publisher", self.publisher.publish)
                     except (Refusal, OSError) as error:
+                        self.failure_cause = error
                         failure, draining = str(error), True
                 exited = boundary(self.trace, "waitid", self._exited)
                 members = self._members()

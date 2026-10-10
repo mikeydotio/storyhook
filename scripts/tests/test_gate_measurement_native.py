@@ -15,6 +15,7 @@ sys.dont_write_bytecode = True
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 from gate_measurement_command import bounded
+from gate_measurement_optional import CONTRACT
 from gate_measurement_targets import TargetPool
 from build_products import ProductLease
 from host_admission import native
@@ -163,7 +164,8 @@ with open(sys.argv[1], 'a') as lock:
         manifest = revision / 'manifest.json'
         manifest.write_text(json.dumps(dict(version=1, kind='gate-throughput-measurement',
             campaign_root=str(campaign), revision='baseline', worktree=str(worktree),
-            common=str(source / '.git'), commit=commit, tree=tree, gate={'argv': argv})))
+            common=str(source / '.git'), commit=commit, tree=tree, gate={'argv': argv},
+            policy={'optional_telemetry': CONTRACT})))
         env.update(STORYHOOK_GATE_MEASUREMENT=str(manifest), CARGO_TARGET_DIR=str(target),
                    STORYHOOK_GATE_PROGRESS=str(campaign / 'progress.jsonl'))
         Path(env['STORYHOOK_GATE_PROGRESS']).touch()

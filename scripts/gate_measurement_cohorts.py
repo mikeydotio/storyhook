@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 
 from verifier_state import Refusal
+from gate_measurement_optional import completeness
 from gate_measurement_runtime import journal, records
 
 IDENTITY_FIELDS = {
@@ -78,6 +79,8 @@ class Cohort:
         pending = None
         failed = False
         for row in rows:
+            if row.get('version') != 2:
+                raise Refusal('measurement evidence predates required telemetry completeness')
             if row['kind'] == 'start':
                 if (pending or failed or type(row.get('slot')) is not int
                         or row.get('slot') != expected or expected >= len(ORDER)):
@@ -98,7 +101,8 @@ class Cohort:
                 elapsed = finite_seconds(row.get('admission_to_settlement_seconds'))
                 legs = pending['identity']['applicable_legs']
                 coverage = (row.get('executed') == legs and row.get('reused') == []) if pending['mode'] != 'reuse' else (row.get('reused') == legs and row.get('executed') == [])
-                accepted = row.get('exit_code') == 0 and row.get('settled') is True and coverage and elapsed <= pending['ceiling_seconds']
+                telemetry_complete = completeness(row.get('telemetry'))
+                accepted = telemetry_complete and row.get('exit_code') == 0 and row.get('settled') is True and coverage and elapsed <= pending['ceiling_seconds']
                 if (type(row.get('exit_code')) is not int or type(row.get('settled')) is not bool
                         or row.get('mode') != pending['mode'] or row.get('accepted') is not accepted
                         or row.get('production_target_breach') is not (elapsed >= 900)
@@ -151,12 +155,12 @@ class Cohort:
             warm = rows[-1]
             if warm.get('accepted') is not True or warm.get('mode') != 'warm':
                 raise Refusal('reuse requires the immediately preceding successful warm execution')
-        row = {'kind': 'start', 'slot': slot, 'block': slot // 3, 'mode': mode,
+        row = {'version': 2, 'kind': 'start', 'slot': slot, 'block': slot // 3, 'mode': mode,
                'key': key, 'identity': identity, 'ceiling_seconds': ceiling}
         journal(self.path, row)
         return row
 
-    def finish(self, *, exit_code, settled, executed, reused, elapsed):
+    def finish(self, *, exit_code, settled, executed, reused, elapsed, telemetry):
         rows, pending, _ = self.history()
         if pending is None:
             raise Refusal('no started measurement to finish')
@@ -166,8 +170,9 @@ class Cohort:
             raise Refusal('measurement exit/settlement evidence is missing')
         expected = pending['identity']['applicable_legs']
         coverage = (executed == expected and reused == []) if pending['mode'] != 'reuse' else (reused == expected and executed == [])
-        accepted = exit_code == 0 and settled and coverage and elapsed <= pending['ceiling_seconds']
-        row = {'kind': 'finish', 'slot': pending['slot'], 'mode': pending['mode'],
+        telemetry_complete = completeness(telemetry)
+        accepted = telemetry_complete and exit_code == 0 and settled and coverage and elapsed <= pending['ceiling_seconds']
+        row = {'version': 2, 'telemetry': telemetry, 'kind': 'finish', 'slot': pending['slot'], 'mode': pending['mode'],
                'exit_code': exit_code, 'settled': settled, 'executed': executed, 'reused': reused,
                'admission_to_settlement_seconds': elapsed, 'production_target_breach': elapsed >= 900,
                'accepted': accepted, 'production_certification': False}

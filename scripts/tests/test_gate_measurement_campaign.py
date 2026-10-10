@@ -22,6 +22,7 @@ from gate_measurement_storage import directory_identity
 from gate_measurement_runtime import records
 import gate_measurement_campaign as campaign_module
 from verifier_state import Refusal
+from gate_measurement_optional import complete
 from test_gate_measurement_cohorts import identity
 
 
@@ -33,6 +34,10 @@ class Fixture(unittest.TestCase):
 
 
 class Inputs(Fixture):
+    def test_external_transport_fixture_selector_survives_environment_filter(self):
+        self.assertEqual(campaign_environment({'STORY_TEST_REVIVIFY_REPO':'/fixture/repository'})[
+            'STORY_TEST_REVIVIFY_REPO'], '/fixture/repository')
+
     def test_python_framework_is_bound_to_its_selected_distribution(self):
         package = self.root / 'Cellar/python@3.14/3.14.7'
         prefix = package / 'Frameworks/Python.framework/Versions/3.14'
@@ -219,7 +224,7 @@ class Windows(Fixture):
             value['target_identity']['inode'] = slot // 3 + 2
             row = cohort.begin(value, remaining_window=36000, remaining_campaign=72000)
             reuse = row['mode'] == 'reuse'
-            cohort.finish(exit_code=0, settled=True, executed=[] if reuse else value['applicable_legs'],
+            cohort.finish(telemetry=complete(), exit_code=0, settled=True, executed=[] if reuse else value['applicable_legs'],
                           reused=value['applicable_legs'] if reuse else [], elapsed=1)
         _, window = begin_window(self.root, 'optimization', auth, clock=lambda: 40000, boot_id='boot-a')
         self.assertEqual(window['end'], 72100)
@@ -312,7 +317,7 @@ class HelperCustody(Fixture):
         (self.root / 'input').write_text('')
         (self.root / 'request.json').write_text(json.dumps({'argv': ['fixture-command']}))
         with mock.patch('host_admission.supervisor.inherited_descriptors', return_value={12, 9}), \
-             mock.patch('gate_measurement_command.subprocess.run', return_value=SimpleNamespace(returncode=0)) as run:
+             mock.patch('gate_measurement_command.subprocess.Popen', return_value=SimpleNamespace(pid=123, wait=lambda:0)) as run:
             self.assertEqual(execute(self.root), 0)
         self.assertEqual(run.call_args.kwargs['pass_fds'], (9, 12))
 
@@ -369,7 +374,7 @@ class Controller(Fixture):
             self.slots.append(slot['mode'])
             if slot['slot'] == fail_slot: raise InterruptedError('fixture interruption')
             from test_gate_measurement_execution import progress
-            return dict(exit_code=0, settled=True, progress=progress(['fmt'], slot['mode']))
+            return dict(exit_code=0, settled=True, telemetry=complete(), progress=progress(['fmt'], slot['mode']))
         def bounded(argv, **_kwargs):
             remove_exact(argv[-3], int(argv[-2]), int(argv[-1]))
             return SimpleNamespace(returncode=0, stderr='')

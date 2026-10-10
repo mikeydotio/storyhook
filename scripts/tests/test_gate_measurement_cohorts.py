@@ -10,6 +10,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gate_measurement_cohorts import Cohort, fingerprint
 from verifier_state import Refusal
+from gate_measurement_optional import complete
 
 
 def identity():
@@ -34,7 +35,7 @@ class Cohorts(unittest.TestCase):
                                  remaining_campaign=kwargs.get('campaign', 72000))
 
     def finish(self, **kwargs):
-        return self.cohort.finish(exit_code=kwargs.get('exit', 0), settled=kwargs.get('settled', True),
+        return self.cohort.finish(telemetry=complete(), exit_code=kwargs.get('exit', 0), settled=kwargs.get('settled', True),
                                   executed=kwargs.get('executed', self.identity['applicable_legs']),
                                   reused=kwargs.get('reused', []), elapsed=kwargs.get('elapsed', 60))
 

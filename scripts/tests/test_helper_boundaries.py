@@ -297,6 +297,9 @@ print('fixture child')
         process.guard = os.open(self.root / "guard", os.O_CREAT | os.O_RDWR, 0o600)
         self.addCleanup(lambda: os.close(process.guard) if process.guard is not None else None)
         process.finished = False
+        process.cancelled = False
+        process.leader_signals = set()
+        process.failure_cause = None
         process.result = process.failure = process.observation_failure = process.drain_reason = None
         process.forward_signals = False
         process.publisher = publisher
@@ -358,9 +361,9 @@ print('fixture child')
         from gate_measurement_bounds import Deadline
         now = [0]
         deadlines = []
-        def limit(seconds):
+        def limit(seconds, end=None):
             deadlines.append(seconds)
-            return Deadline(seconds, clock=lambda: now[0])
+            return Deadline(seconds, clock=lambda: now[0], end=end)
         process = SimpleNamespace(close=Mock())
         def managed(custody, lease, argv, **kwargs):
             self.assertFalse(kwargs["grant_environment"])
