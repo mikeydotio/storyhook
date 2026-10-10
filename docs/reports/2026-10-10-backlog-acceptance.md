@@ -12,7 +12,8 @@ Formal release/publication remains after truthful backlog disposition. No gate i
 started by this documentation PR. Any required clarification concerns the order
 of validation and board completion, not whether all release tests must run.
 
-The performance investigation is closed: **eight charged attempts, zero accepted
+After one explicitly authorized replacement, the investigation is again closed:
+**nine charged attempts, zero accepted
 original cohort samples, one successful observer diagnostic**. No further campaign
 is proposed. Automations remain off and the verifier stopped. No production
 activation, provider selection, paid call, story closure or merge follows from
@@ -43,7 +44,7 @@ summed across stories because some tests overlap.
 |---|---|---|---|---|
 | SH-797 | Explain the historical 1.6–1.9× dispatch slowdown using real historical/current dispatch and shim comparisons. | Local shim run completed 240 timed operations; added medians were 31.207, 30.153 and 49.312 ms across three fixture cases. Static dispatch source analysis exists. | Historical/current production comparison and causal attribution. Local empty-repository timings are not real dispatch timings. | Document inconclusive production attribution. Owner may accept a narrower research outcome; otherwise remain open. |
 | SH-801 | Matched normal/utility gate comparisons with interactive probes under representative load. | Collector/wrapper implementation and focused evidence exist in draft PRs991–993. Observer diagnostic completed 12 snapshots/36 helpers. | Accepted matched gate cohort and measured interactive baseline. Observer ran without compilation load. | Report methodology and missing results; accept inconclusive research only by explicit scope decision, otherwise open. |
-| SH-872 | Measured cold/warm/reuse cost ranking and causal optimization within host/900-second budget while retaining detectors. | PR990 fingerprint repair and PR995 correctness fixes landed. Eight charged attempts; zero accepted original cohorts. Cold attempt lower bound 977.967 s. | Matched cohort, causal speedup, complete cost ranking and target compliance. | Record target unmet and terminal findings. Explicit bounded-research disposition or remain open; never certify optimization from these results. |
+| SH-872 | Measured cold/warm/reuse cost ranking and causal optimization within host/900-second budget while retaining detectors. | PR990 fingerprint repair and PR995 correctness fixes landed. Nine charged attempts; zero accepted original cohorts. Cold attempt lower bound 977.967 s. | Matched cohort, causal speedup, complete cost ranking and target compliance. | Record target unmet and terminal findings. Explicit bounded-research disposition or remain open; never certify optimization from these results. |
 | SH-873 | Decide coverage from measured cost, detector inventory, placement, dependencies and detection delay; preserve honest full coverage when unknown. | Static inventory prepared; existing coverage remains unchanged. Browser checks remain release-tier. | Measured costs and evidence that any proposed policy/capacity meets 900 s. | Recommend retaining existing full coverage. Owner must decide whether incomplete measured analysis is an acceptable research disposition; no exclusions or receipt relabeling. |
 | SH-874 | Enforce truthful 900-second admission-to-verdict holds/settlement, validate required cohorts and thresholds, observe 30 consecutive production attempts and complete release coverage. | Landed resource/recovery mechanisms have focused evidence. Neither that evidence nor the observer demonstrates this rollout contract. | Required cohorts, approved interactive thresholds, 30-attempt production series and validated performance/enforcement acceptance. | Remain open under original criteria. Optional explicit withdrawal/re-scope may produce a disabled-readiness assessment, but is not completed rollout or implementation. |
 | SH-866 | Derived epic organizing SH-867–874. | Earlier children landed; SH-871 awaits gate and SH-872–874 retain gaps above. | Truthful child completion/disposition. | Let state derive from children. Do not manually close the epic to empty the board. |
@@ -70,11 +71,39 @@ Slot 7's observer completed in 56.248 seconds, with no compilation workload.
 Slot 8 failed in 1.409 seconds **before input capture or `make test`** because the
 task adapter passed `pathlib.Path` to a validator comparing a stored string path.
 Implementation and review missed that real boundary. The successful observer is
-not a replacement accepted sample. No slots or campaign authority remain.
-All eight attempts and original failure records are retained; the original failed
+not a replacement accepted sample. That eight-attempt outcome remains retained; the later replacement is recorded below.
+All original failure records are retained; the original failed
 helper's nonterminal durable record remains preserved despite observed empty
 native session. The task-only adapter is not delivered source; its frozen copy
 and unapplied correction remain evidence. It is not being shipped or reused.
+
+### Authorized replacement, slot 9 — terminal update
+
+At 19:26 UTC the owner authorized exactly one replacement partial-warm attempt,
+preserving the original deadline, 7,200-second run limit and overall cap of 20.
+The isolated adapter normalized the three Path/string boundaries. Fifteen policy
+checks and two launcher-to-real-validator regression cases passed; the latter use
+real manifest/owner/Git checks and stop before gate execution. Independent review
+approved the exact corrected freeze. Fresh custody/source/input checks allowed
+reuse of observer slot 7 without another diagnostic invocation.
+
+Slot 9 ran from 19:32:04 to 19:34:27 UTC (143.599 seconds to terminal observation).
+The repaired boundary worked: `make test` started, formatting passed in 3 seconds,
+and Clippy passed in 1 second. During Rust compilation, the same process-census
+helper exhausted its unchanged 30-second allowance. Admission took 0.299 seconds;
+the command phase began 1.803 seconds after the allowance started. There was no
+command-finished event; supervision reported failure at 34.484 seconds. This
+locates the unresolved delay after command-phase entry, not inside a proven OS
+or `ps` execution interval. No compiler defect or test assertion failure was
+established. No complete gate or accepted cohort resulted.
+
+Supervised gate cleanup escalated from TERM to KILL. Fresh native settlement at
+19:34:49 UTC found 72 replacement custody records with empty sessions and released
+guards: 71 finished records and one preserved nonterminal failed-helper record.
+All 11 build-product records were finished; all 241 frozen files were unchanged.
+The original failed helper also remains preserved. Nine attempts are now charged,
+zero original cohort samples accepted, and no further attempt is authorized.
+The same full release prerequisites and all 18 open story dispositions remain.
 
 ## Proposed actions and owner decisions — separate from evidence
 

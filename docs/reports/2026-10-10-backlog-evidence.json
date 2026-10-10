@@ -216,6 +216,22 @@
     {
       "record": "inventory.json",
       "sha256": "10fa40050778f98bdafc568b69b5432f6baaed8ce61214af9825511584adf0e7"
+    },
+    {
+      "record": "replacement-owner-approval.json",
+      "sha256": "510513ddef53f5ffff52c926df9392a4552fbd34c6f17d24252f393c01854245"
+    },
+    {
+      "record": "replacement-slot9-outcome.json",
+      "sha256": "63e87cf8c6ed6caedb8dc354cad703c4d751b622fa02ef46cb1cf65e2b857ea7"
+    },
+    {
+      "record": "replacement-retained-telemetry-analysis.json",
+      "sha256": "7a0d580cb5f5d1fe5da37e09aae4b99cbff5b0e6ade8dfebc426a71f42ad2241"
+    },
+    {
+      "record": "replacement-terminal-native-settlement.json",
+      "sha256": "1e6b1a2ac787ae7dfe1320c04782b2f4c6dbceac0e5ee22f26efb4789839a888"
     }
   ],
   "board": [
@@ -293,12 +309,20 @@
     }
   ],
   "final_investigation": {
-    "charged_attempts": 8,
+    "charged_attempts": 9,
     "accepted_original_cohort_samples": 0,
     "successful_observer_diagnostics": 1,
     "remaining_slots": 0,
-    "last_slot_gate_started": false,
-    "full_gate_performance_result": false
+    "last_slot_gate_started": true,
+    "full_gate_performance_result": false,
+    "replacement_slot": 9,
+    "replacement_success": false,
+    "replacement_elapsed_seconds": 143.59866020799382,
+    "passed_replacement_legs": [
+      "fmt",
+      "clippy"
+    ],
+    "complete_gate_result": false
   },
   "actions_in_this_packet": {
     "tests_run": false,
