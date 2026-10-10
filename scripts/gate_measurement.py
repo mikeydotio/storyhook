@@ -12,9 +12,10 @@ import time
 
 sys.dont_write_bytecode = True
 
+from gate_measurement_exposure import PROTOCOL, annotate_processes
 from gate_measurement_context import manifest, validate
-from gate_measurement_data import IdleWindow, parse_wall, schedule, summarize
-from gate_measurement_runtime import capture, execution_active, journal, mirror_progress, normal_class, pending_sample, pressure, records, require_resource_limits, scheduling
+from gate_measurement_data import parse_wall, schedule, summarize
+from gate_measurement_runtime import capture, execution_active, observation_deadline, journal, mirror_progress, normal_class, pending_sample, pressure, records, require_resource_limits, scheduling
 from gate_measurement_setup import immutable, prepare, tools_identity
 from verifier_state import Refusal, atomic, paths, read, save
 from gate_measurement_bounds import Deadline, LIMITS, require_same_day, start_slot, validate_policy
@@ -48,26 +49,18 @@ def progress(event):
     journal(os.environ['STORYHOOK_GATE_PROGRESS'], event)
 
 
-def idle(directory, cohort):
-    """Wait for the declared continuous idle interval and keep sensor evidence."""
-    window = IdleWindow()
-    limit = Deadline(LIMITS['quiet_wait_seconds'], end=float(os.environ.get('STORYHOOK_MEASUREMENT_END', 'inf')))
-    while True:
-        limit.require('quiet admission')
-        if today() != cohort['day']:
-            raise Refusal('local day changed during idle admission')
-        observed = pressure()
-        from gate_measurement_campaign import competing_work, owned_resources
-        observed['competing_pids'] = competing_work(observed['processes'], os.getpid())
-        observed['owned_resources'] = owned_resources(observed['resource_processes'], os.getpid())
-        journal(directory / 'pressure.jsonl', dict(observed, kind='idle'))
-        if observed['competing_pids']:
-            raise Refusal('competing external work prevents quiet scheduling admission')
-        progress({'kind': 'activity', 'path': 'measurement/idle', 'status': 'running',
-                  'label': f"observed load/core {observed['load'][0] / observed['cores']:.3f}", 'at': observed['at']})
-        if window.observe(time.monotonic(), observed['load'][0], observed['cores']):
-            return observed
-        time.sleep(min(LIMITS['sample_seconds'], limit.remaining()))
+def admission(directory, cohort):
+    """Observe representative exposure without waiting for an idle machine."""
+    limit = Deadline(LIMITS['capture_seconds'], end=float(os.environ.get('STORYHOOK_MEASUREMENT_END', 'inf')))
+    limit.require('representative admission')
+    if today() != cohort['day']:
+        raise Refusal('local day changed during representative admission')
+    with observation_deadline(limit.end):
+        observed = annotate_processes(pressure(), os.getpid())
+        journal(directory / 'pressure.jsonl', dict(observed, kind='admission'))
+    limit.require('representative admission observation')
+    # No watchdog heartbeat: host activity does not prove gate progress.
+    return observed
 
 
 def gate_exec(path, condition, directory):
@@ -144,16 +137,12 @@ def run_sample(identity, cohort, index, directory, probes, warmup=False):
                     journal(directory / 'probes.jsonl', result)
                 now = time.monotonic()
                 if now - last_pressure >= LIMITS['sample_seconds']:
-                    observed = pressure()
-                    from gate_measurement_campaign import competing_work, owned_resources
-                    observed['competing_pids'] = competing_work(observed['processes'], os.getpid())
-                    observed['owned_resources'] = owned_resources(observed['resource_processes'], os.getpid())
-                    if 'storage' in identity:
-                        observed['storage'] = check_storage(identity['storage'])
-                        observed['native_memory_pressure'] = pressure_level()
-                    journal(directory / 'pressure.jsonl', dict(observed, kind='running'))
-                    if observed['competing_pids']:
-                        raise Refusal('competing external work invalidates the scheduling sample')
+                    with observation_deadline(limit.end):
+                        observed = annotate_processes(pressure(), os.getpid())
+                        if 'storage' in identity:
+                            observed['storage'] = check_storage(identity['storage'])
+                            observed['native_memory_pressure'] = pressure_level()
+                        journal(directory / 'pressure.jsonl', dict(observed, kind='running'))
                     last_pressure = now
                 time.sleep(.5)
         except BaseException:
@@ -207,6 +196,8 @@ def run_sample(identity, cohort, index, directory, probes, warmup=False):
 def report(directory, cohort):
     """Publish derived statistics while retaining all attempted observations."""
     result = summarize(cohort, records(directory / 'samples.jsonl'))
+    result['host_load_protocol'] = cohort.get('host_load_protocol')
+    result['inference'] = 'inconclusive pending paired timing and host-exposure review; completeness is not a performance verdict'
     result['samples_complete'] = result['complete']
     result['probe_cleanup'] = read(directory / 'cleanup.json')
     result['complete'] = result['samples_complete'] and (result['probe_cleanup'] or {}).get('ok') is True
@@ -221,7 +212,7 @@ def report(directory, cohort):
         timing = '/'.join(f'{gate[k]:.3f}' for k in ('median', 'min', 'max')) if gate else 'unavailable'
         lines.append(f"| {name} | {row['attempted']} | {row['valid']} | {row['failed']} | {row['unresolved']} | {timing} | {probes['list'] if probes else 'unavailable'} | {probes['hook'] if probes else 'unavailable'} |")
     lines += ['', f"Gate median change: {result['median_change_percent']} percent.", '',
-              'Admission required load/core < 0.5 continuously for 60 seconds. This is not host-wide exclusion.',
+              'Representative variable-load protocol v2: natural contention retained; no load-average-only rejection.',
               'Raw pressure and process observations accompany each attempt. Linux and Xcode inheritance are unmeasured.',
               'Failures describe this matched experiment only; unmatched historical logs do not establish a causal red-rate change.', '']
     atomic(directory / 'report.md', '\n'.join(lines).encode())
@@ -265,7 +256,7 @@ def owned(path):
     immutable(output / 'day.json', {'version': 1, 'day': day})
     directory = output / 'cohorts' / day
     directory.mkdir(parents=True, exist_ok=True)
-    cohort = {'version': 1, 'day': day, 'tree': identity['tree'], 'pairs': 10}
+    cohort = {'version': 1, 'day': day, 'tree': identity['tree'], 'pairs': 10, 'host_load_protocol': PROTOCOL}
     immutable(directory / 'cohort.json', cohort)
     sample_log = directory / 'samples.jsonl'
     index = resume_index(cohort, records(sample_log), day)
@@ -278,7 +269,7 @@ def owned(path):
         os.environ['STORYHOOK_MEASUREMENT_END'] = str(campaign_end)
         warmup = read(directory / 'warmup.json')
         if warmup is None:
-            idle(directory, cohort)
+            admission(directory, cohort)
             print('measurement: warmup starting', flush=True)
             warmup = run_sample(identity, cohort, -1, directory / 'warmup', probes, warmup=True)
             save(directory / 'warmup.json', dict(warmup, version=1))
@@ -288,7 +279,7 @@ def owned(path):
             require_resource_limits(identity)
             if tools_identity() != identity['tools']:
                 raise Refusal('toolchain changed during collection')
-            observed = idle(directory, cohort)
+            observed = admission(directory, cohort)
             journal(sample_log, {'kind': 'start', 'index': index, 'at': observed['at'], 'condition': schedule()[index]})
             print(f'measurement: sample {index + 1}/20 {schedule()[index]} starting', flush=True)
             try:

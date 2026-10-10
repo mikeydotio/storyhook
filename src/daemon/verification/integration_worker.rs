@@ -421,7 +421,7 @@ pub(crate) fn run_with_native<S: Store>(
                 operations.gate_inputs(service, claim, deadline, cancellation)
             },
         )? {
-            super::integration_gate::ManagedGateResult::Certified(native) => native,
+            super::integration_gate::ManagedGateResult::Certified(native) => *native,
             super::integration_gate::ManagedGateResult::Uncertified(outcome) => {
                 return Err(AppError::Validation(format!(
                     "managed gate did not certify the exact tree: {outcome:?}"
@@ -527,12 +527,11 @@ pub(crate) fn run_with_native<S: Store>(
     })();
     if let Err(error) = &run
         && let Some(id) = owner
+        && let Err(note) = service.note_hold(&id, &error.to_string())
     {
-        if let Err(note) = service.note_hold(&id, &error.to_string()) {
-            return Err(AppError::Storage(format!(
-                "{error}; could not retain managed hold: {note}"
-            )));
-        }
+        return Err(AppError::Storage(format!(
+            "{error}; could not retain managed hold: {note}"
+        )));
     }
     run
 }

@@ -56,8 +56,9 @@ workspace theft, automatic orphan adoption, or daemon replacement is permitted.
 ## Protocol
 
 1. Warm the build with a separate full gate. Keep its evidence out of statistics.
-2. Before each run require load average per logical CPU below 0.5 for a continuous
-   60 seconds. Retain load, CPU count, memory pressure and process observations.
+2. Before each run record representative host exposure under protocol v2.
+   Retain load, CPU ticks/count, swap, memory pressure and process observations.
+   Natural CPU contention and unrelated builds are evidence, not rejection reasons.
 3. Run ten alternating control/utility pairs against the same tree on one local
    calendar day. Time the gate with `/usr/bin/time -p`. Verify its actual class.
 4. Keep the collector and interactive probes outside the gate clamp. During
@@ -69,16 +70,17 @@ workspace theft, automatic orphan adoption, or daemon replacement is permitted.
 6. Preserve every attempt, exit, cleanup result, failed probe and interruption.
    No retry replaces a failure. Stop an invalid cohort with its evidence intact.
 
-The project gate lock is not a host-wide lock. Admission proves the stated idle
-criterion only. Per-run pressure/process observations support interpretation of
-external activity. Do not describe this as proof that no outside work ran.
+The project gate lock is not a host-wide lock. Coordinate our broad suites and
+releases before starting. Per-run observations retain natural external activity;
+load averages alone do not establish CPU saturation. Known normal native memory
+pressure, storage, ownership and input-integrity checks remain mandatory.
 
 ## Evidence and restart
 
 The immutable manifest identifies the experiment. Each date has a cohort record,
 append-only sample journal, warmup, per-run command/supervisor/probe logs,
 scheduling observations, pressure log, and derived JSON/Markdown report.
-The lock watchdog receives actual gate events and measured idle observations;
+The lock watchdog receives actual gate events; host observations do not renew execution deadlines and
 arbitrary stdout cannot keep it alive.
 
 A restart requires the same identity and a valid completed prefix. Missing exits,
@@ -93,7 +95,7 @@ causal red-rate change from unmatched logs.
 
 ## Acceptance
 
-Regressions cover statistics, ordering, warmups, idle waiting, class selection,
+Regressions cover statistics, ordering, warmups, representative-load admission, class selection,
 owner validation, receipt suppression, ordinary receipt/reuse behavior, real
 subprocess cleanup, meaningful probes, overlap, failures, corrupt evidence,
 restarts and date boundaries. Only new and directly impacted tests run in the
@@ -106,17 +108,17 @@ Tooling alone is not completion. The central verifier owns submission and merge.
 ## Containment and current readiness
 
 The bounded collector has a 22.25-hour campaign ceiling, 40-minute initial
-preparation ceiling, 60-second project-lock wait, 300-second quiet admission
-wait, 60-minute per-gate ceiling and 30-second helper/probe ceiling. The probe
+preparation ceiling, 60-second project-lock wait, 30-second admission
+observation ceiling, 60-minute per-gate ceiling and 30-second helper/probe ceiling. The probe
 fixture gets at most ten minutes of preparation. It samples host observations
 every five seconds. The same boot, day and manifest are required for resumption.
 Every started gate, including warmup, failed and interrupted gates, consumes
 one of 21 slots. No failed slot can be replaced.
 
 These are containment ceilings, not measured runtimes. Taking every individual
-maximum sequentially (21 gates, 21 quiet waits and 40 minutes of preparation)
-would total 23 hours 25 minutes before cleanup overhead, exceeding the campaign
-ceiling. The collector must stop before admitting work that does not fit; the
+maximum sequentially (21 gates and 40 minutes of preparation) would leave only
+35 minutes of the campaign ceiling for all observations, probes, locks and cleanup.
+Those independent overheads can exhaust the reservation. The collector must stop before admitting work that does not fit; the
 22.25-hour reservation does not promise a complete cohort at those maxima.
 Acceptance still requires all twenty valid same-day samples. A longer
 reservation or another campaign needs an explicit coordinated decision.
@@ -130,4 +132,28 @@ and failed command custody records remain in the private output namespace.
 Source readiness still requires the pressure/storage controls shared with
 SH-872 and focused regression validation. Do not launch a full campaign from
 this incremental port. The current manual campaign also requires a separate
-quiet-host start signal. Disk is not reserved and existing caches are retained.
+coordinated start signal. Idle-host qualification is no longer required. Disk is not reserved and existing caches are retained.
+
+## Representative-load amendment (2026-10-09)
+
+The user explicitly requires resilience under their variable everyday workload,
+including periods of saturated CPU. This supersedes SH-801's idle-only acceptance
+clause and SH-797's idle prerequisite for its historical/current dispatch pair.
+SH-872 did not require idle admission; its collector's load/core cutoff and
+blanket exclusion of natural external builds are removed. An idle reference may
+be useful separately, but is not required to collect useful resilience evidence.
+Historical incomplete idle cohorts remain unchanged; a v1 manifest cannot resume
+under v2. This is an explicit acceptance amendment, not an idle measurement pass.
+
+All other SH-801 controls remain: one exact tree and local calendar day, warm
+build without verdict reuse, ten alternating samples per condition, actual
+normal/utility scheduling verification, ten list/hook probes per condition,
+raw exits and settled ownership, and the original 21-slot/22.25-hour ceilings.
+Results still need to be recorded on SH-801 and SH-785. Collector completion and
+correctness do not establish a scheduling advantage. Report paired effects and
+raw exposure; retain inconsistent or insufficient comparisons as inconclusive.
+Do not discard slow/failed attempts, adjust away contention after seeing results,
+or pool this amended cohort with historical idle-only data.
+
+See [representative workload protocol](representative-workload-measurement.md)
+for the exact bounded local experiment and remaining full-campaign review.

@@ -1170,7 +1170,7 @@ fn assemble(
     let mut paths: Vec<_> = changed
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
-        .map(|path| text(path))
+        .map(text)
         .collect::<Result<_, _>>()?;
     let mut expected: Vec<_> = files.iter().map(|file| file.path.clone()).collect();
     paths.sort();

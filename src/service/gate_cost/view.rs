@@ -66,7 +66,7 @@ impl RetainedSubmissionStatus {
         let view = EvidenceView::new(
             submission.project,
             &submission.story_id,
-            attempts.as_ref().map(|a| a.clone()).unwrap_or_default(),
+            attempts.as_ref().cloned().unwrap_or_default(),
         );
         let cost = view
             .submissions

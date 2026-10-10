@@ -508,7 +508,7 @@ try:
     with mock.patch('gate_measurement.observe',return_value={{'fixture': True}}), \
          mock.patch('gate_measurement.check_storage',return_value={{}}), \
          mock.patch('gate_measurement.pressure_level',return_value=1), \
-         mock.patch('gate_measurement.pressure',return_value={{'processes':f'{{os.getpid()}} 1 0.0 python\\n','resource_processes':f'{{os.getpid()}} 1 0.0 10 python\\n'}}):
+         mock.patch('gate_measurement.pressure',return_value={{'monotonic':123.0,'load':[90,60,20],'cores':10,'native_memory_pressure':1,'cpu_ticks':[1,2,0,0],'processes':f'{{os.getpid()}} 1 0.0 python\\n','resource_processes':f'{{os.getpid()}} 1 0.0 10 python\\n'}}):
         result=run_sample(identity,dict(tree=identity['tree'],day=today(),pairs=10),{index},Path({str(sample_dir)!r}),probes)
     print(json.dumps(result))
 finally:
@@ -627,7 +627,7 @@ cohort = dict(version=1, tree=identity['tree'], pairs=10, day=today())
 with mock.patch('gate_measurement.observe', return_value={{'fixture': True}}), \
      mock.patch('gate_measurement.check_storage', return_value={{}}), \
      mock.patch('gate_measurement.pressure_level', return_value=1), \
-     mock.patch('gate_measurement.pressure', return_value={{'processes':f'{{os.getpid()}} 1 0.0 python\\n','resource_processes':f'{{os.getpid()}} 1 0.0 10 python\\n'}}):
+     mock.patch('gate_measurement.pressure', return_value={{'monotonic':123.0,'load':[90,60,20],'cores':10,'native_memory_pressure':1,'cpu_ticks':[1,2,0,0],'processes':f'{{os.getpid()}} 1 0.0 python\\n','resource_processes':f'{{os.getpid()}} 1 0.0 10 python\\n'}}):
     sample = run_sample(identity, cohort, 1, Path({str(self.output / 'sample')!r}), None)
 print(json.dumps(sample))
 '''

@@ -379,14 +379,12 @@ class Controller(Fixture):
              mock.patch.object(campaign_module, 'inventory', return_value={'version': 1}), \
              mock.patch.object(campaign_module, 'observe', side_effect=observe), \
              mock.patch.object(campaign_module, 'OwnedGate', return_value=launch), \
-             mock.patch.object(campaign_module, 'IdleWindow') as idle, \
-             mock.patch.object(campaign_module, 'pressure', return_value={'load': [0, 0, 0], 'cores': 10, 'processes': f'{os.getpid()} 1 0.0 python\n', 'resource_processes': f'{os.getpid()} 1 0.0 10 python\n'}), \
+             mock.patch.object(campaign_module, 'pressure', return_value={'load': [90, 60, 20], 'cores': 10, 'monotonic': 123, 'native_memory_pressure': 1, 'cpu_ticks': [1, 2, 0, 0], 'processes': f'{os.getpid()} 1 0.0 python\n999999 1 800.0 xcodebuild\n', 'resource_processes': f'{os.getpid()} 1 0.0 10 python\n'}), \
              mock.patch.object(campaign_module, 'check_storage', return_value={'free_bytes': 200 * 1024**3}), \
              mock.patch.object(campaign_module, 'paths', return_value=(None, None, self.root / 'owner')), \
              mock.patch('build_products.namespace', return_value=self.root), \
              mock.patch('build_products.ProductLease', return_value=nullcontext()), \
              mock.patch('gate_measurement_command.bounded', side_effect=bounded):
-            idle.return_value.observe.return_value = True
             (self.root / 'owner.owner').write_text(json.dumps({'version': 1, 'gate_started': False, 'gate_session': None}))
             cwd = os.getcwd()
             try: return campaign_module.owned(str(self.path))
@@ -402,6 +400,10 @@ class Controller(Fixture):
         self.assertTrue((self.revision / 'complete.json').exists())
         summary = json.loads((self.revision / 'summary.json').read_text())
         self.assertTrue(summary['complete'])
+        exposure = records(self.root / 'pressure.jsonl')
+        self.assertTrue(all(r['competing_pids'] == [999999] for r in exposure))
+        self.assertTrue(all(r['load'][0] == 90 for r in exposure))
+        self.assertIn('inconclusive', summary['inference'])
         self.assertEqual(summary['modes']['reuse']['accepted'], 3)
         self.assertEqual(summary['observed_peak_resources']['rss_bytes_sum'], 10240)
 

@@ -1,6 +1,8 @@
 """OS observations and durable logs for verifier-owned measurements."""
 
 import json
+import contextlib
+import math
 import ctypes
 import datetime
 import hashlib
@@ -14,6 +16,41 @@ import time
 
 sys.dont_write_bytecode = True
 from verifier_state import Refusal
+
+
+@contextlib.contextmanager
+def observation_deadline(end, *, clock=None):
+    """Cap every nested capture to this observation without renewing its parent.
+
+    Collectors are sequential. Restore the exact inherited environment on all
+    exits; cleanup keeps its existing independent custody allowance.
+    """
+    clock = time.monotonic if clock is None else clock
+    name = 'STORYHOOK_MEASUREMENT_END'
+    previous = os.environ.get(name)
+    if type(end) not in (int, float) or not math.isfinite(end):
+        raise Refusal('observation deadline must be finite')
+    if previous is not None:
+        try:
+            parent = float(previous)
+        except ValueError as error:
+            raise Refusal('parent observation deadline is invalid') from error
+        if not math.isfinite(parent):
+            raise Refusal('parent observation deadline must be finite')
+        end = min(end, parent)
+    def require():
+        if clock() >= end:
+            raise Refusal('host observation exhausted its original allowance')
+    require()
+    os.environ[name] = str(end)
+    try:
+        yield
+        require()
+    finally:
+        if previous is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = previous
 
 
 def journal(path, event):
@@ -187,8 +224,8 @@ def require_resource_limits(identity):
 
 def pressure():
     """Capture read-only host pressure and process activity with no command arguments."""
-    from gate_measurement_storage import pressure_level
-    return {'native_memory_pressure': pressure_level(),
+    from gate_measurement_exposure import snapshot
+    return {**snapshot(),
             'at': datetime.datetime.now().astimezone().isoformat(),
             'load': list(os.getloadavg()), 'cores': os.cpu_count(),
             'memory': capture(['/usr/bin/memory_pressure', '-Q']),

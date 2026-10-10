@@ -6,11 +6,14 @@ use std::process::Command;
 #[test]
 fn throughput_cohort_and_execution_evidence_regressions() {
     for script in [
+        "scripts/tests/test_gate_measurement_exposure.py",
+        "scripts/tests/test_git_shim_measurement.py",
         "scripts/tests/test_gate_measurement_cohorts.py",
         "scripts/tests/test_gate_measurement_execution.py",
         "scripts/tests/test_gate_measurement_campaign.py",
         "scripts/tests/test_gate_measurement_native.py",
         "scripts/tests/test_gate_measurement_python_inputs.py",
+        "scripts/tests/test_gate_measurement_ca_bundle.py",
     ] {
         let result =
             Command::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/python-bin/python3"))
@@ -25,6 +28,38 @@ fn throughput_cohort_and_execution_evidence_regressions() {
             String::from_utf8_lossy(&result.stderr)
         );
     }
+}
+
+#[test]
+fn measurement_live_storage_churn_regressions() {
+    let result =
+        Command::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/python-bin/python3"))
+            .args(["-B", "scripts/tests/test_gate_measurement_storage_churn.py"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .unwrap();
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn measurement_cargo_dsym_alias_regressions() {
+    let result =
+        Command::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/python-bin/python3"))
+            .args(["-B", "scripts/tests/test_gate_measurement_dsym_alias.py"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .unwrap();
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
 }
 
 #[test]
