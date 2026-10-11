@@ -1,4 +1,4 @@
-story describe [command path] --json [--audience task|operator|internal|all]
+story describe [<command-path> ...] --json [--audience task|operator|internal|all]
 
 Describe the compiled CLI without opening a store, resolving a project, starting
 a daemon, querying dynamic choices or invoking a helper. The default audience is

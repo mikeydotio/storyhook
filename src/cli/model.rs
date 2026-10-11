@@ -989,7 +989,7 @@ help_syntax! {
 "#,
     Scaffold => r#"  story scaffold agents-md|claude-md|cursor-rules
 "#,
-    Describe => r#"  story describe [command path] --json [--audience task|operator|internal|all]
+    Describe => r#"  story describe [<command-path> ...] --json [--audience task|operator|internal|all]
 "#,
     Help => r#"  story help [<command>] [--compact] [--all]
 "#,

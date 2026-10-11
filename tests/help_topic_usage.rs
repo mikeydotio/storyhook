@@ -22,6 +22,58 @@ struct Entry<'a> {
     raw: String,
 }
 
+#[test]
+fn discovery_usage_is_checked_by_its_real_parser() {
+    let body = get_help_topic("describe").expect("discovery help topic");
+    let entries = usage_entries("describe", body);
+    assert_eq!(entries.len(), 1);
+    let DocumentedInvocation::Argvs(argvs) =
+        expand_documented_invocation(entries[0].raw.strip_prefix("story ").unwrap()).unwrap()
+    else {
+        panic!("discovery usage must be checked, not skipped");
+    };
+    assert_eq!(argvs.len(), 6);
+    for argv in &argvs {
+        parse_documented_argv(argv).expect("documented discovery usage must parse");
+    }
+    assert!(
+        argvs
+            .iter()
+            .any(|argv| argv.iter().any(|arg| arg == "show"))
+    );
+    for args in [
+        vec!["describe", "project", "settings", "--json"],
+        vec!["describe", "--audience", "all", "--json"],
+    ] {
+        parse_documented_argv(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).unwrap();
+    }
+    for args in [
+        vec!["describe", "not-a-command", "--json"],
+        vec!["describe", "--audience", "invalid", "--json"],
+        vec!["describe", "--audience", "all", "--audience", "task"],
+    ] {
+        assert!(
+            parse_documented_argv(&args.into_iter().map(str::to_owned).collect::<Vec<_>>())
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn documented_json_objects_are_validated_without_accepting_unknown_placeholders() {
+    for flag in ["--input-json", "--json"] {
+        let DocumentedInvocation::Argvs(argvs) =
+            expand_documented_invocation(&format!("set <id> {flag} \"<object>\"")).unwrap()
+        else {
+            panic!("JSON input usage must be checked");
+        };
+        assert_eq!(argvs.len(), 1);
+        assert_eq!(argvs[0].last().unwrap(), "{\"title\":\"x\"}");
+        parse_documented_argv(&argvs[0]).unwrap();
+    }
+    assert!(expand_documented_invocation("set <id> --input-json <not-a-placeholder>").is_err());
+}
+
 /// Keep all continuation operations and both receiving providers testable.
 #[test]
 fn continuation_usage_covers_every_operation_and_provider() {
