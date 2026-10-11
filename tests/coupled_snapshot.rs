@@ -22,20 +22,19 @@
 
 use std::path::Path;
 
+#[path = "support/test_only_modules.rs"]
+mod test_only_modules;
+
 /// Where an uncoupled `Store::snapshot` is legitimate, and why.
 ///
 /// In `src/daemon/backup.rs`, the daily schedule and `story
 /// store backup` both take a copy that no write depends on, which is exactly
-/// what `Store::snapshot` promises. The test-only `AdmittedStore` decorator
-/// forwards that trait method unchanged and separately delegates the coupled
-/// `write_with_snapshot` method; no write depends on its standalone copy.
+/// what `Store::snapshot` promises. Test-only module ancestry is derived from
+/// declarations separately; fixture method names confer no production exemption.
 /// `src/store/` is not listed because it is
 /// the engine — the place `write_with_snapshot` is *implemented*, where the
 /// call this scan is looking for is the correct one.
-const UNCOUPLED_BACKUP_SITES: &[&str] = &[
-    "src/daemon/backup.rs",
-    "src/service/engine/control_patience_tests.rs",
-];
+const UNCOUPLED_BACKUP_SITES: &[&str] = &["src/daemon/backup.rs"];
 
 /// Every tracked `.rs` file under `src/`, as (path, contents).
 fn tracked_sources(root: &Path) -> Vec<(String, String)> {
@@ -68,13 +67,16 @@ fn tracked_sources(root: &Path) -> Vec<(String, String)> {
     files
 }
 
-#[test]
-fn a_copy_a_write_depends_on_comes_from_write_with_snapshot() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+fn uncoupled_snapshot_calls(sources: &[(String, String)]) -> Vec<String> {
+    // Exclude only proven external test-module ancestry. Unknown attributes,
+    // mixed production/test cfg and unparseable declarations stay visible.
+    let test_roots = test_only_modules::external_test_module_roots(sources);
     let mut offenders = Vec::new();
-
-    for (path, text) in tracked_sources(root) {
-        if UNCOUPLED_BACKUP_SITES.contains(&path.as_str()) || path.starts_with("src/store/") {
+    for (path, text) in sources {
+        if UNCOUPLED_BACKUP_SITES.contains(&path.as_str())
+            || path.starts_with("src/store/")
+            || test_roots.iter().any(|root| Path::new(path).starts_with(root))
+        {
             continue;
         }
         for (index, line) in text.lines().enumerate() {
@@ -86,7 +88,13 @@ fn a_copy_a_write_depends_on_comes_from_write_with_snapshot() {
             }
         }
     }
+    offenders
+}
 
+#[test]
+fn a_copy_a_write_depends_on_comes_from_write_with_snapshot() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let offenders = uncoupled_snapshot_calls(&tracked_sources(root));
     assert!(
         offenders.is_empty(),
         "these call `Store::snapshot`, which promises only *a* recent copy. A copy \
@@ -95,6 +103,69 @@ fn a_copy_a_write_depends_on_comes_from_write_with_snapshot() {
          write in one critical section (SH-297). If the copy genuinely stands alone, \
          add the file to UNCOUPLED_BACKUP_SITES with the reason:\n  {}",
         offenders.join("\n  ")
+    );
+}
+
+#[test]
+fn test_module_ancestry_excludes_fixtures_without_hiding_production_snapshots() {
+    let sources = [
+        (
+            "src/lib.rs",
+            "#[cfg(test)] pub(crate) mod fixtures;\n\
+             mod production;\n\
+             #[cfg(any(test, unix))] mod shared;\n\
+             #[cfg(test)] #[path = \"redirected.rs\"] mod checks;\n\
+             fn after_tests() { store.snapshot(dir, label); }",
+        ),
+        (
+            "src/fixtures.rs",
+            "mod owner; fn fixture() { remote.snapshot(); }",
+        ),
+        ("src/fixtures/owner.rs", "pub(super) mod workflow;"),
+        (
+            "src/fixtures/owner/workflow.rs",
+            "fn forward() { self.inner.snapshot(dir, label); }",
+        ),
+        ("src/production.rs", "mod tests;"),
+        (
+            "src/production/tests.rs",
+            "fn production() { store.snapshot(dir, label); }",
+        ),
+        (
+            "src/fixtures_extra.rs",
+            "fn production() { store.snapshot(dir, label); }",
+        ),
+        (
+            "src/shared.rs",
+            "fn production() { store.snapshot(dir, label); }",
+        ),
+        (
+            "src/redirected.rs",
+            "fn unresolved() { store.snapshot(dir, label); }",
+        ),
+        ("src/unparsed.rs", "#[cfg(test)] mod child; invalid rust!"),
+        (
+            "src/unparsed/child.rs",
+            "fn unresolved() { store.snapshot(dir, label); }",
+        ),
+    ]
+    .map(|(path, source)| (path.to_string(), source.to_string()));
+    let offenders = uncoupled_snapshot_calls(&sources);
+    let paths: Vec<_> = offenders
+        .iter()
+        .map(|offender| offender.split(':').next().unwrap())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "src/lib.rs",
+            "src/production/tests.rs",
+            "src/fixtures_extra.rs",
+            "src/shared.rs",
+            "src/redirected.rs",
+            "src/unparsed/child.rs",
+        ],
+        "only declared test ancestry may suppress a snapshot call: {offenders:?}"
     );
 }
 
