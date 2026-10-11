@@ -87,6 +87,14 @@ const ALLOWED: &[(&str, &str)] = &[
         "managed recovery selects the already-scoped target project checkout; it does not resolve project identity",
     ),
     (
+        "src/service/project_recovery/shared/readmit.rs",
+        "shared readmission revalidates the already-selected candidate project's registered working directory against its retained submission; a changed checkout refuses readmission rather than resolving a project",
+    ),
+    (
+        "src/service/integration_recovery/owner.rs",
+        "integration ownership rechecks the already-selected candidate project's registered working directory before accepting retained authority; the checkout comparison never selects project identity",
+    ),
+    (
         "src/daemon/block_delivery.rs",
         "block delivery chooses a helper working directory after selecting its project by durable id",
     ),
@@ -146,6 +154,10 @@ const ALLOWED: &[(&str, &str)] = &[
     (
         "src/daemon/verification.rs",
         "incident retirement uses the already-selected project's checkout for resumed-hook configuration and working directory",
+    ),
+    (
+        "src/daemon/verification/integration_worker.rs",
+        "managed landing observation chooses its service working directory from the supplied durable project id before loading its owner; the checkout never resolves project identity",
     ),
     (
         "src/daemon/engine.rs",
