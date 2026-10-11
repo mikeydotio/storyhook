@@ -85,6 +85,13 @@ mkdir -p "$engine_root/bin" "$engine_root/terminals/default"
 export STORY_TEST_TERMINALS="$engine_root/terminals"
 export STORY_TEST_HELPER="$SCRIPT"
 export STORY_TEST_FAKE_TMUX="$TESTS_DIR/fakes/tmux"
+# The daemon strips FAKE_TMUX_* at its dispatch/probe boundary. Carry the
+# existing native fixture owner through the same STORY_TEST_* bridge as the
+# terminal router, then restore it only inside that test double. Fresh lane
+# state directories have no process-ledger pointer to recover on their own.
+export STORY_TEST_PROCESS_LEDGER="${FAKE_TMUX_PROCESS_LEDGER:?fixture ledger required}"
+export STORY_TEST_PROCESS_SCOPE="${FAKE_TMUX_PROCESS_SCOPE:?fixture scope required}"
+export STORY_TEST_PROCESS_CLEANUP_SECONDS="${FAKE_TMUX_CLEANUP_SECONDS:?fixture patience required}"
 export STORYHOOK_DISPATCH_SCRIPT="$engine_root/dispatch.sh"
 # Keep synthetic provider processes alive through the bounded fill, then
 # terminate their exact fixture-owned windows even when an assertion fails.
@@ -126,6 +133,9 @@ cat >"$engine_root/bin/tmux" <<'TERMINAL'
 #!/usr/bin/env bash
 set -euo pipefail
 export FAKE_TMUX_STATE="${STORY_TEST_TERMINAL:-$STORY_TEST_TERMINALS/default}"
+export FAKE_TMUX_PROCESS_LEDGER="${STORY_TEST_PROCESS_LEDGER:?fixture ledger bridge missing}"
+export FAKE_TMUX_PROCESS_SCOPE="${STORY_TEST_PROCESS_SCOPE:?fixture scope bridge missing}"
+export FAKE_TMUX_CLEANUP_SECONDS="${STORY_TEST_PROCESS_CLEANUP_SECONDS:?fixture patience bridge missing}"
 # Each synthetic pane owns the same real placeholder pid and terminal state
 # the dispatch helper observed. Route the daemon's exact-pane probes there.
 if [ -z "${STORY_TEST_TERMINAL:-}" ]; then
@@ -175,7 +185,14 @@ done
 assert_eq "$working" 6 "CLI: six actual sessions filled"
 submitted=0
 for receipt in "$STORY_TEST_TERMINALS"/ENG-*/submitted; do
-  [ ! -s "$receipt" ] || submitted=$((submitted + 1))
+  if [ -s "$receipt" ]; then
+    submitted=$((submitted + 1))
+    terminal="${receipt%/submitted}"
+    assert_eq "$(cat "$terminal/process-ledger")" "$FAKE_TMUX_PROCESS_LEDGER" \
+      "CLI: ${terminal##*/} belongs to the original native fixture ledger"
+    assert_eq "$(cat "$terminal/process-scope")" "$FAKE_TMUX_PROCESS_SCOPE" \
+      "CLI: ${terminal##*/} belongs to the original native fixture scope"
+  fi
 done
 assert_eq "$submitted" 6 "CLI: six charters reached provider panes"
 story daemon stop --force >/dev/null || fail_test "engine fixture: stop owned daemon"
