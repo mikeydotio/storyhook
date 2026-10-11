@@ -370,6 +370,9 @@ fn production_merge_commands_have_only_isolated_entry_points() {
         }
         let source = std::fs::read_to_string(checkout.join(name)).unwrap();
         if has_merge_command(&source, name.ends_with(".rs")) {
+            if name == "src/service/integration_recovery/assembly.rs" {
+                assert_native_assembly_isolation(&source);
+            }
             found.push(name.to_owned());
         }
     }
@@ -378,6 +381,7 @@ fn production_merge_commands_have_only_isolated_entry_points() {
         found,
         [
             "scripts/merge-preflight.sh",
+            "src/service/integration_recovery/assembly.rs",
             "src/service/isolated_merge.rs"
         ],
         "every production merge must use the isolated attribute policy"
@@ -396,6 +400,67 @@ fn production_merge_commands_have_only_isolated_entry_points() {
         false
     ));
     assert!(!has_merge_command("// mentions merge-tree\n", true));
+}
+
+fn assert_native_assembly_isolation(source: &str) {
+    // Native assembly owns its administration through explicit settlement, so
+    // it cannot borrow isolated_merge's temporary-directory cleanup. Keep its
+    // independent entry conditional on the same no-attributes policy.
+    let source = storyhook_test_support::without_rust_comments(source);
+    let clean = source.split_once("fn clean_git(").unwrap().1;
+    let clean = clean.split_once("\nfn ").unwrap().0;
+    for required in [
+        "crate::env::git_env::command(root)",
+        ".env(\"GIT_CONFIG_GLOBAL\", \"/dev/null\")",
+        ".env(\"GIT_CONFIG_SYSTEM\", \"/dev/null\")",
+        ".env(\"GIT_CONFIG_NOSYSTEM\", \"1\")",
+        ".env(\"GIT_ATTR_NOSYSTEM\", \"1\")",
+        "\"core.attributesFile=/dev/null\"",
+        "\"merge.default=text\"",
+    ] {
+        assert!(
+            clean.contains(required),
+            "assembly lost isolation: {required}"
+        );
+    }
+    let private = source.split_once("    fn git(").unwrap().1;
+    let private = private.split_once("    fn source_git(").unwrap().0;
+    for required in [
+        "clean_git(root)",
+        "command.arg(\"--bare\").args(args)",
+        ".env(\"GIT_DIR\", root)",
+        ".env(\"GIT_COMMON_DIR\", root)",
+        ".env(\"GIT_OBJECT_DIRECTORY\", root.join(\"objects\"))",
+        ".env(\"GIT_ALTERNATE_OBJECT_DIRECTORIES\", \"\")",
+        ".env(\"GIT_INDEX_FILE\", root.join(\"assembly.index\"))",
+    ] {
+        assert!(
+            private.contains(required),
+            "assembly lost private Git: {required}"
+        );
+    }
+    let init = source.split_once("let root = inputs.workspace;").unwrap().1;
+    let init = init
+        .split_once("let objects = PinnedDirectory::open(")
+        .unwrap()
+        .0;
+    assert!(
+        init.contains("\"--bare\"") && init.contains("\"--template=\""),
+        "assembly must initialize private administration without ambient templates"
+    );
+    let merge = source.split_once("let empty = answer_oid(").unwrap().1;
+    let merge = merge.split_once("let TrialMerge::Conflict").unwrap().0;
+    for required in [
+        "[\"hash-object\", \"-t\", \"tree\", \"-w\", \"--stdin\"]",
+        "let merged = op.git(",
+        "\"--attr-source={empty}\"",
+        "\"merge-tree\"",
+    ] {
+        assert!(
+            merge.contains(required),
+            "assembly lost empty-tree policy: {required}"
+        );
+    }
 }
 
 fn has_merge_command(source: &str, rust: bool) -> bool {

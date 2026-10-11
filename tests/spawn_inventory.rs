@@ -239,6 +239,16 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // temporary files rather than pipes, so there is no pipe for a descendant to
     // hold and nothing for the caller to wait on.
     ("src/event_hooks.rs", "\"sh\"", Kind::Waited),
+    // The configured SH-835 detached-product hook uses file-backed
+    // run_captured_quiescent, not output pipes. The Environment-adjusted
+    // configured timeout bounds the hook and its owned process group;
+    // TerminationPolicy::Kill ends it on timeout, and success requires
+    // quiescence before capture is returned.
+    (
+        "src/service/build_products.rs",
+        "&config.hook[0]",
+        Kind::Waited,
+    ),
     // `service::engine` owns both process doors behind the Dispatcher seam:
     // the bash helper and bounded tmux probes/kills. Both are `Waited`:
     // stdout/stderr are unlinked files rather than pipes, `wait_timeout`
