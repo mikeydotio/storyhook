@@ -50,7 +50,12 @@ class Fixture:
             target = (override / name) if override and (override / name).exists() else source / name
             destination = self.root / name
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.symlink_to(target)
+            if target.is_dir():
+                # Fingerprints hash tracked file bytes, so preserve the real
+                # package layout instead of tracking a directory symlink.
+                shutil.copytree(target, destination, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            else:
+                destination.symlink_to(target)
         # All behavior under review remains production code. Expensive leaf
         # checks are controlled executors; none starts Cargo, a provider or daemon.
         executable(self.root / "scripts/run-tests.sh", """#!/bin/bash
