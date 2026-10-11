@@ -323,7 +323,8 @@ time.sleep(30)
 """
         custody = self.custody()
         process = products.ManagedProcess(custody, custody.lease,
-                                           [sys.executable, "-c", code], grant_environment=False)
+                                           [sys.executable, "-c", code], grant_environment=False,
+                                           wait_for_guard=True)
         original_pids = products.native.pids
         child_identity = None
         captured = False
@@ -382,7 +383,8 @@ time.sleep(30)
     def test_empty_census_cannot_settle_a_persistent_guard_holder(self):
         custody = self.custody()
         process = products.ManagedProcess(custody, custody.lease,
-                                           [sys.executable, "-c", "pass"], grant_environment=False)
+                                           [sys.executable, "-c", "pass"], grant_environment=False,
+                                           wait_for_guard=True)
         # An independently retained inherited description, outside the session.
         held = os.dup(process.guard)
         process.timing = dict(process.timing, cleanup_ms=20, sample_ms=5)
@@ -398,6 +400,21 @@ time.sleep(30)
         finally:
             os.close(held)
             process.close()
+
+    def test_default_supervisor_still_notifies_authority_of_held_guard(self):
+        custody = self.custody()
+        with patch.object(custody, "call", wraps=custody.call) as calls:
+            process = products.ManagedProcess(custody, custody.lease,
+                                               [sys.executable, "-c", "pass"], grant_environment=False)
+            held = os.dup(process.guard)
+            try:
+                with self.assertRaisesRegex(Refusal, "guard is still held"):
+                    process.wait()
+                self.assertTrue(any(call.args[0] == "settle" for call in calls.call_args_list))
+                self.assertEqual(len(custody.row["executions"]), 1)
+            finally:
+                os.close(held)
+                process.close()
 
     def test_signal_exit_preserved_only_after_native_settlement(self):
         repo = self.root / "repo"

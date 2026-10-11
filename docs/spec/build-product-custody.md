@@ -21,7 +21,9 @@ members are drained, and a descendant outside the session that retains the guard
 prevents settlement. Deliberately escaping both the session and every custody
 descriptor is outside this cooperating managed-entry contract.
 
-A PID census and its later liveness observations are not atomic. A member can
+Product supervision uses an explicit guard-wait mode; host admission retains its
+existing authority settlement and quarantine path. A PID census and its later
+liveness observations are not atomic. A member can
 fork after enumeration and exit before observation. An empty census therefore
 does not complete supervision until a fresh lock probe also proves the inherited
 guard has been released. The leader remains waitable while the existing bounded

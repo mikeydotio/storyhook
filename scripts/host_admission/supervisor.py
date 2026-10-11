@@ -33,10 +33,13 @@ class ManagedProcess:
     """A blocked-launch supervisor; SH-869 adapters own preserving its child contract."""
 
     def __init__(self, client, lease, command, *, publisher=None, env=None, grant_environment=True,
-                 cwd=None, forward_signals=False):
+                 cwd=None, forward_signals=False, wait_for_guard=False):
         self.client, self.lease, self.child, self.guard = client, lease, None, None
         self.publisher = publisher
         self.forward_signals = forward_signals
+        # Product custody opts into bounded recensus. Host authority retains
+        # its existing settlement/quarantine notification path.
+        self.wait_for_guard = wait_for_guard
         # The authority's reason for withdrawing this grant, once observed.
         self.drain_reason = None
         self.observation_failure = None
@@ -201,7 +204,7 @@ class ManagedProcess:
                     draining = True
                     if not requested:
                         requested = True
-                if exited and not members and self._guard_settled():
+                if exited and not members and (not self.wait_for_guard or self._guard_settled()):
                     break
                 if draining or exited:
                     now = time.monotonic_ns() // 1_000_000
