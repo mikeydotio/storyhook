@@ -5,29 +5,50 @@ import os
 import shutil
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+sys.dont_write_bytecode = True
 
 
 class GateCompletion(unittest.TestCase):
     """Each invocation owns its Git state, control files, and progress journal."""
 
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="sh701-gate-", dir="/tmp")
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(tempfile.mkdtemp(prefix="sh701-gate-", dir="/tmp"))
+        def cleanup():
+            from build_products import ProductLease, namespace
+            try:
+                with ProductLease(namespace(self.root), reclaim=True):
+                    pass
+            except BaseException:
+                print(f"gate fixture custody unresolved; retained {self.root}", file=sys.stderr)
+                raise
+            shutil.rmtree(self.root)
+        self.addCleanup(cleanup)
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("STORYHOOK_")}
         self.env.update(SH701_REAL_CARGO=shutil.which("cargo"), SH701_TRACE=str(self.root / "trace"),
-                        STORYHOOK_GATE_PROGRESS=str(self.root / "progress"))
+                        STORYHOOK_GATE_PROGRESS=str(self.root / "progress"),
+                        STORYHOOK_PYTHON=sys.executable, CARGO_TARGET_DIR=str(self.root / "target"))
         self.write("Makefile", (ROOT / "Makefile").read_text())
         for name in ["gate-legs.sh", "leg.sh", "gate-leg-fingerprint.sh", "rust-test-targets.sh",
                      "gate-progress.sh", "activity-log.sh", "with-orphan-postlude.sh",
-                     "cargo_diagnostics.py", "gate_cost.py", "python-runtime.sh", "python-bin/python3"]:
+                     "cargo_diagnostics.py", "gate_cost.py", "python-runtime.sh", "python-bin/python3",
+                     "managed-cargo.sh", "cargo-managed.py", "build_products.py"]:
             source = ROOT / "scripts" / name
             if source.exists():
                 self.write("scripts/" + name, source.read_text())
+        # Copy the real custody implementation, retaining the existing fake
+        # Cargo leaves. Only the host-policy location is isolated to this fixture.
+        shutil.copytree(ROOT / "scripts/host_admission", self.root / "scripts/host_admission",
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        adapter = (ROOT / "scripts/host-admit.py").read_text()
+        adapter = adapter.replace('POLICY = "/var/tmp/storyhook-host-admission-v1/policy.json"',
+                                  f'POLICY = {str(self.root / "absent-policy.json")!r}')
+        self.write("scripts/host-admit.py", adapter)
         self.write("Cargo.toml", '[package]\nname="fixture"\nversion="0.1.0"\n[features]\ntest-seam=[]\n')
         self.write("src/lib.rs", "")
         self.write("tests/core.rs", "#[test] fn core() {}\n")
