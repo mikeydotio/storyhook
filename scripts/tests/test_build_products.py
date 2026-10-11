@@ -293,6 +293,28 @@ class ProductOwnershipTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "this wrapper"):
             cargo.command(["--cargo-executable", str(SCRIPTS / "cargo-managed.py"), "--"])
 
+    def test_non_git_checkout_refuses_with_control_status_before_cargo_launch(self):
+        checkout = self.root / "not-a-repository"
+        checkout.mkdir()
+        marker = self.root / "cargo-launched"
+        # A real Git probe must fail here even when this suite was launched
+        # with a parent Git namespace or from a temporary directory inside one.
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env["GIT_CEILING_DIRECTORIES"] = str(self.root.resolve())
+        fake_cargo = "from pathlib import Path; Path(" + repr(str(marker)) + ").write_text('launched')"
+        result = subprocess.run(
+            [sys.executable, "-B", str(SCRIPTS / "cargo-managed.py"),
+             "--cargo-executable", sys.executable, "--", "-c", fake_cargo],
+            cwd=checkout, env=env, capture_output=True, text=True,
+            timeout=MANAGED_ENTRY_SECONDS,
+        )
+        self.assertEqual(result.returncode, 125, (result.stdout, result.stderr))
+        self.assertIn("cargo-managed: custody unresolved; products preserved:", result.stderr)
+        self.assertIn("rev-parse", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertFalse(marker.exists(), "Cargo must not run without a Git custody namespace")
+        self.assertEqual(list(checkout.iterdir()), [], "refusal must not create custody authority")
+
     def test_custody_does_not_mint_or_replace_host_grant(self):
         # Exercise the constructor through its blocked launcher with a fake client;
         # retain actual pipe/exec/child handling, replacing only the global census

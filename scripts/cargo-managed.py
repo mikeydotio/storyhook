@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import subprocess
 import sys
 
 sys.dont_write_bytecode = True
@@ -52,7 +53,9 @@ def main(argv):
     except FileNotFoundError as error:
         print(f"cargo-managed: {error}", file=sys.stderr)
         return 127
-    except (OSError, Refusal, ValueError) as error:
+    except (OSError, Refusal, ValueError, subprocess.CalledProcessError) as error:
+        # A failed Git namespace probe is a custody/control refusal, not a
+        # Cargo/compiler exit that diagnostic confirmation may leave unconfirmed.
         print(f"cargo-managed: custody unresolved; products preserved: {error}", file=sys.stderr)
         return 125
 
