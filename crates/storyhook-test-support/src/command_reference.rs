@@ -164,7 +164,8 @@ fn placeholder(token: &str) -> Option<&'static str> {
         "<PORT>" => "3456",
         "<PREFIX>" => "SH",
         "<NEW-PREFIX>" => "ZZ",
-        "<json>" => "{\"title\":\"x\"}",
+        "<json>" | "<object>" => "{\"title\":\"x\"}",
+        "<command-path>" => "show",
         "<relationship-type>" | "<relation>" => "relates-to",
         "<name <email>>" => "Ada Lovelace <ada@example.com>",
         "<github-handle>" => "adalovelace",
@@ -346,6 +347,11 @@ pub fn expand_documented_invocation(
 /// Runs the real CLI parser pipeline for one concrete documented argv.
 pub fn parse_documented_argv(argv: &[String]) -> Result<(), String> {
     let (_flags, filtered) = split_global_flags(argv).map_err(|error| error.to_string())?;
+    if filtered.first().is_some_and(|verb| verb == "describe") {
+        return storyhook::cli::discovery::describe(&filtered[1..])
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+    }
     parse_invocation(&filtered)
         .map(|_| ())
         .map_err(|error| error.to_string())
