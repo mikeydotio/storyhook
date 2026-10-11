@@ -36,7 +36,11 @@ fn discovery_usage_is_checked_by_its_real_parser() {
     for argv in &argvs {
         parse_documented_argv(argv).expect("documented discovery usage must parse");
     }
-    assert!(argvs.iter().any(|argv| argv.iter().any(|arg| arg == "show")));
+    assert!(
+        argvs
+            .iter()
+            .any(|argv| argv.iter().any(|arg| arg == "show"))
+    );
     for args in [
         vec!["describe", "project", "settings", "--json"],
         vec!["describe", "--audience", "all", "--json"],
@@ -49,7 +53,8 @@ fn discovery_usage_is_checked_by_its_real_parser() {
         vec!["describe", "--audience", "all", "--audience", "task"],
     ] {
         assert!(
-            parse_documented_argv(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err()
+            parse_documented_argv(&args.into_iter().map(str::to_owned).collect::<Vec<_>>())
+                .is_err()
         );
     }
 }
