@@ -756,9 +756,7 @@ fn a_conditional_production_alias_to_a_test_descendant_is_refused() {
 }
 
 #[test]
-#[should_panic(
-    expected = "cannot establish module path for production: absolute path attribute"
-)]
+#[should_panic(expected = "cannot establish module path for production: absolute path attribute")]
 fn an_absolute_production_alias_to_a_test_descendant_is_refused() {
     SrcCorpus::from_sources(
         Path::new("/checkout"),
@@ -776,9 +774,7 @@ fn an_absolute_production_alias_to_a_test_descendant_is_refused() {
 }
 
 #[test]
-#[should_panic(
-    expected = "cannot establish module path for production: absolute path attribute"
-)]
+#[should_panic(expected = "cannot establish module path for production: absolute path attribute")]
 fn an_absolute_inline_module_directory_is_refused() {
     module_edges(
         "src/lib.rs",
@@ -795,10 +791,9 @@ fn module_parent_paths_cannot_escape_the_source_corpus() {
         "#[path = \"../outside\"] mod production {}",
         "#[path = \"../../outside\"] mod production {}",
     ] {
-        let failure = std::panic::catch_unwind(|| {
-            module_edges("src/lib.rs", source, &BTreeMap::new())
-        })
-        .expect_err("a module path outside src/ must be refused");
+        let failure =
+            std::panic::catch_unwind(|| module_edges("src/lib.rs", source, &BTreeMap::new()))
+                .expect_err("a module path outside src/ must be refused");
         let message = failure
             .downcast_ref::<String>()
             .map(String::as_str)
