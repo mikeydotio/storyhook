@@ -711,6 +711,17 @@ assert_ok() {
   fi
 }
 
+# assert_reason <answer> <expected> <label> — retain the diagnostic when a
+# helper refuses for the wrong reason. Both answers can have ok:false, so an
+# assert_ok alone cannot preserve this evidence (SH-901 checkpoint notify).
+assert_reason() {
+  local actual
+  actual=$(jqf "$1" .reason) || :
+  if [ "$actual" != "$2" ]; then
+    fail_test "$3 — expected [$2], got [$actual] — answer: [$1]"
+  fi
+}
+
 # residue_reasons <answer> <resource-prefix> — the reasons a reset answer gives
 # for what it left in place, for each resource that starts with the prefix,
 # joined with "|". Empty when the reset left no such resource (SH-886).
