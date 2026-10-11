@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -300,6 +301,103 @@ class ProductOwnershipTests(unittest.TestCase):
         with products.ProductLease(products.namespace(repo), reclaim=True):
             pass
         self.retain = False
+
+    def test_fork_after_census_is_drained_before_custody_settles(self):
+        # Freeze exactly one PID snapshot before an in-session process forks.
+        # Its parent exits before liveness observation; its child still owns
+        # the inherited guard and must be found by a subsequent census.
+        ready, release, descendant = [self.root / name for name in
+                                       ("forker-ready", "release-fork", "descendant")]
+        code = f"""
+import os,time
+from pathlib import Path
+if os.fork():
+    os._exit(0)
+Path({str(ready)!r}).write_text(str(os.getpid()))
+while not Path({str(release)!r}).exists():
+    time.sleep(0.005)
+if os.fork():
+    os._exit(0)
+Path({str(descendant)!r}).write_text(str(os.getpid()))
+time.sleep(30)
+"""
+        custody = self.custody()
+        process = products.ManagedProcess(custody, custody.lease,
+                                           [sys.executable, "-c", code], grant_environment=False)
+        original_pids = products.native.pids
+        child_identity = None
+        captured = False
+
+        def until(predicate):
+            deadline = time.monotonic() + 10
+            while not predicate():
+                if time.monotonic() >= deadline:
+                    self.fail("controlled fork did not reach its handshake")
+                time.sleep(0.005)
+
+        def census():
+            nonlocal captured, child_identity
+            snapshot = original_pids()
+            if captured:
+                return snapshot
+            captured = True
+            release.touch()
+            until(descendant.exists)
+            child_pid = int(descendant.read_text())
+            child_identity = products.native.identity(child_pid, process.boot)
+            self.assertEqual(os.getsid(child_pid), process.child.pid)
+            self.assertNotIn(child_pid, snapshot)
+            forker = int(ready.read_text())
+            def exited():
+                try:
+                    return not products.native.process(forker, process.boot)["live"]
+                except ProcessLookupError:
+                    return True
+            until(exited)
+            return snapshot
+
+        self.retain = True
+        try:
+            until(lambda: ready.exists() and process._exited())
+            with patch.object(products.native, "pids", side_effect=census):
+                self.assertEqual(process.wait(), 0)
+            self.assertTrue(captured)
+            self.assertEqual(products.read_record(custody.root / "record.json")["state"], "finished")
+            self.assertFalse(custody.row["executions"])
+        finally:
+            if child_identity is not None:
+                pid = child_identity["pid"]
+                try:
+                    if products.native.identity(pid, process.boot) == child_identity:
+                        os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            try:
+                process.close()
+            except Refusal:
+                pass  # The red control intentionally leaves an unresolved record.
+            # Preserve failed ownership evidence; passing custody may be removed.
+            self.retain = custody.row["state"] != "finished"
+
+    def test_empty_census_cannot_settle_a_persistent_guard_holder(self):
+        custody = self.custody()
+        process = products.ManagedProcess(custody, custody.lease,
+                                           [sys.executable, "-c", "pass"], grant_environment=False)
+        # An independently retained inherited description, outside the session.
+        held = os.dup(process.guard)
+        process.timing = dict(process.timing, cleanup_ms=20, sample_ms=5)
+        try:
+            with self.assertRaisesRegex(Refusal, "did not settle"):
+                process.wait()
+            self.assertTrue(process._exited())
+            self.assertFalse(process.finished)
+            row = products.read_record(custody.root / "record.json")
+            self.assertEqual(row["state"], "running")
+            self.assertEqual(len(row["executions"]), 1)
+            self.assertFalse(custody.call("finish", **custody.lease))
+        finally:
+            os.close(held)
+            process.close()
 
     def test_signal_exit_preserved_only_after_native_settlement(self):
         repo = self.root / "repo"
