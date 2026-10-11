@@ -318,7 +318,10 @@ while not Path({str(release)!r}).exists():
     time.sleep(0.005)
 if os.fork():
     os._exit(0)
-Path({str(descendant)!r}).write_text(str(os.getpid()))
+pid_file = Path({str(descendant)!r})
+staged = pid_file.with_suffix(".tmp")
+staged.write_text(str(os.getpid()))
+staged.replace(pid_file)
 time.sleep(30)
 """
         custody = self.custody()
