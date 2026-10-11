@@ -74,6 +74,7 @@
 
 use std::path::{Path, PathBuf};
 
+use storyhook::cli::model::CommandId;
 use storyhook::domain::is_relation_input;
 use storyhook_test_support::command_reference::{
     DocumentedInvocation, PARSED_ELSEWHERE, expand_documented_invocation, parse_documented_argv,
@@ -86,11 +87,6 @@ fn manifest_root() -> PathBuf {
 
 fn readme_text() -> String {
     let path = manifest_root().join("README.md");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
-}
-
-fn cli_source() -> String {
-    let path = manifest_root().join("src/cli.rs");
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
 }
 
@@ -365,12 +361,24 @@ fn dispatch(args: &[String]) {
 }
 
 fn dispatch_verbs() -> Vec<String> {
-    let source = cli_source();
-    let body = slice_to_top_level_close(
-        &source,
-        "fn dispatch(args: &[String]) -> Result<Invocation, AppError> {",
-    );
-    quoted_literals_before_arrow(body)
+    // Dispatch and early handlers share this registration. Source scanning the
+    // old string match silently loses all commands after model-based dispatch.
+    CommandId::ALL
+        .iter()
+        .flat_map(|command| command.names())
+        .map(|name| (*name).to_string())
+        .collect()
+}
+
+#[test]
+fn registered_reference_verbs_include_aliases_and_early_handlers() {
+    let verbs = dispatch_verbs();
+    for name in ["load-context", "context", "describe", "tui", "github"] {
+        assert!(verbs.iter().any(|verb| verb == name), "missing {name}");
+    }
+    for help_only in ["states", "is", "awaits", "priority"] {
+        assert!(!verbs.iter().any(|verb| verb == help_only));
+    }
 }
 
 /// The reference's documented verbs: the first word of every `story ...`
@@ -408,7 +416,7 @@ fn every_dispatchable_verb_appears_in_the_command_reference() {
     let verbs = dispatch_verbs();
     assert!(
         verbs.len() > 40,
-        "the dispatch scan found only {} verbs — it may have broken",
+        "the command registration returned only {} verbs — it may have broken",
         verbs.len()
     );
 

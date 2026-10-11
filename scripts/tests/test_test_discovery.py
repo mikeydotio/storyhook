@@ -17,6 +17,7 @@ sys.dont_write_bytecode = True
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 from test_discovery import Discovery, DiscoveryError
+from load_grace import contention, patience
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -26,6 +27,12 @@ class DiscoveryTests(unittest.TestCase):
         self.scratch = tempfile.TemporaryDirectory(prefix='sh795-discovery-', dir='/tmp')
         self.addCleanup(self.scratch.cleanup)
         self.root = Path(self.scratch.name)
+        # Fake Cargo must own a fixture Git namespace, never the caller's
+        # checkout or its inherited product lease. Restore cwd before removal.
+        subprocess.run(['git', 'init', '-q', str(self.root)], check=True,
+                       timeout=patience(10, contention()))
+        self.addCleanup(os.chdir, Path.cwd())
+        os.chdir(self.root)
         self.env = os.environ.copy()
         self.discovery = Discovery(self.env, lambda: None)
 
@@ -166,6 +173,8 @@ class PoolFlowTests(unittest.TestCase):
         self.scratch = tempfile.TemporaryDirectory(prefix='sh795-pool-', dir='/tmp')
         self.addCleanup(self.scratch.cleanup)
         self.root = Path(self.scratch.name)
+        subprocess.run(['git', 'init', '-q', str(self.root)], check=True,
+                       timeout=patience(10, contention()))
         for name in ['scripts', 'tests', 'bin']:
             (self.root / name).mkdir()
         # Runtime selection requires the tracked PATH launcher beside its shell helper.
@@ -175,6 +184,7 @@ class PoolFlowTests(unittest.TestCase):
         for script in SCRIPTS.iterdir():
             if script.suffix in ('.py', '.sh', '.awk'):
                 (self.root / 'scripts' / script.name).symlink_to(script)
+        (self.root / 'scripts' / 'host_admission').symlink_to(SCRIPTS / 'host_admission')
         for name in ['first', 'second']:
             (self.root / 'tests' / f'{name}.rs').touch()
         self.env = {key: value for key, value in os.environ.items()
