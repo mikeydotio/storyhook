@@ -1294,7 +1294,7 @@ fn the_runner_leases_the_artifact_after_building_and_never_runs_it_bare() {
         "scripts/run-e2e.sh must source scripts/binary-lease.sh (SH-635)"
     );
     let build = code
-        .find("cargo build --quiet")
+        .find("managed-cargo.sh\" build --quiet")
         .expect("the runner builds the binary");
     let lease = code
         .find("story_bin=\"$(storyhook_lease_binary \"$story_artifact\")\" || exit 1")

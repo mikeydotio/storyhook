@@ -1239,19 +1239,10 @@ subcommands! {
 
 }
 
-/// Syntax quoted by the real argument validators. Kept separately from prose so
-/// offline consumers can inspect the same usage that a failed parse returns.
-#[derive(Clone, Copy, Debug)]
-pub struct UsageSyntax {
-    pub command: CommandId,
-    pub text: &'static str,
-}
+// Usage strings returned by the real argument validators.
 macro_rules! usages {
     ($( $name:ident ($command:ident) = $text:literal; )*) => {
         pub mod usage { $(pub const $name: &str = $text;)* }
-        pub static USAGE_SYNTAX: &[UsageSyntax] = &[
-            $(UsageSyntax { command: CommandId::$command, text: usage::$name },)*
-        ];
     }
 }
 usages! {

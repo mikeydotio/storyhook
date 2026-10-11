@@ -1,6 +1,8 @@
 """Exercise the production build-number wrapper in isolated source directories."""
 
+import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -15,9 +17,9 @@ class BuildNumberTests(unittest.TestCase):
     """Number allocation must survive failures and concurrent publishers."""
 
     def setUp(self):
-        self.scratch = tempfile.TemporaryDirectory(prefix="SH-732-", dir="/tmp")
-        self.addCleanup(self.scratch.cleanup)
-        self.root = Path(self.scratch.name)
+        self.root = Path(tempfile.mkdtemp(prefix="SH-732-", dir="/tmp"))
+        self.retain = False
+        self.addCleanup(lambda: None if self.retain else shutil.rmtree(self.root))
         (self.root / "BUILD").write_text("0\n")
 
     def command(self, *args):
@@ -79,9 +81,33 @@ class BuildNumberTests(unittest.TestCase):
         self.assertEqual((self.root / "BUILD").read_text(), "0\n")
 
     def test_make_install_allocates_once_and_dry_run_does_not_allocate(self):
-        import shutil
         (self.root / "scripts").mkdir()
         shutil.copyfile(WRAPPER, self.root / "scripts/build-number.py")
+        # Exercise the real managed entry now used by Makefile. Only Cargo is
+        # doubled; native product custody must still enroll and settle.
+        for name in ("managed-cargo.sh", "cargo-managed.py", "python-runtime.sh", "build_products.py"):
+            shutil.copy2(WRAPPER.parent / name, self.root / "scripts" / name)
+        for name in ("python-bin", "host_admission"):
+            shutil.copytree(WRAPPER.parent / name, self.root / "scripts" / name,
+                            ignore=shutil.ignore_patterns("__pycache__"))
+        adapter = (WRAPPER.parent / "host-admit.py").read_text()
+        adapter = adapter.replace('POLICY = "/var/tmp/storyhook-host-admission-v1/policy.json"',
+                                  f'POLICY = {str(self.root / "absent-policy.json")!r}')
+        (self.root / "scripts/host-admit.py").write_text(adapter)
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        # Registered after scratch directory cleanup, so this runs first.
+        # Keep uncertain ownership evidence instead of deleting its products.
+        def settle_fixture():
+            sys.path.insert(0, str(WRAPPER.parent))
+            from build_products import ProductLease, namespace
+            try:
+                with ProductLease(namespace(self.root), reclaim=True):
+                    pass
+            except BaseException:
+                self.retain = True
+                print(f"build-number fixture retained: {self.root}", file=sys.stderr)
+                raise
+        self.addCleanup(settle_fixture)
         shutil.copyfile(WRAPPER.parent.parent / "Makefile", self.root / "Makefile")
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
@@ -94,7 +120,10 @@ printf '#!/bin/sh\\nif [ "$1" = --version ]; then echo "story 3.0.0 (%s)"; fi\\n
 chmod +x target/release/story
 """)
         cargo.chmod(0o755)
-        environment = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ["PATH"])
+        environment = {key: value for key, value in os.environ.items()
+                       if not key.startswith(("STORYHOOK_HOST_", "STORYHOOK_PRODUCT_"))}
+        environment.update(PATH=str(bin_dir) + os.pathsep + os.environ["PATH"],
+                           STORYHOOK_PYTHON=sys.executable)
         environment.pop("MAKEFLAGS", None)
         destination = self.root / "installed"
         def make(*arguments):
@@ -113,6 +142,12 @@ chmod +x target/release/story
             self.assertIn(installed.strip(), result.stdout)
         self.assertEqual(make("release-build").returncode, 0)
         self.assertEqual((self.root / "BUILD").read_text(), "3\n")
+        receipts = list((self.root / ".git/storyhook-build-products-v1").glob("build-*/record.json"))
+        self.assertEqual(len(receipts), 3, "each numbered build owns its actual Cargo command")
+        for receipt in receipts:
+            custody = json.loads(receipt.read_text())
+            self.assertEqual(custody["state"], "finished")
+            self.assertEqual(custody["executions"], [])
 
     def test_concurrent_commands_keep_their_number_through_collection(self):
         child = """from pathlib import Path

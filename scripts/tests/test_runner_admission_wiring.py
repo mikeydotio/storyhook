@@ -1,4 +1,4 @@
-"""Production runners enter host admission once and keep their behaviour (SH-869).
+"""Production pools enter once; managed Cargo retains its leaf entry (SH-869/835).
 
 These run the tracked runner scripts in a scratch checkout whose `cargo` is a
 recording fake. The host authority is disabled there (no policy at the
@@ -7,6 +7,7 @@ nothing but the admission marker.
 """
 
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -37,18 +38,48 @@ def runner_env(fixture, **extra):
     return env
 
 
+def trace_disabled_admission(fixture):
+    """Observe real entry identities with a fixture-local absent policy."""
+    adapter = fixture / "scripts/host-admit.py"
+    adapter.write_text(f"""import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("entry", {str(CHECKOUT / 'scripts/host-admit.py')!r})
+entry = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(entry)
+entry.POLICY = {str(fixture / 'absent-policy.json')!r}
+if sys.argv[1:2] == ["--entry"]:
+    with open({str(fixture / 'admission.log')!r}, "a") as log:
+        log.write(sys.argv[2] + "\\n")
+if os.environ.get("FIXTURE_REFUSE_ADMISSION"):
+    sys.exit(67)
+entry.fast(sys.argv[1:])
+raise AssertionError("fixture must enter the production disabled-host exec")
+""")
+
+
+def cleanup_managed_fixture(root):
+    sys.path.insert(0, str(CHECKOUT / "scripts"))
+    from build_products import ProductLease, namespace
+    try:
+        with ProductLease(namespace(root), reclaim=True):
+            pass
+    except BaseException:
+        print(f"admission fixture custody unresolved; retained {root}", file=sys.stderr)
+        raise
+    shutil.rmtree(root)
+
+
 @unittest.skipIf(POLICY.exists(), "these cases prove the disabled host; this host has a policy")
 class RustBattery(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir="/tmp", prefix="rtw-")
-        self.addCleanup(self.tmp.cleanup)
-        self.fixture = Path(self.tmp.name)
+        self.fixture = Path(tempfile.mkdtemp(dir="/tmp", prefix="rtw-"))
+        self.addCleanup(cleanup_managed_fixture, self.fixture)
         for name in ("scripts", "bin", "tests", "locks"):
             (self.fixture / name).mkdir()
         # Symlinks, never copies: the point is to run the tracked scripts.
         for path in (CHECKOUT / "scripts").iterdir():
-            if path.name != "test-delta.sh":
+            if path.name not in ("test-delta.sh", "host-admit.py"):
                 (self.fixture / "scripts" / path.name).symlink_to(path)
+        trace_disabled_admission(self.fixture)
         # No tree oid, so no ledger reaches the real repository.
         self.executable("scripts/test-delta.sh", "#!/bin/sh\nexit 1\n")
         self.executable("bin/cargo", FAKE_CARGO)
@@ -72,9 +103,12 @@ class RustBattery(unittest.TestCase):
         self.assertEqual(len(runs), 1, f"the battery ran {len(runs)} times: {calls}")
         for call in calls:
             _, entry, threads, units = call.split("|")
-            self.assertRegex(entry, r"^entry=rust-pool:\d+$", call)
+            self.assertRegex(entry, r"^entry=cargo-managed:\d+$", call)
             self.assertEqual(threads, "threads=", "a disabled host leaves libtest's threads alone")
             self.assertEqual(units, "units=", "the unit count is consumed, never inherited")
+        self.assertEqual((self.fixture / "admission.log").read_text().splitlines(),
+                         ["rust-pool"] + ["cargo-managed"] * len(calls),
+                         "one pool entry precedes the managed leaf for each Cargo invocation")
 
     def test_the_battery_is_admitted_inside_the_gate_lock_exactly_once(self):
         calls, _ = self.run_battery()
@@ -153,9 +187,8 @@ class BrowserSuite(unittest.TestCase):
     """Execute tracked re-entry and artifact ownership, stopping before a build."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir="/tmp", prefix="btw-")
-        self.addCleanup(self.tmp.cleanup)
-        self.fixture = Path(self.tmp.name)
+        self.fixture = Path(tempfile.mkdtemp(dir="/tmp", prefix="btw-"))
+        self.addCleanup(cleanup_managed_fixture, self.fixture)
         for name in ("scripts", "bin", "e2e"):
             (self.fixture / name).mkdir()
         for path in (CHECKOUT / "scripts").iterdir():
@@ -165,19 +198,7 @@ class BrowserSuite(unittest.TestCase):
         (self.fixture / "e2e/playwright.config.ts").symlink_to(CHECKOUT / "e2e/playwright.config.ts")
         # Exercise the real fast-path exec with an isolated, absent policy. No
         # production host setting is read or changed, even on an enrolled host.
-        adapter = self.fixture / "scripts/host-admit.py"
-        adapter.write_text(f"""import importlib.util, os, sys
-spec = importlib.util.spec_from_file_location("entry", {str(CHECKOUT / 'scripts/host-admit.py')!r})
-entry = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(entry)
-entry.POLICY = {str(self.fixture / 'absent-policy.json')!r}
-with open({str(self.fixture / 'admission.log')!r}, "a") as log:
-    log.write("entry\\n")
-if os.environ.get("FIXTURE_REFUSE_ADMISSION"):
-    sys.exit(67)
-entry.fast(sys.argv[1:])
-raise AssertionError("fixture must enter the production disabled-host exec")
-""")
+        trace_disabled_admission(self.fixture)
         cargo = self.fixture / "bin/cargo"
         cargo.write_text(FAKE_CARGO.replace("exit 0", "exit 73"))
         cargo.chmod(0o755)
@@ -198,9 +219,10 @@ raise AssertionError("fixture must enter the production disabled-host exec")
         calls = (self.fixture / "cargo.log").read_text().splitlines()
         self.assertEqual(len(calls), 1, f"one build, so one admitted pass: {calls}")
         _, entry, _, units = calls[0].split("|")
-        self.assertRegex(entry, r"^entry=browser-pool:\d+$")
+        self.assertRegex(entry, r"^entry=cargo-managed:\d+$")
         self.assertEqual(units, "units=", "the unit count is consumed before any slice")
-        self.assertEqual((self.fixture / "admission.log").read_text().splitlines(), ["entry"])
+        self.assertEqual((self.fixture / "admission.log").read_text().splitlines(),
+                         ["browser-pool", "cargo-managed"])
 
     def test_explicit_results_survive_reentry_and_existing_paths_are_refused(self):
         results = self.fixture / "preserved results"
@@ -220,7 +242,8 @@ raise AssertionError("fixture must enter the production disabled-host exec")
                 self.assertTrue(redirected.is_symlink())
         self.assertEqual(len((self.fixture / "cargo.log").read_text().splitlines()), 1,
                          "existing artifact paths must refuse before any build")
-        self.assertEqual((self.fixture / "admission.log").read_text().splitlines(), ["entry"] * 3)
+        self.assertEqual((self.fixture / "admission.log").read_text().splitlines(),
+                         ["browser-pool", "cargo-managed", "browser-pool", "browser-pool"])
 
     def test_refused_admission_does_not_create_or_clear_results(self):
         results = self.fixture / "not-created"

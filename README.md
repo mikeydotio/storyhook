@@ -351,6 +351,7 @@ listed here, it parses.
 story --help
 story --version
 story help [<topic>] [--all] [--compact]
+story describe [<command-path> ...] --json [--audience task|operator|internal|all]
 story update [--check] [--force] [--source HOST/OWNER/REPO]
 
 story project new --prefix <PREFIX> [--name <NAME>] [--attach <PATH> | --no-attach] [--no-agents-md]

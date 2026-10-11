@@ -85,16 +85,6 @@ impl NativeIntegrationGateInputs {
         live(self.deadline, &self.cancellation)?;
         validate_binding(&self.evidence, owner, attempt, published, assembly)
     }
-
-    /// One consumption, without renewing the observation's original lifetime.
-    /// No nested Store read: the caller owns the phase/admission transaction.
-    pub fn consume_for(
-        self,
-        claim: &IntegrationGateClaim,
-    ) -> Result<IntegrationGateInputsEvidence, AppError> {
-        self.validate_for(claim)?;
-        Ok(self.evidence)
-    }
 }
 
 // Owner tests replace only remote observation; native assembly/store custody

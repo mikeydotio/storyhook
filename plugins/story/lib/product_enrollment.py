@@ -11,6 +11,11 @@ import subprocess
 import sys
 
 
+# Optional enrollment allows each local Git/interpreter discovery probe ten seconds.
+# Failure preserves products and leaves the lane unenrolled; this is independent
+# of the project-configured purge deadline and does not extend that operation.
+ENROLLMENT_PROBE_SECONDS = 10
+
 def identity(path):
     info = path.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
@@ -47,7 +52,7 @@ def enroll(worktree, fresh):
     if target.exists() or target.is_symlink():
         raise ValueError('pre-existing products have unknown ownership')
     private = Path(subprocess.run(['git', '-C', str(worktree), 'rev-parse', '--absolute-git-dir'],
-                                 check=True, capture_output=True, text=True, timeout=10).stdout.strip())
+                                 check=True, capture_output=True, text=True, timeout=ENROLLMENT_PROBE_SECONDS).stdout.strip())
     marker = private / 'storyhook-cleanup-lease-v1.json'
     fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(fd) as stream:
@@ -87,7 +92,7 @@ if __name__ == '__main__':
                     continue
                 probe = subprocess.run([candidate, '-I', '-S', '-c',
                                         'import sys; raise SystemExit(0 if (3,11) <= sys.version_info < (4,) else 1)'],
-                                       timeout=10, capture_output=True)
+                                       timeout=ENROLLMENT_PROBE_SECONDS, capture_output=True)
                 if probe.returncode == 0:
                     os.execv(candidate, [candidate, '-B', str(Path(__file__).resolve()), *sys.argv[1:]])
             raise ValueError('enrollment requires Python >=3.11; configure STORYHOOK_PYTHON')

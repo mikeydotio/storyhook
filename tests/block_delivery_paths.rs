@@ -68,6 +68,13 @@ fn every_event_writer_accounts_for_effective_block_changes() {
         "engine/reset",
         "git",
         "history",
+        // Pending host holds and native enrollment/restoration retain their
+        // story comments and admission changes in write_stories transactions.
+        "host_recovery/native/pending",
+        "host_recovery/owner",
+        // Reserving an integration owner records the original story under the
+        // same block-deriving transaction as its ownership record.
+        "integration_recovery/owner",
         "integrity",
         "landing",
         "pr_check",
@@ -76,6 +83,9 @@ fn every_event_writer_accounts_for_effective_block_changes() {
         "project_recovery/prerequisite",
         "project_recovery/refusal",
         "project_recovery/resume",
+        // Shared-fault enrollment may apply dependency holds as well as its
+        // audit comment; the caller owns their complete write_stories scope.
+        "project_recovery/shared",
         "relation",
         "story",
         "story_reset",
@@ -113,6 +123,13 @@ fn every_event_writer_accounts_for_effective_block_changes() {
             "project_recovery/decision_effects",
             "project_recovery/decision",
             "super::decision_effects::apply(",
+        ),
+        // Readmission clears StoryAwaiting only inside reconcile_landing's
+        // write_stories transaction, alongside attribution release.
+        (
+            "project_recovery/shared/readmit",
+            "project_recovery/resume",
+            "super::shared::readmit::reconcile(",
         ),
         (
             "continuation/administrative",

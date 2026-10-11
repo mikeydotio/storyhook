@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,15 +18,46 @@ sys.dont_write_bytecode = True
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 from test_discovery import Discovery, DiscoveryError
+from load_grace import contention, patience
+
+
+def cleanup_managed_fixture(root):
+    from build_products import ProductLease, namespace
+    try:
+        with ProductLease(namespace(root), reclaim=True):
+            pass
+    except BaseException:
+        print(f"discovery fixture custody unresolved; retained {root}", file=sys.stderr)
+        raise
+    shutil.rmtree(root)
+
+
+class FixtureCleanupTests(unittest.TestCase):
+    def test_live_product_lease_retains_fixture_until_settlement(self):
+        from build_products import ProductLease, namespace
+        root = Path(tempfile.mkdtemp(prefix='sh795-cleanup-', dir='/tmp'))
+        subprocess.run(['git', 'init', '-q', str(root)], check=True,
+                       timeout=patience(10, contention()))
+        with ProductLease(namespace(root)):
+            with self.assertRaises(BlockingIOError):
+                cleanup_managed_fixture(root)
+            self.assertTrue(root.is_dir(), 'unsettled fixture evidence must survive cleanup')
+        cleanup_managed_fixture(root)
+        self.assertFalse(root.exists())
 
 
 class DiscoveryTests(unittest.TestCase):
     """Exercise real child processes; shorten only an injected listing deadline."""
 
     def setUp(self):
-        self.scratch = tempfile.TemporaryDirectory(prefix='sh795-discovery-', dir='/tmp')
-        self.addCleanup(self.scratch.cleanup)
-        self.root = Path(self.scratch.name)
+        self.root = Path(tempfile.mkdtemp(prefix='sh795-discovery-', dir='/tmp'))
+        self.addCleanup(cleanup_managed_fixture, self.root)
+        # Fake Cargo must own a fixture Git namespace, never the caller's
+        # checkout or its inherited product lease. Restore cwd before removal.
+        subprocess.run(['git', 'init', '-q', str(self.root)], check=True,
+                       timeout=patience(10, contention()))
+        self.addCleanup(os.chdir, Path.cwd())
+        os.chdir(self.root)
         self.env = os.environ.copy()
         self.discovery = Discovery(self.env, lambda: None)
 
@@ -163,9 +195,10 @@ class PoolFlowTests(unittest.TestCase):
     """Fault-injected Cargo boundaries drive the production shell and pool."""
 
     def setUp(self):
-        self.scratch = tempfile.TemporaryDirectory(prefix='sh795-pool-', dir='/tmp')
-        self.addCleanup(self.scratch.cleanup)
-        self.root = Path(self.scratch.name)
+        self.root = Path(tempfile.mkdtemp(prefix='sh795-pool-', dir='/tmp'))
+        self.addCleanup(cleanup_managed_fixture, self.root)
+        subprocess.run(['git', 'init', '-q', str(self.root)], check=True,
+                       timeout=patience(10, contention()))
         for name in ['scripts', 'tests', 'bin']:
             (self.root / name).mkdir()
         # Runtime selection requires the tracked PATH launcher beside its shell helper.
@@ -175,6 +208,7 @@ class PoolFlowTests(unittest.TestCase):
         for script in SCRIPTS.iterdir():
             if script.suffix in ('.py', '.sh', '.awk'):
                 (self.root / 'scripts' / script.name).symlink_to(script)
+        (self.root / 'scripts' / 'host_admission').symlink_to(SCRIPTS / 'host_admission')
         for name in ['first', 'second']:
             (self.root / 'tests' / f'{name}.rs').touch()
         self.env = {key: value for key, value in os.environ.items()

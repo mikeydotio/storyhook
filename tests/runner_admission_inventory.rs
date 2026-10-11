@@ -126,6 +126,13 @@ const SITES: &[(&str, &str, Coverage)] = &[
         "cargo",
         Coverage::ManagedCargo,
     ),
+    // Its isolated install fixture runs the copied Makefile through the real
+    // managed entry and adapter; only the Cargo executable is doubled.
+    (
+        "scripts/test-build-number.py",
+        "cargo",
+        Coverage::ManagedCargo,
+    ),
     ("scripts/test_discovery.py", "cargo", Coverage::ManagedCargo),
     (
         "scripts/test_discovery.py",
@@ -245,6 +252,15 @@ fn code_lines(path: &str, text: &str) -> Vec<String> {
             }
         }
         if trimmed.starts_with('#') {
+            continue;
+        }
+        // This exact case arm declares fingerprint inputs; it does not run
+        // the managed Cargo entry. Do not exempt the file: a real launch or
+        // an executable case body must still require an admission decision.
+        if path == "scripts/gate-leg-fingerprint.sh"
+            && trimmed.trim_end()
+                == "(scripts/managed-cargo.sh | scripts/cargo-managed.py | scripts/build_products.py) return 0 ;;"
+        {
             continue;
         }
         let first = trimmed.split_whitespace().next().unwrap_or("");
@@ -421,6 +437,23 @@ fn cargo_launches_stay_routed_through_the_admission_wrapper_and_runner() {
         }),
         "Cargo's test binaries must run through scripts/host-admit.py --entry cargo-test-binary"
     );
+}
+
+#[test]
+fn fingerprint_dependency_pattern_does_not_hide_runner_launches() {
+    let path = "scripts/gate-leg-fingerprint.sh";
+    let pattern = "(scripts/managed-cargo.sh | scripts/cargo-managed.py | scripts/build_products.py) return 0 ;;";
+    assert!(found_sites(&[(path.to_string(), pattern.to_string())]).is_empty());
+    for source in [
+        format!("{pattern}\nbash scripts/managed-cargo.sh test --workspace\n"),
+        pattern.replace("return 0", "bash scripts/managed-cargo.sh test --workspace"),
+    ] {
+        assert_eq!(
+            found_sites(&[(path.to_string(), source)]),
+            BTreeSet::from([(path.to_string(), "cargo")]),
+            "only the declarative input arm is exempt, never a runner launch"
+        );
+    }
 }
 
 #[test]

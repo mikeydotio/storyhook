@@ -373,10 +373,10 @@ fn test_changed_runs_run_changed_sh_instead_of_the_full_workspace_runner() {
 #[test]
 fn test_changed_shares_fmt_clippy_build_and_plugin_legs_with_test() {
     let shared_leg_markers = [
-        "cargo fmt --all -- --check",
-        "cargo clippy --workspace --all-targets",
+        "./scripts/managed-cargo.sh fmt --all -- --check",
+        "./scripts/managed-cargo.sh clippy --workspace --all-targets",
         "run-rust-battery.sh contracts",
-        "leg.sh --reuse build -- \"${STORYHOOK_PYTHON}\" scripts/cargo_diagnostics.py -- cargo build",
+        "leg.sh --reuse build -- \"${STORYHOOK_PYTHON}\" scripts/cargo_diagnostics.py -- ./scripts/managed-cargo.sh build",
         "plugins/story/tests/run-tests.sh",
         "check-no-orphan-servers.sh preflight",
         "with-orphan-postlude.sh",

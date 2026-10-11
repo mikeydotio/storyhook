@@ -49,7 +49,9 @@ fn checkout() -> PathBuf {
 /// A generated provider directory, the knob snapshot it reads, and the fake
 /// tmux state that snapshot names.
 struct Doubles {
-    _root: tempfile::TempDir,
+    root: Option<tempfile::TempDir>,
+    process_ledger: Option<PathBuf>,
+    process_scope: Option<String>,
     provider_bin: PathBuf,
     knob_dir: PathBuf,
     state: PathBuf,
@@ -66,17 +68,51 @@ impl Doubles {
         fs::create_dir_all(&state).unwrap();
         fs::create_dir_all(&knob_dir).unwrap();
         fs::create_dir_all(&pane_cwd).unwrap();
+        let mut doubles = Self {
+            root: Some(root),
+            process_ledger: None,
+            process_scope: None,
+            provider_bin,
+            knob_dir,
+            state,
+            pane_cwd,
+        };
+        if snapshot_knobs {
+            let ledger = doubles.root.as_ref().unwrap().path().join("process-ledger");
+            fs::create_dir(&ledger).unwrap();
+            doubles.process_ledger = Some(ledger);
+            let initialized = doubles.owner_command("init", None);
+            assert!(initialized.status.success(), "{}", stderr_of(&initialized));
+            let scope = doubles.owner_command("scope", None);
+            assert!(scope.status.success(), "{}", stderr_of(&scope));
+            doubles.process_scope = Some(stdout_of(&scope).trim().to_owned());
+            fs::write(
+                doubles.knob_dir.join("FAKE_TMUX_PROCESS_LEDGER"),
+                doubles
+                    .process_ledger
+                    .as_ref()
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_bytes(),
+            )
+            .unwrap();
+            fs::write(
+                doubles.knob_dir.join("FAKE_TMUX_PROCESS_SCOPE"),
+                doubles.process_scope.as_ref().unwrap(),
+            )
+            .unwrap();
+        }
         let fake = checkout().join("plugins/story/tests/fakes/tmux");
         if snapshot_knobs {
             // The runner's own snapshot shape: one file per knob, the value
             // verbatim, no trailing newline.
             fs::write(
-                knob_dir.join("FAKE_TMUX_STATE"),
-                state.to_string_lossy().as_bytes(),
+                doubles.knob_dir.join("FAKE_TMUX_STATE"),
+                doubles.state.to_string_lossy().as_bytes(),
             )
             .unwrap();
             fs::write(
-                knob_dir.join("FAKE_TMUX_IMPLEMENTATION"),
+                doubles.knob_dir.join("FAKE_TMUX_IMPLEMENTATION"),
                 fake.to_string_lossy().as_bytes(),
             )
             .unwrap();
@@ -86,10 +122,10 @@ impl Doubles {
             .arg(". \"$1\"; shift; write_e2e_provider_doubles \"$@\"")
             .arg("e2e-provider-doubles-under-test")
             .arg(checkout().join("scripts/e2e-provider-doubles.sh"))
-            .arg(&provider_bin)
-            .arg(&knob_dir)
+            .arg(&doubles.provider_bin)
+            .arg(&doubles.knob_dir)
             .arg(&fake)
-            .current_dir(root.path());
+            .current_dir(doubles.root.as_ref().unwrap().path());
         let output = run_bounded(
             cmd,
             "write_e2e_provider_doubles",
@@ -101,7 +137,7 @@ impl Doubles {
             String::from_utf8_lossy(&output.stderr)
         );
         for name in ["claude", "codex", "tmux"] {
-            let mode = fs::metadata(provider_bin.join(name))
+            let mode = fs::metadata(doubles.provider_bin.join(name))
                 .unwrap()
                 .permissions()
                 .mode();
@@ -111,13 +147,7 @@ impl Doubles {
                 "{name} must be executable by its owner"
             );
         }
-        Self {
-            _root: root,
-            provider_bin,
-            knob_dir,
-            state,
-            pane_cwd,
-        }
+        doubles
     }
 
     /// Exactly the command the daemon builds for its own tmux calls: the
@@ -173,14 +203,48 @@ impl Doubles {
         )
     }
 
-    fn reap_placeholder(&self) {
-        if let Ok(pid) = fs::read_to_string(self.state.join("pane_pid"))
-            && let Ok(pid) = pid.trim().parse::<i32>()
-        {
-            // SAFETY: the pid was written by the fake this test drove, into a
-            // state directory only this test names.
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
+    fn owner_command(&self, action: &str, scope: Option<&str>) -> Output {
+        let mut command = Command::new("python3");
+        command
+            .arg("-B")
+            .arg(checkout().join("plugins/story/tests/fake-process-owner.py"))
+            .arg(action)
+            .arg(self.process_ledger.as_ref().unwrap());
+        if let Some(scope) = scope {
+            command.arg(scope);
+        }
+        command.arg(std::process::id().to_string());
+        run_bounded(
+            command,
+            "provider double native fixture ownership",
+            storyhook_test_support::load_grace::graced_now(Duration::from_secs(35)),
+        )
+    }
+}
+
+impl Drop for Doubles {
+    fn drop(&mut self) {
+        if self.process_ledger.is_none() {
+            return;
+        }
+        // Native identities and writer locks authorize cleanup; pane_pid is
+        // display data. Also settle when an assertion unwinds after launch.
+        let settled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(scope) = &self.process_scope {
+                let output = self.owner_command("cleanup-scope", Some(scope));
+                assert!(output.status.success(), "{}", stderr_of(&output));
+            }
+            let output = self.owner_command("cleanup", None);
+            assert!(output.status.success(), "{}", stderr_of(&output));
+        }));
+        if settled.is_err() {
+            let retained = self.root.take().unwrap().keep();
+            eprintln!(
+                "provider double custody unresolved; retained {}",
+                retained.display()
+            );
+            if !std::thread::panicking() {
+                panic!("provider double fixture ownership did not settle");
             }
         }
     }
@@ -228,7 +292,6 @@ fn the_daemons_own_liveness_probe_reaches_the_fake_through_the_double() {
     );
 
     let answer = doubles.probe(&pane);
-    doubles.reap_placeholder();
     assert!(
         answer.status.success(),
         "the daemon's probe must reach the fake with only the allowlisted environment: {}",
@@ -285,7 +348,7 @@ fn a_double_with_no_snapshot_fails_rather_than_answering() {
 fn a_knob_the_caller_already_carries_wins_over_the_snapshot() {
     assert_no_ambient_knobs();
     let doubles = Doubles::generate(true);
-    let other_state = doubles._root.path().join("other-state");
+    let other_state = doubles.root.as_ref().unwrap().path().join("other-state");
     fs::create_dir_all(&other_state).unwrap();
     let mut command = doubles.daemon_tmux();
     command.env("FAKE_TMUX_STATE", &other_state);

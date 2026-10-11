@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -20,8 +21,8 @@ def executable(path, text):
 
 class Fixture:
     def __init__(self, source, override):
-        self.temp = tempfile.TemporaryDirectory(prefix="story-selective-receipt-", dir="/tmp")
-        self.root = Path(self.temp.name)
+        self.root = Path(tempfile.mkdtemp(prefix="story-selective-receipt-", dir="/tmp"))
+        self.source = source
         self.log = self.root / ".git/executions"
         self.env = {
             "PATH": str(self.root / "bin") + ":" + os.environ["PATH"],
@@ -42,11 +43,19 @@ class Fixture:
             "scripts/select-tests.sh", "scripts/run-changed.sh",
             "scripts/run-rust-battery.sh", "scripts/rust-test-targets.sh",
             "scripts/python-runtime.sh", "scripts/python-bin/python3",
+            "scripts/managed-cargo.sh", "scripts/cargo-managed.py",
+            "scripts/build_products.py", "scripts/host-admit.py",
+            "scripts/host_admission",
         ]:
-            target = (override / name) if override and (override / name).is_file() else source / name
+            target = (override / name) if override and (override / name).exists() else source / name
             destination = self.root / name
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.symlink_to(target)
+            if target.is_dir():
+                # Fingerprints hash tracked file bytes, so preserve the real
+                # package layout instead of tracking a directory symlink.
+                shutil.copytree(target, destination, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            else:
+                destination.symlink_to(target)
         # All behavior under review remains production code. Expensive leaf
         # checks are controlled executors; none starts Cargo, a provider or daemon.
         executable(self.root / "scripts/run-tests.sh", """#!/bin/bash
@@ -111,7 +120,15 @@ fi
         return self.log.read_text().splitlines() if self.log.exists() else []
 
     def close(self):
-        self.temp.cleanup()
+        sys.path.insert(0, str(self.source / "scripts"))
+        from build_products import ProductLease, namespace
+        try:
+            with ProductLease(namespace(self.root), reclaim=True):
+                pass
+        except BaseException:
+            print(f"selective fixture custody unresolved; retained {self.root}", file=sys.stderr)
+            raise
+        shutil.rmtree(self.root)
 
 
 def check(source, override, scenario):

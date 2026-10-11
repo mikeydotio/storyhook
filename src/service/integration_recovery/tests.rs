@@ -81,7 +81,8 @@ impl Fixture {
             self.root.path(),
             &self.base,
             &self.head,
-            Instant::now() + Duration::from_secs(30),
+            Instant::now()
+                + storyhook_test_support::load_grace::graced_now(Duration::from_secs(30)),
             Cancellation::default(),
         )
         .unwrap()

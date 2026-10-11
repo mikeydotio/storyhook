@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -36,12 +37,26 @@ class CollectorContracts(unittest.TestCase):
     """Use isolated artifacts for every collector invocation."""
 
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="sh685-", dir="/tmp")
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(tempfile.mkdtemp(prefix="sh685-", dir="/tmp"))
+        # --confirm-shared uses the real managed Cargo entry, whose custody
+        # belongs to this Git namespace even when Cargo runs in a child package.
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        def cleanup():
+            from build_products import ProductLease, namespace
+            try:
+                with ProductLease(namespace(self.root), reclaim=True):
+                    pass
+            except BaseException:
+                print(f"compiler fixture custody unresolved; retained {self.root}", file=sys.stderr)
+                raise
+            shutil.rmtree(self.root)
+        self.addCleanup(cleanup)
         self.artifact = self.root / "diagnostics.jsonl"
         self.artifact.touch()
-        self.env = dict(os.environ, **{ENV_KEY: str(self.artifact)})
+        self.env = {key: value for key, value in os.environ.items()
+                    if not key.startswith("STORYHOOK_PRODUCT_")}
+        self.env.update({ENV_KEY: str(self.artifact), "CARGO_TARGET_DIR": str(self.root / "target"),
+                         "STORYHOOK_PYTHON": sys.executable})
         spec = importlib.util.spec_from_file_location("cargo_diagnostics", SCRIPT)
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)

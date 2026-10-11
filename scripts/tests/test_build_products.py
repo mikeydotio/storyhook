@@ -27,6 +27,17 @@ cargo = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cargo)
 
 
+# Existing outer allowances for controlled local-process fixtures. Handshake and
+# reap waits do not assert wall time; custody contention proofs keep their own
+# deliberately short injected wait_seconds values unchanged.
+PROCESS_STARTUP_SECONDS = 10
+PROCESS_REAP_SECONDS = 10
+REBUILD_COMPLETION_SECONDS = 15
+MANAGED_ENTRY_SECONDS = 20
+# Assert the existing production Git-probe ceiling; the regression injects its
+# expiry synchronously and never waits for this duration.
+GIT_PROBE_TIMEOUT_SECONDS = 10
+
 class ProductOwnershipTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="sh835-products-")
@@ -53,7 +64,7 @@ class ProductOwnershipTests(unittest.TestCase):
     def test_real_managed_rebuild_waits_for_short_detach_guard(self):
         repo = self.root / "repo"
         repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=10)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=PROCESS_STARTUP_SECONDS)
         root = products.namespace(repo)
         marker = repo / "products" / "rebuilt"
         script = ("import sys;sys.path.insert(0," + repr(str(SCRIPTS)) + ");"
@@ -66,25 +77,25 @@ class ProductOwnershipTests(unittest.TestCase):
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             try:
                 import select
-                self.assertTrue(select.select([child.stdout], [], [], 10)[0])
+                self.assertTrue(select.select([child.stdout], [], [], PROCESS_STARTUP_SECONDS)[0])
                 self.assertEqual(child.stdout.readline(), b"waiting\n")
                 self.assertIsNone(child.poll())
                 self.assertFalse(marker.exists())
             except BaseException:
-                child.kill(); child.communicate(timeout=10)
+                child.kill(); child.communicate(timeout=PROCESS_REAP_SECONDS)
                 raise
         try:
-            stdout, stderr = child.communicate(timeout=15)
+            stdout, stderr = child.communicate(timeout=REBUILD_COMPLETION_SECONDS)
             self.assertEqual(child.returncode, 0, (stdout, stderr))
             self.assertEqual(marker.read_text(), "new")
         finally:
             if child.poll() is None:
-                child.kill(); child.communicate(timeout=10)
+                child.kill(); child.communicate(timeout=PROCESS_REAP_SECONDS)
 
     def test_cancel_waiting_managed_build_leaves_no_reserved_owner(self):
         repo = self.root / "repo"
         repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=10)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=PROCESS_STARTUP_SECONDS)
         root = products.namespace(repo)
         script = ("import sys;sys.path.insert(0," + repr(str(SCRIPTS)) + ");"
                   "import build_products;print('waiting',flush=True);"
@@ -95,15 +106,15 @@ class ProductOwnershipTests(unittest.TestCase):
                                      stderr=subprocess.PIPE)
             try:
                 import select
-                self.assertTrue(select.select([child.stdout], [], [], 10)[0])
+                self.assertTrue(select.select([child.stdout], [], [], PROCESS_STARTUP_SECONDS)[0])
                 self.assertEqual(child.stdout.readline(), b"waiting\n")
                 child.terminate()
-                child.communicate(timeout=10)
+                child.communicate(timeout=PROCESS_REAP_SECONDS)
                 self.assertEqual(child.returncode, -signal.SIGTERM)
                 self.assertFalse(list(root.glob("build-*")))
             finally:
                 if child.poll() is None:
-                    child.kill(); child.communicate(timeout=10)
+                    child.kill(); child.communicate(timeout=PROCESS_REAP_SECONDS)
 
     def test_live_build_excludes_reclaim_even_without_host_policy(self):
         with products.ProductLease(self.root):
@@ -129,7 +140,7 @@ class ProductOwnershipTests(unittest.TestCase):
                 products.ProductLease(self.root, reclaim=True)
         finally:
             child.stdin.close()
-            child.wait(timeout=10)
+            child.wait(timeout=PROCESS_REAP_SECONDS)
         with products.ProductLease(self.root, reclaim=True):
             pass
 
@@ -285,6 +296,50 @@ class ProductOwnershipTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "this wrapper"):
             cargo.command(["--cargo-executable", str(SCRIPTS / "cargo-managed.py"), "--"])
 
+    def test_non_git_checkout_refuses_with_control_status_before_cargo_launch(self):
+        checkout = self.root / "not-a-repository"
+        checkout.mkdir()
+        marker = self.root / "cargo-launched"
+        # A real Git probe must fail here even when this suite was launched
+        # with a parent Git namespace or from a temporary directory inside one.
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env["GIT_CEILING_DIRECTORIES"] = str(self.root.resolve())
+        fake_cargo = "from pathlib import Path; Path(" + repr(str(marker)) + ").write_text('launched')"
+        result = subprocess.run(
+            [sys.executable, "-B", str(SCRIPTS / "cargo-managed.py"),
+             "--cargo-executable", sys.executable, "--", "-c", fake_cargo],
+            cwd=checkout, env=env, capture_output=True, text=True,
+            timeout=MANAGED_ENTRY_SECONDS,
+        )
+        self.assertEqual(result.returncode, 125, (result.stdout, result.stderr))
+        self.assertIn("cargo-managed: custody unresolved; products preserved:", result.stderr)
+        self.assertIn("rev-parse", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertFalse(marker.exists(), "Cargo must not run without a Git custody namespace")
+        self.assertEqual(list(checkout.iterdir()), [], "refusal must not create custody authority")
+
+    def test_git_namespace_timeout_refuses_with_control_status_before_cargo_launch(self):
+        probe = ["git", "-C", str(Path.cwd()), "rev-parse", "--absolute-git-dir"]
+        stderr = io.StringIO()
+        # Exercise main -> run_managed -> namespace -> git_path, injecting only
+        # the probe timeout so this regression never waits for a real timeout.
+        with patch.object(products.subprocess, "run",
+                          side_effect=subprocess.TimeoutExpired(probe, GIT_PROBE_TIMEOUT_SECONDS)) as run, \
+             patch.object(products, "ProductLease") as lease, \
+             patch.object(products, "ProductCustody") as custody, \
+             patch.object(products, "ManagedProcess") as process, \
+             redirect_stderr(stderr):
+            result = cargo.main(["--cargo-executable", sys.executable, "--", "build"])
+        self.assertEqual(result, 125)
+        run.assert_called_once_with(probe, check=True, text=True, capture_output=True, timeout=GIT_PROBE_TIMEOUT_SECONDS)
+        lease.assert_not_called()
+        custody.assert_not_called()
+        process.assert_not_called()
+        self.assertIn("cargo-managed: custody unresolved; products preserved:", stderr.getvalue())
+        self.assertIn("rev-parse", stderr.getvalue())
+        self.assertIn("timed out", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
     def test_custody_does_not_mint_or_replace_host_grant(self):
         # Exercise the constructor through its blocked launcher with a fake client;
         # retain actual pipe/exec/child handling, replacing only the global census
@@ -377,7 +432,7 @@ time.sleep(30)
         captured = False
 
         def until(predicate):
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + PROCESS_STARTUP_SECONDS
             while not predicate():
                 if time.monotonic() >= deadline:
                     self.fail("controlled fork did not reach its handshake")
@@ -510,7 +565,7 @@ time.sleep(30)
         self.retain = True
         result = subprocess.run([str(scripts / "managed-cargo.sh"), "--cargo-executable",
                                  sys.executable, "--", "-c", code, "a b", "--literal", ""],
-                                cwd=repo, env=env, text=True, capture_output=True, timeout=20)
+                                cwd=repo, env=env, text=True, capture_output=True, timeout=MANAGED_ENTRY_SECONDS)
         self.assertEqual(result.returncode, 7, result.stderr)
         self.assertEqual(json.loads(result.stdout), ["a b", "--literal", ""])
         self.assertEqual(result.stderr, "fixture stderr\n")

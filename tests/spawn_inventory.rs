@@ -106,13 +106,6 @@ enum Kind {
 /// classification for "git, run from this module" has not changed. A new
 /// program, or a new file, does.
 const INVENTORY: &[(&str, &str, Kind)] = &[
-    // SH-871 host request deadline preflight: the nonexistent executable must
-    // never reach spawn, so this fixture owns no process on the passing path.
-    (
-        "src/process.rs",
-        "\"storyhook-sh871-must-not-spawn-expired-host-request\"",
-        Kind::Waited,
-    ),
     // Publication preflight fixtures refuse before spawn on an expired or
     // cancelled original operation; this nonexistent program never executes.
     (
@@ -125,32 +118,6 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     (
         "src/service/host_recovery/native.rs",
         "\"bash\"",
-        Kind::Waited,
-    ),
-    // A finite scratch writer proves that leader success is insufficient;
-    // the owned process group must settle within the original deadline.
-    (
-        "src/service/integration_recovery/assembly/tests.rs",
-        "\"sh\"",
-        Kind::Waited,
-    ),
-    // SH-871: one scratch gate workload under the real central accounting
-    // boundary; file-backed quiescent capture settles its owned process group.
-    (
-        "src/service/integration_recovery/tests/owner/workflow.rs",
-        "\"python3\"",
-        Kind::Waited,
-    ),
-    // Controlled native inspection fixtures: an absent executable and finite
-    // scratch writers are supervised through the same quiescent capture.
-    (
-        "src/service/private_objects/native/tests.rs",
-        "&missing",
-        Kind::Waited,
-    ),
-    (
-        "src/service/private_objects/native/tests.rs",
-        "\"sh\"",
         Kind::Waited,
     ),
     // SH-870: metadata-only refresh; owned control supervisor enforces its deadline,
@@ -239,6 +206,16 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // temporary files rather than pipes, so there is no pipe for a descendant to
     // hold and nothing for the caller to wait on.
     ("src/event_hooks.rs", "\"sh\"", Kind::Waited),
+    // The configured SH-835 detached-product hook uses file-backed
+    // run_captured_quiescent, not output pipes. The Environment-adjusted
+    // configured timeout bounds the hook and its owned process group;
+    // TerminationPolicy::Kill ends it on timeout, and success requires
+    // quiescence before capture is returned.
+    (
+        "src/service/build_products.rs",
+        "&config.hook[0]",
+        Kind::Waited,
+    ),
     // `service::engine` owns both process doors behind the Dispatcher seam:
     // the bash helper and bounded tmux probes/kills. Both are `Waited`:
     // stdout/stderr are unlinked files rather than pipes, `wait_timeout`
