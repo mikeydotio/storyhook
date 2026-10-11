@@ -126,6 +126,9 @@ const SITES: &[(&str, &str, Coverage)] = &[
         "cargo",
         Coverage::ManagedCargo,
     ),
+    // Its isolated install fixture runs the copied Makefile through the real
+    // managed entry and adapter; only the Cargo executable is doubled.
+    ("scripts/test-build-number.py", "cargo", Coverage::ManagedCargo),
     ("scripts/test_discovery.py", "cargo", Coverage::ManagedCargo),
     (
         "scripts/test_discovery.py",
