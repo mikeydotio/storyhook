@@ -34,6 +34,9 @@ PROCESS_STARTUP_SECONDS = 10
 PROCESS_REAP_SECONDS = 10
 REBUILD_COMPLETION_SECONDS = 15
 MANAGED_ENTRY_SECONDS = 20
+# Assert the existing production Git-probe ceiling; the regression injects its
+# expiry synchronously and never waits for this duration.
+GIT_PROBE_TIMEOUT_SECONDS = 10
 
 class ProductOwnershipTests(unittest.TestCase):
     def setUp(self):
@@ -321,14 +324,14 @@ class ProductOwnershipTests(unittest.TestCase):
         # Exercise main -> run_managed -> namespace -> git_path, injecting only
         # the probe timeout so this regression never waits for a real timeout.
         with patch.object(products.subprocess, "run",
-                          side_effect=subprocess.TimeoutExpired(probe, 10)) as run, \
+                          side_effect=subprocess.TimeoutExpired(probe, GIT_PROBE_TIMEOUT_SECONDS)) as run, \
              patch.object(products, "ProductLease") as lease, \
              patch.object(products, "ProductCustody") as custody, \
              patch.object(products, "ManagedProcess") as process, \
              redirect_stderr(stderr):
             result = cargo.main(["--cargo-executable", sys.executable, "--", "build"])
         self.assertEqual(result, 125)
-        run.assert_called_once_with(probe, check=True, text=True, capture_output=True, timeout=10)
+        run.assert_called_once_with(probe, check=True, text=True, capture_output=True, timeout=GIT_PROBE_TIMEOUT_SECONDS)
         lease.assert_not_called()
         custody.assert_not_called()
         process.assert_not_called()
