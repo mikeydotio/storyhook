@@ -53,7 +53,8 @@ def main(argv):
     except FileNotFoundError as error:
         print(f"cargo-managed: {error}", file=sys.stderr)
         return 127
-    except (OSError, Refusal, ValueError, subprocess.CalledProcessError) as error:
+    except (OSError, Refusal, ValueError, subprocess.CalledProcessError,
+            subprocess.TimeoutExpired) as error:
         # A failed Git namespace probe is a custody/control refusal, not a
         # Cargo/compiler exit that diagnostic confirmation may leave unconfirmed.
         print(f"cargo-managed: custody unresolved; products preserved: {error}", file=sys.stderr)

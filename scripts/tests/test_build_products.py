@@ -315,6 +315,28 @@ class ProductOwnershipTests(unittest.TestCase):
         self.assertFalse(marker.exists(), "Cargo must not run without a Git custody namespace")
         self.assertEqual(list(checkout.iterdir()), [], "refusal must not create custody authority")
 
+    def test_git_namespace_timeout_refuses_with_control_status_before_cargo_launch(self):
+        probe = ["git", "-C", str(Path.cwd()), "rev-parse", "--absolute-git-dir"]
+        stderr = io.StringIO()
+        # Exercise main -> run_managed -> namespace -> git_path, injecting only
+        # the probe timeout so this regression never waits for a real timeout.
+        with patch.object(products.subprocess, "run",
+                          side_effect=subprocess.TimeoutExpired(probe, 10)) as run, \
+             patch.object(products, "ProductLease") as lease, \
+             patch.object(products, "ProductCustody") as custody, \
+             patch.object(products, "ManagedProcess") as process, \
+             redirect_stderr(stderr):
+            result = cargo.main(["--cargo-executable", sys.executable, "--", "build"])
+        self.assertEqual(result, 125)
+        run.assert_called_once_with(probe, check=True, text=True, capture_output=True, timeout=10)
+        lease.assert_not_called()
+        custody.assert_not_called()
+        process.assert_not_called()
+        self.assertIn("cargo-managed: custody unresolved; products preserved:", stderr.getvalue())
+        self.assertIn("rev-parse", stderr.getvalue())
+        self.assertIn("timed out", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
     def test_custody_does_not_mint_or_replace_host_grant(self):
         # Exercise the constructor through its blocked launcher with a fake client;
         # retain actual pipe/exec/child handling, replacing only the global census
