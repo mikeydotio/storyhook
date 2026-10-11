@@ -33,10 +33,13 @@ class ManagedProcess:
     """A blocked-launch supervisor; SH-869 adapters own preserving its child contract."""
 
     def __init__(self, client, lease, command, *, publisher=None, env=None, grant_environment=True,
-                 cwd=None, forward_signals=False):
+                 cwd=None, forward_signals=False, wait_for_guard=False):
         self.client, self.lease, self.child, self.guard = client, lease, None, None
         self.publisher = publisher
         self.forward_signals = forward_signals
+        # Product custody opts into bounded recensus. Host authority retains
+        # its existing settlement/quarantine notification path.
+        self.wait_for_guard = wait_for_guard
         # The authority's reason for withdrawing this grant, once observed.
         self.drain_reason = None
         self.observation_failure = None
@@ -51,7 +54,8 @@ class ManagedProcess:
         if not command or not all(isinstance(arg, str) and "\0" not in arg for arg in command):
             raise Refusal("managed command must be a nonempty argv")
         guard_name = f"lease-{lease['token']}.lock"
-        self.guard = open_private(client.root / guard_name, create=True)
+        self.guard_path = client.root / guard_name
+        self.guard = open_private(self.guard_path, create=True)
         fcntl.flock(self.guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
         read_go, write_go = os.pipe()
         read_ready, write_ready = os.pipe()
@@ -139,6 +143,24 @@ class ManagedProcess:
             except ProcessLookupError:
                 continue
 
+    def _guard_settled(self):
+        # A PID census followed by liveness reads is not atomic: a member
+        # can fork after enumeration and exit before its status is read.
+        # Drop only our descriptor, never unlock the inherited description.
+        # A fresh lock proves that every descendant has released that guard.
+        if self.guard is not None:
+            os.close(self.guard)
+            self.guard = None
+        probe = open_private(self.guard_path)
+        try:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+            return True
+        finally:
+            os.close(probe)
+
     def wait(self, *, force_cancel=False):
         """Observe broker cancellation and drain only this pinned managed process group."""
         if self.finished:
@@ -182,7 +204,7 @@ class ManagedProcess:
                     draining = True
                     if not requested:
                         requested = True
-                if exited and not members:
+                if exited and not members and (not self.wait_for_guard or self._guard_settled()):
                     break
                 if draining or exited:
                     now = time.monotonic_ns() // 1_000_000
@@ -202,7 +224,8 @@ class ManagedProcess:
                 select.select([], [], [], self.timing["sample_ms"] / 1000)
             result = self.child.wait()
             self.result = 125 if draining and result == 0 else result
-            os.close(self.guard); self.guard = None
+            if self.guard is not None:
+                os.close(self.guard); self.guard = None
             self.finished = True
             if failure:
                 raise Refusal(f"owned processes drained; admission control or evidence failed: {failure}")

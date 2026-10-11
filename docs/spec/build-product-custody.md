@@ -21,6 +21,15 @@ members are drained, and a descendant outside the session that retains the guard
 prevents settlement. Deliberately escaping both the session and every custody
 descriptor is outside this cooperating managed-entry contract.
 
+Product supervision uses an explicit guard-wait mode; host admission retains its
+existing authority settlement and quarantine path. A PID census and its later
+liveness observations are not atomic. A member can
+fork after enumeration and exit before observation. An empty census therefore
+does not complete supervision until a fresh lock probe also proves the inherited
+guard has been released. The leader remains waitable while the existing bounded
+drain cycle repeats. A persistent guard or failed observation still refuses
+settlement and preserves the unfinished record; no inherited lock is unlocked.
+
 Cargo's argv, standard streams, normal exit status and signal termination are
 preserved. Nested calls in the same checkout inherit product exclusion. A nested
 call for another checkout establishes that checkout's own custody while retaining

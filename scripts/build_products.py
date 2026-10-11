@@ -234,7 +234,8 @@ def run_managed(command, *, cwd=None, env=None):
         env.update({PRODUCT_FD: str(lease.fd), PRODUCT_ROOT: str(root)})
         custody = ProductCustody(root, command)
         process = ManagedProcess(custody, custody.lease, command, env=env,
-                                 grant_environment=False, cwd=cwd, forward_signals=True)
+                                 grant_environment=False, cwd=cwd, forward_signals=True,
+                                 wait_for_guard=True)
         try:
             result = process.wait()
             return result
