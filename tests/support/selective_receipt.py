@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -20,8 +21,8 @@ def executable(path, text):
 
 class Fixture:
     def __init__(self, source, override):
-        self.temp = tempfile.TemporaryDirectory(prefix="story-selective-receipt-", dir="/tmp")
-        self.root = Path(self.temp.name)
+        self.root = Path(tempfile.mkdtemp(prefix="story-selective-receipt-", dir="/tmp"))
+        self.source = source
         self.log = self.root / ".git/executions"
         self.env = {
             "PATH": str(self.root / "bin") + ":" + os.environ["PATH"],
@@ -114,7 +115,15 @@ fi
         return self.log.read_text().splitlines() if self.log.exists() else []
 
     def close(self):
-        self.temp.cleanup()
+        sys.path.insert(0, str(self.source / "scripts"))
+        from build_products import ProductLease, namespace
+        try:
+            with ProductLease(namespace(self.root), reclaim=True):
+                pass
+        except BaseException:
+            print(f"selective fixture custody unresolved; retained {self.root}", file=sys.stderr)
+            raise
+        shutil.rmtree(self.root)
 
 
 def check(source, override, scenario):

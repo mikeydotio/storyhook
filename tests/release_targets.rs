@@ -13,6 +13,10 @@ use std::process::{Command, Output};
 
 use storyhook_test_support::scratch_dir_named;
 
+#[path = "support/managed_fixture.rs"]
+mod managed_fixture;
+use managed_fixture::ManagedFixture;
+
 /// The repository root, which is this package's manifest directory: the root
 /// package and the workspace root are the same crate here (see `Cargo.toml`'s
 /// opening comment).
@@ -198,7 +202,7 @@ fn write_executable(path: &Path, body: &str) {
     std::fs::set_permissions(path, permissions).unwrap();
 }
 
-fn release_tool_shims() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
+fn release_tool_shims() -> (ManagedFixture, PathBuf, PathBuf, PathBuf, PathBuf) {
     let fixture = scratch_dir_named("local-release");
     let bin = fixture.path().join("bin");
     let target = fixture.path().join("target");
@@ -392,17 +396,23 @@ exec /usr/bin/tar "$@"
         );
     }
 
-    (fixture, bin, target, toolchain, linux_runner)
+    (
+        ManagedFixture::new(fixture, "assembly-source"),
+        bin,
+        target,
+        toolchain,
+        linux_runner,
+    )
 }
 
-fn run_asset_builder(extra_env: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, Output) {
+fn run_asset_builder(extra_env: &[(&str, &str)]) -> (ManagedFixture, PathBuf, Output) {
     run_asset_builder_args(extra_env, &[])
 }
 
 fn run_asset_builder_args(
     extra_env: &[(&str, &str)],
     args: &[&str],
-) -> (tempfile::TempDir, PathBuf, Output) {
+) -> (ManagedFixture, PathBuf, Output) {
     let (fixture, bin, target, toolchain, linux_runner) = release_tool_shims();
     let source = fixture.path().join("assembly-source");
     let output_dir = fixture.path().join("assets");

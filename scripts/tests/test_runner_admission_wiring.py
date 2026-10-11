@@ -7,6 +7,7 @@ nothing but the admission marker.
 """
 
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -55,12 +56,23 @@ raise AssertionError("fixture must enter the production disabled-host exec")
 """)
 
 
+def cleanup_managed_fixture(root):
+    sys.path.insert(0, str(CHECKOUT / "scripts"))
+    from build_products import ProductLease, namespace
+    try:
+        with ProductLease(namespace(root), reclaim=True):
+            pass
+    except BaseException:
+        print(f"admission fixture custody unresolved; retained {root}", file=sys.stderr)
+        raise
+    shutil.rmtree(root)
+
+
 @unittest.skipIf(POLICY.exists(), "these cases prove the disabled host; this host has a policy")
 class RustBattery(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir="/tmp", prefix="rtw-")
-        self.addCleanup(self.tmp.cleanup)
-        self.fixture = Path(self.tmp.name)
+        self.fixture = Path(tempfile.mkdtemp(dir="/tmp", prefix="rtw-"))
+        self.addCleanup(cleanup_managed_fixture, self.fixture)
         for name in ("scripts", "bin", "tests", "locks"):
             (self.fixture / name).mkdir()
         # Symlinks, never copies: the point is to run the tracked scripts.
@@ -175,9 +187,8 @@ class BrowserSuite(unittest.TestCase):
     """Execute tracked re-entry and artifact ownership, stopping before a build."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir="/tmp", prefix="btw-")
-        self.addCleanup(self.tmp.cleanup)
-        self.fixture = Path(self.tmp.name)
+        self.fixture = Path(tempfile.mkdtemp(dir="/tmp", prefix="btw-"))
+        self.addCleanup(cleanup_managed_fixture, self.fixture)
         for name in ("scripts", "bin", "e2e"):
             (self.fixture / name).mkdir()
         for path in (CHECKOUT / "scripts").iterdir():

@@ -84,7 +84,9 @@ use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 use storyhook_test_support::{ChildGuard, scratch_dir};
-use tempfile::TempDir;
+#[path = "support/managed_fixture.rs"]
+mod managed_fixture;
+use managed_fixture::ManagedFixture;
 
 // ---------------------------------------------------------------------------
 // Constants, derived rather than copied
@@ -259,7 +261,7 @@ impl Runner {
 }
 
 struct Fixture {
-    root: TempDir,
+    root: ManagedFixture,
 }
 
 /// The one tracked script this fixture replaces rather than links.
@@ -369,7 +371,9 @@ impl Fixture {
             .output()
             .expect("fixture: git init");
         assert!(init.status.success(), "fixture: git init: {init:?}");
-        let fixture = Self { root };
+        let fixture = Self {
+            root: ManagedFixture::new(root, ""),
+        };
         // Refusing to answer is a path the tracked script already tolerates —
         // a tarball or a corrupt index produces it — and it is what keeps
         // `test-delta.sh` from writing a ledger into the real `.git`.
@@ -1091,4 +1095,133 @@ fn the_lock_is_taken_before_the_run_builds_its_isolated_data_root() {
         take < data_root,
         "the gate lock must be taken before the run builds anything it would have to clean up -- a queued run should hold no temp directory and no EXIT trap it has not installed yet"
     );
+}
+
+/// No managed workload is launched by these cleanup probes. Git creates only
+/// the isolated namespace; synthetic journals are labelled test data, never
+/// gate or production ownership receipts.
+fn managed_cleanup_probe() -> tempfile::TempDir {
+    let root = scratch_dir();
+    let mut command = Command::new("git");
+    command.args(["init", "-q"]).arg(root.path());
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    let mut child = ChildGuard::spawn_with_output(&mut command).unwrap();
+    let output = child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(10)),
+        || "initializing managed cleanup probe Git namespace".into(),
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    root
+}
+
+fn cleanup_probe_namespace(root: &Path) -> PathBuf {
+    let namespace = root.join(".git/storyhook-build-products-v1");
+    std::fs::create_dir(&namespace).unwrap();
+    std::fs::set_permissions(&namespace, std::fs::Permissions::from_mode(0o700)).unwrap();
+    namespace
+}
+
+#[test]
+fn managed_fixture_removes_settled_root_without_following_source_symlinks() {
+    let root = managed_cleanup_probe();
+    let path = root.path().to_owned();
+    let unrelated = scratch_dir();
+    let sentinel = unrelated.path().join("preserve-source");
+    std::fs::write(&sentinel, "unrelated source survives fixture cleanup\n").unwrap();
+    std::os::unix::fs::symlink(unrelated.path(), path.join("source")).unwrap();
+    std::fs::create_dir(path.join("target")).unwrap();
+    std::fs::write(path.join("target/fixture-product"), "test-only product\n").unwrap();
+
+    // No outstanding owners is a settled namespace. ProductLease still takes
+    // the real reclaim lock before removing the fixture and its target.
+    drop(ManagedFixture::new(root, ""));
+
+    assert!(!path.exists(), "settled fixture products were not removed");
+    assert_eq!(
+        std::fs::read_to_string(sentinel).unwrap(),
+        "unrelated source survives fixture cleanup\n"
+    );
+}
+
+#[test]
+fn managed_fixture_retains_unfinished_synthetic_journal_and_fails_cleanup() {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let root = managed_cleanup_probe();
+    let path = root.path().to_owned();
+    let namespace = cleanup_probe_namespace(&path);
+    let owner = namespace.join("build-synthetic-cleanup-regression");
+    std::fs::create_dir(&owner).unwrap();
+    std::fs::set_permissions(&owner, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let record = owner.join("record.json");
+    let evidence = br#"{"version":1,"state":"reserved","executions":[],"synthetic_test_only":true,"fixture_case":"unfinished-cleanup-regression"}"#;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&record)
+        .unwrap();
+    file.write_all(evidence).unwrap();
+    drop(file);
+    std::fs::create_dir(path.join("target")).unwrap();
+    std::fs::write(
+        path.join("target/fixture-product"),
+        "preserve until proven\n",
+    )
+    .unwrap();
+
+    let guard = ManagedFixture::new(root, "");
+    let refused = std::panic::catch_unwind(|| drop(guard));
+
+    assert!(
+        refused.is_err(),
+        "unproved custody must fail the owning test"
+    );
+    assert_eq!(std::fs::read(record).unwrap(), evidence);
+    assert_eq!(
+        std::fs::read_to_string(path.join("target/fixture-product")).unwrap(),
+        "preserve until proven\n"
+    );
+    // This test authored the explicitly synthetic journal and launched no
+    // workload. Remove only its own test data after proving preservation;
+    // never mark that invented journal finished or publish it as a receipt.
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn managed_fixture_retains_root_while_real_product_lock_is_held() {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let root = managed_cleanup_probe();
+    let path = root.path().to_owned();
+    let namespace = cleanup_probe_namespace(&path);
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(namespace.join("products.lock"))
+        .unwrap();
+    // SAFETY: lock owns this live file descriptor. This is a real shared
+    // flock on the exact inode ProductLease must exclusively reclaim.
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_SH) }, 0);
+    std::fs::write(path.join("preserve"), "held lease\n").unwrap();
+    let guard = ManagedFixture::new(root, "");
+
+    let refused = std::panic::catch_unwind(|| drop(guard));
+
+    assert!(refused.is_err(), "a held lease must fail fixture cleanup");
+    assert_eq!(
+        std::fs::read_to_string(path.join("preserve")).unwrap(),
+        "held lease\n"
+    );
+    assert!(namespace.join("products.lock").is_file());
+    drop(lock);
+    // The sole lock owner was the File above; no native child was started.
+    std::fs::remove_dir_all(path).unwrap();
 }
