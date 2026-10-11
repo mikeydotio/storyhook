@@ -20,7 +20,7 @@
 //! written list of "the files allowed to do this" is precisely what stops being
 //! true.
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 #[path = "support/test_only_modules.rs"]
 mod test_only_modules;
@@ -67,15 +67,119 @@ fn tracked_sources(root: &Path) -> Vec<(String, String)> {
     files
 }
 
+/// Directory ancestry alone does not prove test-only ownership: a production
+/// module can load a file there through another declaration. Refuse that
+/// ambiguity instead of letting the exclusion hide a production snapshot.
+fn refuse_production_aliases(sources: &[(String, String)], test_roots: &[PathBuf]) {
+    fn check_target(target: PathBuf, roots: &[PathBuf], declaring: &str) {
+        assert!(
+            !target.is_absolute(),
+            "cannot establish production module path in {declaring}: absolute path"
+        );
+        let mut normalized = PathBuf::new();
+        for component in target.components() {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    assert!(normalized.pop(), "module path escapes the source corpus");
+                }
+                other => normalized.push(other.as_os_str()),
+            }
+        }
+        assert!(
+            !roots.iter().any(|root| normalized.starts_with(root)),
+            "production module in {declaring} aliases test-only source {}; \
+             snapshot exclusion is ambiguous",
+            normalized.display()
+        );
+    }
+
+    fn visit(
+        items: &[syn::Item],
+        directory: &Path,
+        path_directory: &Path,
+        roots: &[PathBuf],
+        declaring: &str,
+    ) {
+        for item in items {
+            let syn::Item::Mod(module) = item else {
+                continue;
+            };
+            if module.attrs.iter().any(|attribute| {
+                matches!(&attribute.meta, syn::Meta::List(cfg)
+                    if cfg.path.is_ident("cfg") && cfg.tokens.to_string() == "test")
+            }) {
+                continue;
+            }
+            assert!(
+                !module
+                    .attrs
+                    .iter()
+                    .any(|attr| attr.path().is_ident("cfg_attr")),
+                "cannot establish production module path in {declaring}: conditional attributes"
+            );
+            let explicit = module.attrs.iter().find_map(|attribute| {
+                if !attribute.path().is_ident("path") {
+                    return None;
+                }
+                if let syn::Meta::NameValue(value) = &attribute.meta
+                    && let syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(path),
+                        ..
+                    }) = &value.value
+                {
+                    return Some(path.value());
+                }
+                panic!("cannot establish production module path in {declaring}");
+            });
+            let name = module.ident.to_string();
+            if let Some((_, items)) = &module.content {
+                let nested = directory.join(explicit.as_deref().unwrap_or(&name));
+                visit(items, &nested, &nested, roots, declaring);
+            } else if let Some(path) = explicit {
+                check_target(path_directory.join(path), roots, declaring);
+            } else {
+                // Either legal Rust layout must remain production-visible.
+                check_target(directory.join(format!("{name}.rs")), roots, declaring);
+                check_target(directory.join(name).join("mod.rs"), roots, declaring);
+            }
+        }
+    }
+
+    if test_roots.is_empty() {
+        return;
+    }
+    for (relative, source) in sources {
+        let path = Path::new(relative);
+        if test_roots.iter().any(|root| path.starts_with(root)) {
+            continue;
+        }
+        let file = syn::parse_file(source).unwrap_or_else(|error| {
+            panic!("cannot establish production module paths in {relative}: {error}")
+        });
+        let parent = path.parent().unwrap();
+        let stem = path.file_stem().unwrap().to_str().unwrap();
+        let directory = if matches!(stem, "lib" | "main" | "mod") {
+            parent.to_path_buf()
+        } else {
+            parent.join(stem)
+        };
+        visit(&file.items, &directory, parent, test_roots, relative);
+    }
+}
+
 fn uncoupled_snapshot_calls(sources: &[(String, String)]) -> Vec<String> {
-    // Exclude only proven external test-module ancestry. Unknown attributes,
-    // mixed production/test cfg and unparseable declarations stay visible.
+    // Exclude only proven external test-module ancestry, after refusing
+    // production aliases or module declarations whose reachability is unknown.
     let test_roots = test_only_modules::external_test_module_roots(sources);
+    refuse_production_aliases(sources, &test_roots);
     let mut offenders = Vec::new();
     for (path, text) in sources {
         if UNCOUPLED_BACKUP_SITES.contains(&path.as_str())
             || path.starts_with("src/store/")
-            || test_roots.iter().any(|root| Path::new(path).starts_with(root))
+            || test_roots
+                .iter()
+                .any(|root| Path::new(path).starts_with(root))
         {
             continue;
         }
@@ -143,11 +247,6 @@ fn test_module_ancestry_excludes_fixtures_without_hiding_production_snapshots() 
             "src/redirected.rs",
             "fn unresolved() { store.snapshot(dir, label); }",
         ),
-        ("src/unparsed.rs", "#[cfg(test)] mod child; invalid rust!"),
-        (
-            "src/unparsed/child.rs",
-            "fn unresolved() { store.snapshot(dir, label); }",
-        ),
     ]
     .map(|(path, source)| (path.to_string(), source.to_string()));
     let offenders = uncoupled_snapshot_calls(&sources);
@@ -163,10 +262,66 @@ fn test_module_ancestry_excludes_fixtures_without_hiding_production_snapshots() 
             "src/fixtures_extra.rs",
             "src/shared.rs",
             "src/redirected.rs",
-            "src/unparsed/child.rs",
         ],
         "only declared test ancestry may suppress a snapshot call: {offenders:?}"
     );
+}
+
+#[test]
+fn production_aliases_cannot_hide_snapshot_calls_in_test_directories() {
+    for (declaring, production) in [
+        (
+            "src/lib.rs",
+            "#[path = \"tests/shared.rs\"] mod production;",
+        ),
+        (
+            "src/lib.rs",
+            "mod inline { #[path = \"../tests/shared.rs\"] mod production; }",
+        ),
+        ("src/main.rs", "mod tests;"),
+    ] {
+        let mut sources = [
+            (
+                "src/lib.rs".to_string(),
+                "#[cfg(test)] mod tests;".to_string(),
+            ),
+            ("src/main.rs".to_string(), String::new()),
+            ("src/tests.rs".to_string(), "mod shared;".to_string()),
+            (
+                "src/tests/shared.rs".to_string(),
+                "fn production() { store.snapshot(dir, label); }".to_string(),
+            ),
+        ];
+        sources
+            .iter_mut()
+            .find(|(path, _)| path == declaring)
+            .unwrap()
+            .1
+            .push_str(production);
+        let failure = std::panic::catch_unwind(|| uncoupled_snapshot_calls(&sources))
+            .expect_err("a production snapshot must not disappear behind test ancestry");
+        let message = failure
+            .downcast_ref::<String>()
+            .expect("classification diagnostic");
+        assert!(message.contains("aliases test-only source"), "{message}");
+    }
+}
+
+#[test]
+#[should_panic(expected = "cannot establish production module paths")]
+fn unparseable_production_declarations_cannot_certify_test_exclusions() {
+    uncoupled_snapshot_calls(&[
+        (
+            "src/lib.rs".into(),
+            "#[cfg(test)] mod tests; invalid rust!".into(),
+        ),
+        ("src/owner.rs".into(), "#[cfg(test)] mod fixtures;".into()),
+        ("src/owner/fixtures.rs".into(), "fn fixture() {}".into()),
+        (
+            "src/tests.rs".into(),
+            "fn production() { store.snapshot(dir, label); }".into(),
+        ),
+    ]);
 }
 
 /// The scan is only worth anything if it can see the shape it forbids.

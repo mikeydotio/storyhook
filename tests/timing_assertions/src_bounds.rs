@@ -26,7 +26,8 @@
 //! `test` among its arguments; `any(..., test)` and `not(test)` also compile
 //! outside test). A `mod x;` declared under such an attribute makes its
 //! whole file and its declared descendants test code, including declarations
-//! nested inside inline modules.
+//! nested inside inline modules. A file also loaded by a production module is
+//! ambiguous and refused rather than silently excluded from production scans.
 //!
 //! Lexical, not a type checker, and said so: a bound reached through an alias
 //! of a routed constant, or a helper that wraps a `run_captured*` call, is
@@ -183,6 +184,24 @@ fn module_edges(
     source: &str,
     sources: &BTreeMap<String, String>,
 ) -> Vec<(String, bool)> {
+    fn conditional_path(meta: &syn::Meta) -> bool {
+        let syn::Meta::List(list) = meta else {
+            return false;
+        };
+        if !list.path.is_ident("cfg_attr") {
+            return false;
+        }
+        let arguments = list
+            .parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            )
+            .expect("cannot inspect conditional module attributes");
+        arguments
+            .iter()
+            .skip(1)
+            .any(|attribute| attribute.path().is_ident("path") || conditional_path(attribute))
+    }
+
     fn normalized(path: PathBuf) -> String {
         let mut result = PathBuf::new();
         for component in path.components() {
@@ -194,6 +213,10 @@ fn module_edges(
                 other => result.push(other.as_os_str()),
             }
         }
+        assert!(
+            result.starts_with("src"),
+            "module path escapes the source corpus"
+        );
         result.to_string_lossy().into_owned()
     }
 
@@ -209,6 +232,17 @@ fn module_edges(
             let syn::Item::Mod(module) = item else {
                 continue;
             };
+            // A conditional redirect can add a production route into the
+            // test closure. Inline redirects also change their children's
+            // directory, so refuse both until every path can be resolved.
+            assert!(
+                !module
+                    .attrs
+                    .iter()
+                    .any(|attribute| conditional_path(&attribute.meta)),
+                "cannot establish module path for {}: conditional path attribute",
+                module.ident
+            );
             let test_only = inherited_test
                 || module.attrs.iter().any(|attribute| {
                     matches!(&attribute.meta, syn::Meta::List(list)
@@ -225,7 +259,15 @@ fn module_edges(
                     syn::Expr::Lit(syn::ExprLit {
                         lit: syn::Lit::Str(path),
                         ..
-                    }) => Some(path.value()),
+                    }) => {
+                        let value = path.value();
+                        assert!(
+                            !Path::new(&value).is_absolute(),
+                            "cannot establish module path for {}: absolute path attribute",
+                            module.ident
+                        );
+                        Some(value)
+                    }
                     _ => None,
                 }
             });
@@ -233,7 +275,9 @@ fn module_edges(
             if let Some((_, items)) = &module.content {
                 // Inside an inline module, even #[path] is relative to the
                 // enclosing module directory (including a non-mod.rs stem).
-                let nested = directory.join(explicit_path.as_deref().unwrap_or(&name));
+                let nested = PathBuf::from(normalized(
+                    directory.join(explicit_path.as_deref().unwrap_or(&name)),
+                ));
                 visit(items, &nested, &nested, test_only, sources, edges);
             } else {
                 let target = if let Some(path) = explicit_path {
@@ -301,13 +345,31 @@ impl SrcCorpus {
                 sources.contains_key(&file),
                 "a test-only module resolves to {file}, which is not a tracked src/ file"
             );
-            let whole = 0..sources[&file].len();
-            test_ranges.insert(file.clone(), Vec::from([whole]));
             for (child, _) in &edges[&file] {
                 if test_files.insert(child.clone()) {
                     pending.push(child.clone());
                 }
             }
+        }
+        // A test edge does not make a file exclusively test-owned when another
+        // module loads that same path in production. Every production route
+        // into this closure crosses an ordinary edge from outside it; refuse
+        // that ambiguity before masking any whole file as test-only.
+        for (parent, modules) in &edges {
+            if test_files.contains(parent) {
+                continue;
+            }
+            for (child, test_only) in modules {
+                assert!(
+                    *test_only || !test_files.contains(child),
+                    "{child} is reachable through both test-only and production modules \
+                     (production declaration in {parent})"
+                );
+            }
+        }
+        for file in &test_files {
+            let whole = 0..sources[file].len();
+            test_ranges.insert(file.clone(), Vec::from([whole]));
         }
         for path in sources.keys() {
             let name = Path::new(path)
@@ -649,6 +711,104 @@ fn test_only_file_ownership_reaches_nested_modules_without_promoting_siblings() 
     }
     let production = corpus.sources["src/lib.rs"].find("mod production").unwrap();
     assert!(!corpus.is_test("src/lib.rs", production));
+}
+
+#[test]
+#[should_panic(
+    expected = "src/tests/shared.rs is reachable through both test-only and production modules"
+)]
+fn a_production_alias_to_a_test_descendant_is_not_silently_test_only() {
+    SrcCorpus::from_sources(
+        Path::new("."),
+        BTreeMap::from([
+            (
+                "src/lib.rs".into(),
+                "#[cfg(test)] mod tests; #[path = \"tests/shared.rs\"] mod production;".into(),
+            ),
+            ("src/tests.rs".into(), "mod shared;".into()),
+            (
+                "src/tests/shared.rs".into(),
+                "fn production() { run_captured(command, deadline); }".into(),
+            ),
+        ]),
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "cannot establish module path for production: conditional path attribute"
+)]
+fn a_conditional_production_alias_to_a_test_descendant_is_refused() {
+    SrcCorpus::from_sources(
+        Path::new("."),
+        BTreeMap::from([
+            (
+                "src/lib.rs".into(),
+                "#[cfg(test)] mod tests; \
+                 #[cfg_attr(unix, path = \"tests/shared.rs\")] mod production;"
+                    .into(),
+            ),
+            ("src/tests.rs".into(), "mod shared;".into()),
+            ("src/tests/shared.rs".into(), "fn shared() {}".into()),
+            ("src/production.rs".into(), "fn fallback() {}".into()),
+        ]),
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "cannot establish module path for production: absolute path attribute"
+)]
+fn an_absolute_production_alias_to_a_test_descendant_is_refused() {
+    SrcCorpus::from_sources(
+        Path::new("/checkout"),
+        BTreeMap::from([
+            (
+                "src/lib.rs".into(),
+                "#[cfg(test)] mod tests; \
+                 #[path = \"/checkout/src/tests/shared.rs\"] mod production;"
+                    .into(),
+            ),
+            ("src/tests.rs".into(), "mod shared;".into()),
+            ("src/tests/shared.rs".into(), "fn shared() {}".into()),
+        ]),
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "cannot establish module path for production: absolute path attribute"
+)]
+fn an_absolute_inline_module_directory_is_refused() {
+    module_edges(
+        "src/lib.rs",
+        "#[path = \"/checkout/src/tests\"] mod production { mod shared; }",
+        &BTreeMap::new(),
+    );
+}
+
+#[test]
+fn module_parent_paths_cannot_escape_the_source_corpus() {
+    for source in [
+        "#[path = \"../outside.rs\"] mod production;",
+        "#[path = \"../../outside.rs\"] mod production;",
+        "#[path = \"../outside\"] mod production {}",
+        "#[path = \"../../outside\"] mod production {}",
+    ] {
+        let failure = std::panic::catch_unwind(|| {
+            module_edges("src/lib.rs", source, &BTreeMap::new())
+        })
+        .expect_err("a module path outside src/ must be refused");
+        let message = failure
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| failure.downcast_ref::<&str>().copied())
+            .expect("the refusal must explain the path ambiguity");
+        assert!(
+            message.contains("module path escapes the source corpus"),
+            "{message}"
+        );
+    }
 }
 
 #[test]
