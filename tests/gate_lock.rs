@@ -344,6 +344,15 @@ impl Fixture {
                 observers.insert(name);
             }
         }
+        // The managed Cargo shell entry reaches this Python custody package.
+        // Keep its supervisor and native observations real; fake_cargo only
+        // replaces the expensive compiler/test leaf below that boundary.
+        observers.extend(["cargo-managed.py".into(), "build_products.py".into()]);
+        std::os::unix::fs::symlink(
+            checkout().join("scripts/host_admission"),
+            path.join("scripts/host_admission"),
+        )
+        .unwrap();
         for name in observers {
             std::os::unix::fs::symlink(
                 checkout().join("scripts").join(&name),
