@@ -10,11 +10,25 @@ import shlex
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from test_tmux_routing import TmuxRoutingTests
 
 
 HELPER = Path(__file__).resolve().parents[1] / "lib/tmux-launch.py"
+
+
+def environment_snapshot_program(output):
+    """Publish the fixture result only after its complete JSON file is closed."""
+    return f"""import json, os, tempfile
+output = {str(output)!r}
+with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+        dir=os.path.dirname(output), prefix=os.path.basename(output) + ".",
+        delete=False) as staged:
+    json.dump(dict(os.environ), staged)
+    temporary = staged.name
+os.replace(temporary, output)
+"""
 
 
 class DispatchWorkspaceTests(unittest.TestCase):
@@ -36,7 +50,7 @@ class DispatchWorkspaceTests(unittest.TestCase):
                                        env=env, check=True)
                     for command in (("new-window", "respawn-pane") if existing else ("new-session",)):
                         output = root / (command + ".json")
-                        program = "import os,json;json.dump(dict(os.environ),open(" + repr(str(output)) + ",'w'))"
+                        program = environment_snapshot_program(output)
                         launch = "python3 -c " + shlex.quote(program) + "; sleep 120"
                         args = (["-k", "-t", "fixture:"] if command == "respawn-pane" else
                                 ["-d", "-t", "fixture:"] if command == "new-window" else
@@ -55,6 +69,38 @@ class DispatchWorkspaceTests(unittest.TestCase):
                 finally:
                     if socket.exists():
                         subprocess.run(base + ["kill-server"], check=True, capture_output=True)
+
+    def test_environment_snapshot_is_complete_and_closed_before_final_visibility(self):
+        """Observe the real producer precisely at publication, without sleeps."""
+        with tempfile.TemporaryDirectory(prefix="snapshot-publication-", dir="/tmp") as directory:
+            output = Path(directory) / "environment.json"
+            expected = {"SNAPSHOT_FIXTURE": "complete\nJSON \u2603 " + "x" * 32768}
+            opened = []
+            real_temporary_file = tempfile.NamedTemporaryFile
+            real_replace = os.replace
+
+            def stage(*args, **kwargs):
+                handle = real_temporary_file(*args, **kwargs)
+                opened.append(handle)
+                return handle
+
+            def publish(source, destination):
+                self.assertEqual(Path(destination), output)
+                self.assertFalse(output.exists(), "partial JSON became visible before publication")
+                self.assertEqual(len(opened), 1)
+                self.assertTrue(opened[0].closed, "publication must follow producer close")
+                self.assertEqual(Path(source).parent, output.parent)
+                self.assertEqual(json.loads(Path(source).read_text()), expected)
+                real_replace(source, destination)
+
+            with patch.dict(os.environ, expected, clear=True), \
+                    patch.object(tempfile, "NamedTemporaryFile", side_effect=stage), \
+                    patch.object(os, "replace", side_effect=publish) as replacement:
+                exec(environment_snapshot_program(output), {})
+                replacement.assert_called_once()
+
+            self.assertEqual(json.loads(output.read_text()), expected)
+            self.assertEqual(list(Path(directory).iterdir()), [output])
 
     def test_fresh_server_cannot_retain_direct_or_inherited_workspace_ownership(self):
         """Closing terminal descriptors preserves admission through handoff only."""
