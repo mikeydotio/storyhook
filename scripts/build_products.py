@@ -205,11 +205,14 @@ class ProductCustody:
             # If it closes all custody FDs, that is outside the managed contract.
             guard = open_private(self.root / execution["guard"])
             try:
-                fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try:
+                    fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise Refusal("product build lifetime guard is still held") from None
+                # Native census errors must retain their own errno and context;
+                # BlockingIOError here is not evidence that flock failed.
                 if native.session_members(execution["session"]):
                     raise Refusal("product build session has surviving processes")
-            except BlockingIOError:
-                raise Refusal("product build lifetime guard is still held") from None
             finally:
                 os.close(guard)
             self.row["settled_execution"] = execution

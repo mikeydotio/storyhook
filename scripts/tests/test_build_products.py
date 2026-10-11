@@ -1,7 +1,10 @@
 """SH-835 focused ownership regressions; no live project, cache, or host policy."""
 
+import errno
 import fcntl
+from contextlib import redirect_stderr
 import importlib.util
+import io
 import json
 import os
 import signal
@@ -187,13 +190,39 @@ class ProductOwnershipTests(unittest.TestCase):
         fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
         custody.call("attach", **custody.lease,
                      execution={"id": "execution", "session": 999999, "guard": "guard.lock"})
+        before = (custody.root / "record.json").read_bytes()
         try:
-            with patch.object(products.native, "session_members", return_value=[]):
+            with patch.object(products.native, "session_members", return_value=[]) as census:
                 with self.assertRaisesRegex(Refusal, "guard is still held"):
                     custody.call("settle", **custody.lease, execution_id="execution")
+                census.assert_not_called()
+            self.assertEqual((custody.root / "record.json").read_bytes(), before)
             self.assertFalse(custody.call("finish", **custody.lease))
         finally:
             os.close(guard)
+
+    def test_census_would_block_is_not_reported_as_a_held_guard(self):
+        custody = self.custody()
+        path = custody.root / "guard.lock"
+        fd = products.open_private(path, create=True)
+        os.close(fd)
+        custody.call("attach", **custody.lease,
+                     execution={"id": "execution", "session": 999999, "guard": "guard.lock"})
+        before = (custody.root / "record.json").read_bytes()
+        failure = BlockingIOError(errno.EAGAIN, "fixture native process census")
+        with patch.object(products.native, "session_members", side_effect=failure) as census:
+            with self.assertRaises(BlockingIOError) as raised:
+                custody.call("settle", **custody.lease, execution_id="execution")
+            self.assertIs(raised.exception, failure)
+            census.assert_called_once_with(999999)
+        self.assertEqual((custody.root / "record.json").read_bytes(), before)
+        self.assertFalse(custody.call("finish", **custody.lease))
+        # A failed census must close its successful probe without certifying custody.
+        probe = products.open_private(path)
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(probe)
 
     def test_unknown_process_census_never_settles_owner(self):
         custody = self.custody()
@@ -212,8 +241,10 @@ class ProductOwnershipTests(unittest.TestCase):
         os.close(fd)
         custody.call("attach", **custody.lease,
                      execution={"id": "execution", "session": 999999, "guard": "guard.lock"})
-        with patch.object(products.native, "session_members", return_value=[]):
+        with patch.object(products.native, "session_members", return_value=[]) as census:
             custody.call("settle", **custody.lease, execution_id="execution")
+            census.assert_called_once_with(999999)
+        self.assertEqual(custody.row["executions"], [])
         self.assertTrue(custody.call("finish", **custody.lease))
         with products.ProductLease(self.root, reclaim=True):
             self.assertEqual(products.read_record(custody.root / "record.json")["state"], "finished")
@@ -233,6 +264,19 @@ class ProductOwnershipTests(unittest.TestCase):
         explicit = cargo.command(["--cargo-executable", "/fixture/toolchain/cargo", "--", *argv])
         self.assertEqual(explicit[-5:], ["/fixture/toolchain/cargo", *argv])
         self.assertIn("cargo-managed", explicit)
+
+    def test_cargo_keeps_control_status_for_distinct_custody_failures(self):
+        failures = [Refusal("product build lifetime guard is still held"),
+                    BlockingIOError(errno.EAGAIN, "fixture native process census")]
+        for failure in failures:
+            with self.subTest(failure=str(failure)):
+                stderr = io.StringIO()
+                with patch.object(cargo, "command", return_value=["fixture"]), \
+                     patch.object(products, "run_managed", side_effect=failure), \
+                     redirect_stderr(stderr):
+                    self.assertEqual(cargo.main(["test"]), 125)
+                self.assertIn("custody unresolved; products preserved: " + str(failure),
+                              stderr.getvalue())
 
     def test_cargo_missing_or_recursive_executable_refuses(self):
         with patch.object(cargo.shutil, "which", return_value=None):
