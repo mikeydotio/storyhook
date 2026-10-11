@@ -147,6 +147,11 @@
       "count": 1,
       "kind": "proof",
       "reason": "Expired native-effect boundary must refuse before spawn or registration; the nonexistent executable cannot run."
+    },
+    "test run_captured_private_input_until(Instant::now()": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "An already expired private-input deadline must refuse before spawning the nonexistent executable; extending it would destroy the pre-spawn timeout proof."
     }
   },
   "src/process/activity_tests.rs": {

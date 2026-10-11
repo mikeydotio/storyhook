@@ -42,8 +42,11 @@ class Fixture:
             "scripts/select-tests.sh", "scripts/run-changed.sh",
             "scripts/run-rust-battery.sh", "scripts/rust-test-targets.sh",
             "scripts/python-runtime.sh", "scripts/python-bin/python3",
+            "scripts/managed-cargo.sh", "scripts/cargo-managed.py",
+            "scripts/build_products.py", "scripts/host-admit.py",
+            "scripts/host_admission",
         ]:
-            target = (override / name) if override and (override / name).is_file() else source / name
+            target = (override / name) if override and (override / name).exists() else source / name
             destination = self.root / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.symlink_to(target)

@@ -50,6 +50,7 @@ build_number	build.rs
 build_number	src/api/wire.rs
 build_number	src/daemon/lifecycle.rs
 build_number	src/version.rs
+build_product_reclaim	:(glob)scripts/**
 build_slots	.cargo/config.toml
 build_slots	scripts/host-admit.py
 build_slots	scripts/machine-lock.sh
@@ -58,6 +59,8 @@ cargo_diagnostics	:(glob)scripts/*
 cargo_diagnostics	:(glob)tests/support/cargo_diagnostics.py
 checkout_path_readers	:(glob)**/*
 checkout_path_readers	:(glob)src/**/*.rs
+cli_command_model	tests/fixtures/cli-model-help.txt
+cli_discovery	tests/fixtures/cli-model-help.txt
 closure_cleanup	:(glob)src/store/**
 commit_identity	:(glob)**/*
 completion_state_search	:(glob)src/**/*.rs

@@ -662,5 +662,13 @@
       "mechanism": "no subprocess invoked by the asserted path",
       "reason": "The constructor is used for start/status without a dispatch, or for the explicit open-story refusal before Git work. The test asserts state/preflight behavior; constructing the object itself starts no subprocess."
     }
+  },
+  "tests/integration_landing_authority.rs": {
+    "sh871_managed_landing_refuses_native_attempt_and_recovery_before_any_helper: ShellVerificationActuator::new": {
+      "count": 1,
+      "kind": "proof",
+      "mechanism": "Managed authority preflight refusal; no helper launch",
+      "reason": "Managed landing and recovery must refuse at the authority preflight before invoking any helper, so this actuator never receives a subprocess completion allowance."
+    }
   }
 }

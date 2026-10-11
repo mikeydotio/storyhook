@@ -18,9 +18,10 @@ fn run(env: &TestEnv, dir: &Path, args: &[&str]) -> Output {
     command.args(args);
     ChildGuard::spawn_with_output(&mut command)
         .unwrap()
-        .wait_with_output_within(Duration::from_secs(45), || {
-            format!("consumer command did not settle: {args:?}")
-        })
+        .wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(Duration::from_secs(45)),
+            || format!("consumer command did not settle: {args:?}"),
+        )
 }
 fn ok(env: &TestEnv, dir: &Path, args: &[&str]) -> Vec<u8> {
     let out = run(env, dir, args);
@@ -354,9 +355,10 @@ fn delegated_helper_keeps_both_streams_and_exit_status_even_in_json_quiet_mode()
         ]);
     let out = ChildGuard::spawn_with_output(&mut command)
         .unwrap()
-        .wait_with_output_within(Duration::from_secs(30), || {
-            "fake helper did not settle".into()
-        });
+        .wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(Duration::from_secs(30)),
+            || "fake helper did not settle".into(),
+        );
     assert_eq!(
         out.status.code(),
         Some(17),

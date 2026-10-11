@@ -868,5 +868,97 @@
       "kind": "proof",
       "reason": "Loopback startup must return within the production lifecycle control deadline even when the tailnet shim always fails. This proof is separate from first-bind patience and retains its five-second ceiling."
     }
+  },
+  "src/github_access/transport.rs": {
+    "Instant::now()+Duration::from_secs(60)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "A future deadline isolates the already-cancelled publication-control proof; the nonexistent executable must not spawn. The separate expired-deadline proof stays expired."
+    }
+  },
+  "src/service/host_recovery/native/tests.rs": {
+    ".recv_timeout(patience": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "Both FIFO fixture handshakes consume patience = load_grace::graced_now(10 s), retaining bounded unblock and reap behavior."
+    },
+    "Instant::now()+Duration::from_secs(60)": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "The injected live-proof fixture carries a future protocol expiry without waiting or launching host transport; expiry-specific cases overwrite it with Instant::now()."
+    }
+  },
+  "src/service/integration_recovery/assembly/tests.rs": {
+    "Instant::now()+allowance": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The live-writer assembly proof consumes the original graced allowance; leader success cannot renew custody or authorize assembly while a writer lives."
+    }
+  },
+  "src/service/integration_recovery/gate_inputs/tests.rs": {
+    "Instant::now()+Duration::from_secs(60)": {
+      "count": 3,
+      "kind": "proof",
+      "reason": "Future fixture deadlines isolate owner/attempt/assembly binding, non-renewal, and cancellation recheck proofs. These are protocol controls, not subprocess completion waits."
+    }
+  },
+  "src/service/integration_recovery/landed_observation/tests.rs": {
+    "Instant::now()+Duration::from_secs(60)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The custody callback cancels the observation before its final lifetime check; a future deadline isolates cancellation refusal and is never awaited."
+    }
+  },
+  "src/service/integration_recovery/publication/tests.rs": {
+    "Instant::now()+ctx.env().subprocess_bound(std::time::Duration::from_secs(90))": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Native publication fixture derives one absolute deadline from its owning test Environment subprocess policy."
+    }
+  },
+  "src/service/integration_recovery/publication/worker_fixture.rs": {
+    "Instant::now()>=deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The controlled publication worker checks the caller deadline without renewing it, preserving cancellation and expiry during owned work."
+    }
+  },
+  "src/service/integration_recovery/tests.rs": {
+    "Instant::now()+Duration::from_secs(30)": {
+      "count": 2,
+      "kind": "proof",
+      "reason": "Already-cancelled inspection controls must refuse before repository effects; their future deadlines isolate cancellation from expiry. Ordinary successful inspection uses graced patience."
+    }
+  },
+  "src/service/private_objects/native/tests.rs": {
+    "Instant::now()+allowance()": {
+      "count": 3,
+      "kind": "delegated",
+      "reason": "Fixture initialization, private-object opening, and absence reconciliation consume allowance(), which uses load_grace::graced_now."
+    },
+    "Instant::now()+bound": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The native live-writer custody proof uses a graced two-second bound while preserving its requirement to time out rather than accept leader success."
+    },
+    "Instant::now()>=end": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Absence reconciliation consumes its original graced allowance deadline without restarting it on each observation."
+    }
+  },
+  "tests/build_product_reclaim.rs": {
+    "std::time::Instant::now()<deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The purge-ready handshake polls against a single load-graced thirty-second deadline."
+    }
+  },
+  "tests/managed_landing_retention.rs": {
+    "Instant::now()<deadline": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "Shutdown settlement and whole-fixture progress consume their original graced fifteen- and 180-second deadlines without renewing them in the poll loop."
+    }
   }
 }

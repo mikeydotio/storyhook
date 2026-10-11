@@ -27,6 +27,14 @@ cargo = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cargo)
 
 
+# Existing outer allowances for controlled local-process fixtures. Handshake and
+# reap waits do not assert wall time; custody contention proofs keep their own
+# deliberately short injected wait_seconds values unchanged.
+PROCESS_STARTUP_SECONDS = 10
+PROCESS_REAP_SECONDS = 10
+REBUILD_COMPLETION_SECONDS = 15
+MANAGED_ENTRY_SECONDS = 20
+
 class ProductOwnershipTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="sh835-products-")
@@ -53,7 +61,7 @@ class ProductOwnershipTests(unittest.TestCase):
     def test_real_managed_rebuild_waits_for_short_detach_guard(self):
         repo = self.root / "repo"
         repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=10)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=PROCESS_STARTUP_SECONDS)
         root = products.namespace(repo)
         marker = repo / "products" / "rebuilt"
         script = ("import sys;sys.path.insert(0," + repr(str(SCRIPTS)) + ");"
@@ -66,25 +74,25 @@ class ProductOwnershipTests(unittest.TestCase):
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             try:
                 import select
-                self.assertTrue(select.select([child.stdout], [], [], 10)[0])
+                self.assertTrue(select.select([child.stdout], [], [], PROCESS_STARTUP_SECONDS)[0])
                 self.assertEqual(child.stdout.readline(), b"waiting\n")
                 self.assertIsNone(child.poll())
                 self.assertFalse(marker.exists())
             except BaseException:
-                child.kill(); child.communicate(timeout=10)
+                child.kill(); child.communicate(timeout=PROCESS_REAP_SECONDS)
                 raise
         try:
-            stdout, stderr = child.communicate(timeout=15)
+            stdout, stderr = child.communicate(timeout=REBUILD_COMPLETION_SECONDS)
             self.assertEqual(child.returncode, 0, (stdout, stderr))
             self.assertEqual(marker.read_text(), "new")
         finally:
             if child.poll() is None:
-                child.kill(); child.communicate(timeout=10)
+                child.kill(); child.communicate(timeout=PROCESS_REAP_SECONDS)
 
     def test_cancel_waiting_managed_build_leaves_no_reserved_owner(self):
         repo = self.root / "repo"
         repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=10)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=PROCESS_STARTUP_SECONDS)
         root = products.namespace(repo)
         script = ("import sys;sys.path.insert(0," + repr(str(SCRIPTS)) + ");"
                   "import build_products;print('waiting',flush=True);"
@@ -95,15 +103,15 @@ class ProductOwnershipTests(unittest.TestCase):
                                      stderr=subprocess.PIPE)
             try:
                 import select
-                self.assertTrue(select.select([child.stdout], [], [], 10)[0])
+                self.assertTrue(select.select([child.stdout], [], [], PROCESS_STARTUP_SECONDS)[0])
                 self.assertEqual(child.stdout.readline(), b"waiting\n")
                 child.terminate()
-                child.communicate(timeout=10)
+                child.communicate(timeout=PROCESS_REAP_SECONDS)
                 self.assertEqual(child.returncode, -signal.SIGTERM)
                 self.assertFalse(list(root.glob("build-*")))
             finally:
                 if child.poll() is None:
-                    child.kill(); child.communicate(timeout=10)
+                    child.kill(); child.communicate(timeout=PROCESS_REAP_SECONDS)
 
     def test_live_build_excludes_reclaim_even_without_host_policy(self):
         with products.ProductLease(self.root):
@@ -129,7 +137,7 @@ class ProductOwnershipTests(unittest.TestCase):
                 products.ProductLease(self.root, reclaim=True)
         finally:
             child.stdin.close()
-            child.wait(timeout=10)
+            child.wait(timeout=PROCESS_REAP_SECONDS)
         with products.ProductLease(self.root, reclaim=True):
             pass
 
@@ -377,7 +385,7 @@ time.sleep(30)
         captured = False
 
         def until(predicate):
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + PROCESS_STARTUP_SECONDS
             while not predicate():
                 if time.monotonic() >= deadline:
                     self.fail("controlled fork did not reach its handshake")
@@ -510,7 +518,7 @@ time.sleep(30)
         self.retain = True
         result = subprocess.run([str(scripts / "managed-cargo.sh"), "--cargo-executable",
                                  sys.executable, "--", "-c", code, "a b", "--literal", ""],
-                                cwd=repo, env=env, text=True, capture_output=True, timeout=20)
+                                cwd=repo, env=env, text=True, capture_output=True, timeout=MANAGED_ENTRY_SECONDS)
         self.assertEqual(result.returncode, 7, result.stderr)
         self.assertEqual(json.loads(result.stdout), ["a b", "--literal", ""])
         self.assertEqual(result.stderr, "fixture stderr\n")

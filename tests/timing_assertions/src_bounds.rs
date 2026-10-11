@@ -25,7 +25,8 @@
 //! attribute on it compiles it only under test (`test`, or `all(...)` with
 //! `test` among its arguments; `any(..., test)` and `not(test)` also compile
 //! outside test). A `mod x;` declared under such an attribute makes its
-//! whole file test code.
+//! whole file and its declared descendants test code, including declarations
+//! nested inside inline modules.
 //!
 //! Lexical, not a type checker, and said so: a bound reached through an alias
 //! of a routed constant, or a helper that wraps a `run_captured*` call, is
@@ -127,37 +128,11 @@ fn skip_whitespace(code: &str, from: usize) -> usize {
         .map_or(code.len(), |offset| from + offset)
 }
 
-/// A `mod name;` declaration: the module's name.
-fn declared_module(item: &str) -> Option<String> {
-    let item: String = item.split_whitespace().collect::<Vec<_>>().join(" ");
-    let item = item.strip_prefix("pub(crate) ").unwrap_or(&item);
-    let item = item.strip_prefix("pub(super) ").unwrap_or(item);
-    let item = item.strip_prefix("pub ").unwrap_or(item);
-    let name = item.strip_prefix("mod ")?.strip_suffix(';')?.trim();
-    name.chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_')
-        .then(|| name.to_string())
-}
-
-/// The quoted value of a `#[path = "..."]` attribute, read from the original
-/// source because the masked text blanks string contents.
-fn path_attribute(original: &str) -> Option<String> {
-    let inner: String = original
-        .strip_prefix("#[")?
-        .strip_suffix(']')?
-        .split_whitespace()
-        .collect();
-    let value = inner.strip_prefix("path=\"")?.strip_suffix('"')?;
-    Some(value.to_string())
-}
-
 /// What one file compiles only under test.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct TestCode {
     /// Byte ranges of test-only items, attribute included.
     regions: Vec<Range<usize>>,
-    /// `mod name;` declarations among them, with any `#[path]` value.
-    modules: Vec<(String, Option<String>)>,
 }
 
 /// The test-only items of one source file.
@@ -175,10 +150,9 @@ fn test_code(original: &str) -> TestCode {
             search = attribute_end;
             continue;
         }
-        // Rust permits #[path] on either side of #[cfg(test)]. Walk only
-        // adjacent attributes backward; never borrow a path from another item.
+        // Include adjacent attributes on either side of #[cfg(test)], but
+        // never borrow attributes from another item.
         let mut region_start = attribute;
-        let mut path = None;
         while masked[..region_start].trim_end().ends_with(']') {
             let previous_end = masked[..region_start].trim_end().len();
             let Some(previous) = masked[..previous_end].rfind("#[") else {
@@ -187,51 +161,110 @@ fn test_code(original: &str) -> TestCode {
             if past_closing(code, previous + 1) != previous_end {
                 break;
             }
-            path = path.or_else(|| path_attribute(&original[previous..previous_end]));
             region_start = previous;
         }
         let mut start = skip_whitespace(&masked, attribute_end);
         while masked[start..].starts_with("#[") {
             let end = past_closing(code, start + 1);
-            path = path.or_else(|| path_attribute(&original[start..end]));
             start = skip_whitespace(&masked, end);
         }
         let end = item_end(code, start);
-        if let Some(name) = declared_module(&masked[start..end]) {
-            found.modules.push((name, path));
-        }
         found.regions.push(region_start..end);
         search = end.max(attribute_end);
     }
     found
 }
 
-/// The file a `mod name;` in `declaring` loads, per the Rust reference: a
-/// `#[path]` is relative to the declaring file's directory; otherwise the
-/// module directory is that directory for `mod.rs`, `lib.rs` and `main.rs`,
-/// and a directory named after the file for any other file.
-fn module_file(root: &Path, declaring: &str, name: &str, path: Option<&str>) -> String {
-    let declaring = Path::new(declaring);
-    let directory = declaring.parent().unwrap_or(Path::new(""));
-    if let Some(path) = path {
-        return directory.join(path).to_string_lossy().into_owned();
+/// External module edges, including declarations inside inline modules. Keep
+/// their test condition separate: an ordinary edge becomes test-only only
+/// when its declaring file is itself reached through a test-only module.
+fn module_edges(
+    declaring: &str,
+    source: &str,
+    sources: &BTreeMap<String, String>,
+) -> Vec<(String, bool)> {
+    fn normalized(path: PathBuf) -> String {
+        let mut result = PathBuf::new();
+        for component in path.components() {
+            match component {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    assert!(result.pop(), "module path escapes the source corpus");
+                }
+                other => result.push(other.as_os_str()),
+            }
+        }
+        result.to_string_lossy().into_owned()
     }
-    let stem = declaring.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    let module_directory: PathBuf = if ["mod", "lib", "main"].contains(&stem) {
-        directory.to_path_buf()
+
+    fn visit(
+        items: &[syn::Item],
+        directory: &Path,
+        path_directory: &Path,
+        inherited_test: bool,
+        sources: &BTreeMap<String, String>,
+        edges: &mut Vec<(String, bool)>,
+    ) {
+        for item in items {
+            let syn::Item::Mod(module) = item else {
+                continue;
+            };
+            let test_only = inherited_test
+                || module.attrs.iter().any(|attribute| {
+                    matches!(&attribute.meta, syn::Meta::List(list)
+                        if list.path.is_ident("cfg") && only_under_test(&list.tokens.to_string()))
+                });
+            let explicit_path = module.attrs.iter().find_map(|attribute| {
+                let syn::Meta::NameValue(value) = &attribute.meta else {
+                    return None;
+                };
+                if !value.path.is_ident("path") {
+                    return None;
+                }
+                match &value.value {
+                    syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(path),
+                        ..
+                    }) => Some(path.value()),
+                    _ => None,
+                }
+            });
+            let name = module.ident.to_string();
+            if let Some((_, items)) = &module.content {
+                // Inside an inline module, even #[path] is relative to the
+                // enclosing module directory (including a non-mod.rs stem).
+                let nested = directory.join(explicit_path.as_deref().unwrap_or(&name));
+                visit(items, &nested, &nested, test_only, sources, edges);
+            } else {
+                let target = if let Some(path) = explicit_path {
+                    normalized(path_directory.join(path))
+                } else {
+                    let flat = normalized(directory.join(format!("{name}.rs")));
+                    if sources.contains_key(&flat) {
+                        flat
+                    } else {
+                        normalized(directory.join(name).join("mod.rs"))
+                    }
+                };
+                edges.push((target, test_only));
+            }
+        }
+    }
+
+    let file = syn::parse_file(source).unwrap_or_else(|error| {
+        panic!("cannot inspect module declarations in {declaring}: {error}")
+    });
+    let path = Path::new(declaring);
+    let parent = path.parent().unwrap_or(Path::new(""));
+    let stem = path.file_stem().unwrap().to_str().unwrap();
+    let directory = if ["mod", "lib", "main"].contains(&stem) {
+        parent.to_path_buf()
     } else {
-        directory.join(stem)
+        parent.join(stem)
     };
-    let flat = module_directory.join(format!("{name}.rs"));
-    if root.join(&flat).exists() {
-        flat.to_string_lossy().into_owned()
-    } else {
-        module_directory
-            .join(name)
-            .join("mod.rs")
-            .to_string_lossy()
-            .into_owned()
-    }
+    let mut edges = Vec::new();
+    visit(&file.items, &directory, parent, false, sources, &mut edges);
+    edges
 }
 
 /// Every tracked `src/` file, and the byte ranges of each that compile only
@@ -247,23 +280,34 @@ impl SrcCorpus {
         Self::from_sources(root, super::tracked_test_files(root, "src/*.rs"))
     }
 
-    pub(super) fn from_sources(root: &Path, sources: BTreeMap<String, String>) -> Self {
+    pub(super) fn from_sources(_root: &Path, sources: BTreeMap<String, String>) -> Self {
         let mut test_files = BTreeSet::new();
         let mut test_ranges = BTreeMap::new();
+        let mut edges = BTreeMap::new();
         for (path, source) in &sources {
             let found = test_code(source);
-            for (name, attribute) in &found.modules {
-                test_files.insert(module_file(root, path, name, attribute.as_deref()));
+            let modules = module_edges(path, source, &sources);
+            for (file, test_only) in &modules {
+                if *test_only {
+                    test_files.insert(file.clone());
+                }
             }
+            edges.insert(path.clone(), modules);
             test_ranges.insert(path.clone(), found.regions);
         }
-        for file in &test_files {
+        let mut pending: Vec<_> = test_files.iter().cloned().collect();
+        while let Some(file) = pending.pop() {
             assert!(
-                sources.contains_key(file),
-                "a #[cfg(test)] module resolves to {file}, which is not a tracked src/ file"
+                sources.contains_key(&file),
+                "a test-only module resolves to {file}, which is not a tracked src/ file"
             );
-            let whole = 0..sources[file].len();
+            let whole = 0..sources[&file].len();
             test_ranges.insert(file.clone(), Vec::from([whole]));
+            for (child, _) in &edges[&file] {
+                if test_files.insert(child.clone()) {
+                    pending.push(child.clone());
+                }
+            }
         }
         for path in sources.keys() {
             let name = Path::new(path)
@@ -568,36 +612,112 @@ fn test_items_end_where_the_item_ends_and_never_swallow_production() {
             );
         }
     }
-    assert_eq!(
-        found.modules,
-        [("tests".to_string(), Some("named_tests.rs".to_string()))]
-    );
 }
 
 #[test]
-fn module_files_follow_the_reference_rules() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    assert_eq!(
-        module_file(
-            root,
-            "src/daemon/activity/hygiene.rs",
-            "tests",
-            Some("hygiene_tests.rs")
+fn test_only_file_ownership_reaches_nested_modules_without_promoting_siblings() {
+    let sources = BTreeMap::from([
+        (
+            "src/lib.rs".into(),
+            "#[cfg(test)] mod tests; mod production; #[cfg(any(unix, test))] mod shared;".into(),
         ),
-        "src/daemon/activity/hygiene_tests.rs"
-    );
-    assert_eq!(
-        module_file(
-            root,
-            "src/daemon/activity/mod.rs",
-            "isolation_tests",
-            Some("tests.rs")
+        ("src/tests.rs".into(), "mod owner;".into()),
+        (
+            "src/tests/owner.rs".into(),
+            "pub(super) mod workflow;".into(),
         ),
-        "src/daemon/activity/tests.rs"
-    );
-    assert_eq!(
-        module_file(root, "src/service/engine.rs", "restart_probe_tests", None),
-        "src/service/engine/restart_probe_tests.rs"
+        (
+            "src/tests/owner/workflow.rs".into(),
+            "fn proof() { run_captured_query_quiescent(command, deadline); }".into(),
+        ),
+        ("src/production.rs".into(), "fn production() {}".into()),
+        ("src/shared.rs".into(), "fn shared() {}".into()),
+    ]);
+    let corpus = SrcCorpus::from_sources(Path::new("."), sources);
+    let tests = corpus.test_sources();
+    for path in [
+        "src/tests.rs",
+        "src/tests/owner.rs",
+        "src/tests/owner/workflow.rs",
+    ] {
+        assert_eq!(tests[path], corpus.sources[path], "{path}");
+        assert!(corpus.is_test(path, 0), "{path}");
+    }
+    for path in ["src/production.rs", "src/shared.rs"] {
+        assert!(!tests.contains_key(path), "{path}");
+        assert!(!corpus.is_test(path, 0), "{path}");
+    }
+    let production = corpus.sources["src/lib.rs"].find("mod production").unwrap();
+    assert!(!corpus.is_test("src/lib.rs", production));
+}
+
+#[test]
+fn test_module_edges_follow_inline_paths_and_directory_modules() {
+    let sources = BTreeMap::from([
+        (
+            "src/feature.rs".into(),
+            "#[cfg(test)] #[path = \"special\"] mod checks { mod ordinary; \
+             #[path = \"selected/../renamed.rs\"] mod leaf; } \
+             mod production { #[cfg(test)] mod child; mod sibling; }"
+                .into(),
+        ),
+        (
+            "src/feature/special/ordinary/mod.rs".into(),
+            "mod descendant;".into(),
+        ),
+        (
+            "src/feature/special/ordinary/descendant.rs".into(),
+            "fn proof() {}".into(),
+        ),
+        (
+            "src/feature/special/renamed.rs".into(),
+            "fn proof() {}".into(),
+        ),
+        (
+            "src/feature/production/child.rs".into(),
+            "fn proof() {}".into(),
+        ),
+        (
+            "src/feature/production/sibling.rs".into(),
+            "fn production() {}".into(),
+        ),
+    ]);
+    let corpus = SrcCorpus::from_sources(Path::new("."), sources);
+    for path in [
+        "src/feature/special/ordinary/mod.rs",
+        "src/feature/special/ordinary/descendant.rs",
+        "src/feature/special/renamed.rs",
+        "src/feature/production/child.rs",
+    ] {
+        assert!(corpus.is_test(path, 0), "{path}");
+    }
+    assert!(!corpus.is_test("src/feature/production/sibling.rs", 0));
+}
+
+#[test]
+fn explicit_test_module_paths_propagate_from_the_loaded_file() {
+    let sources = BTreeMap::from([
+        (
+            "src/feature.rs".into(),
+            "#[path = \"alternate.rs\"] #[cfg(all(unix, test))] mod checks;".into(),
+        ),
+        ("src/alternate.rs".into(), "mod child;".into()),
+        ("src/alternate/child.rs".into(), "fn proof() {}".into()),
+    ]);
+    let corpus = SrcCorpus::from_sources(Path::new("."), sources);
+    assert!(corpus.is_test("src/alternate.rs", 0));
+    assert!(corpus.is_test("src/alternate/child.rs", 0));
+}
+
+#[test]
+#[should_panic(expected = "not a tracked src/ file")]
+fn a_missing_descendant_of_a_test_only_module_is_not_silently_ignored() {
+    SrcCorpus::from_sources(
+        Path::new("."),
+        BTreeMap::from([
+            ("src/lib.rs".into(), "#[cfg(test)] mod tests;".into()),
+            ("src/tests.rs".into(), "mod missing;".into()),
+        ]),
     );
 }
 

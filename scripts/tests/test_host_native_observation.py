@@ -21,6 +21,10 @@ from host_admission.policy import Refusal
 from host_admission.supervisor import ManagedProcess
 
 
+# One outer allowance covers the local ps fixture plus managed custody settlement.
+# This existing ceiling is fixture patience, not the lifetime of a production lease.
+NATIVE_FIXTURE_SECONDS = 30
+
 class NativeObservation(unittest.TestCase):
     def short_status(self, pid=123, status=2, size=64, error=0, session=456):
         library = mock.Mock()
@@ -101,7 +105,7 @@ class NativeIntegration(unittest.TestCase):
         root = Path(tempfile.mkdtemp(prefix='host-native-observation-', dir='/tmp')).resolve()
         command = ['/bin/ps', '-p', str(os.getpid()), '-o', 'pid=']
         custody = ProductCustody(root, command)
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + NATIVE_FIXTURE_SECONDS
 
         class Bound:
             def publish(self):

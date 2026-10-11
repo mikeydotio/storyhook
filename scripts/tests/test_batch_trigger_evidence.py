@@ -15,6 +15,10 @@ audit = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(audit)
 
 
+# Outer startup/output allowance for one offline Python CLI fixture; no provider
+# request or gate is executed, and the analysis itself has no timing assertion.
+CLI_STARTUP_SECONDS = 10
+
 def record(number, members=None, verdict="certified", at=0, cap=2):
     head = f"SH-{number}"
     members = members or [(head, f"{number:040x}")]
@@ -184,7 +188,7 @@ class BatchTriggerEvidenceTests(unittest.TestCase):
             content = "\n".join(json.dumps(r) for r in pair()) + "\n"
             path.write_text(content)
             result = subprocess.run([sys.executable, "-B", str(SCRIPT), str(path)],
-                                    capture_output=True, text=True, timeout=10)
+                                    capture_output=True, text=True, timeout=CLI_STARTUP_SECONDS)
             self.assertEqual(result.returncode, 0, result.stderr)
             payload = json.loads(result.stdout)
             self.assertEqual(payload["sources"][0]["bytes"], len(content.encode()))
@@ -196,7 +200,7 @@ class BatchTriggerEvidenceTests(unittest.TestCase):
             path = Path(directory) / "input.ndjson"
             path.write_text(json.dumps(pair()[0]) + "\n{bad\n")
             result = subprocess.run([sys.executable, "-B", str(SCRIPT), str(path)],
-                                    capture_output=True, text=True, timeout=10)
+                                    capture_output=True, text=True, timeout=CLI_STARTUP_SECONDS)
             self.assertEqual(result.returncode, 2)
             self.assertEqual(result.stdout, "")
 

@@ -330,12 +330,38 @@ exec /usr/bin/tar "$@"
         "release-toolchain.sh",
         "release-toolchain.lock",
         "tracked-tree.sh",
+        "managed-cargo.sh",
+        "cargo-managed.py",
+        "build_products.py",
+        "host-admit.py",
+        "python-runtime.sh",
+        "python-bin/python3",
     ] {
+        std::fs::create_dir_all(source.join("scripts").join(name).parent().unwrap()).unwrap();
         std::fs::copy(
             repo_root().join("scripts").join(name),
             source.join("scripts").join(name),
         )
         .unwrap();
+    }
+    // Keep custody and host admission real; only the selected Cargo/compiler
+    // leaves above are controlled. Copy Python sources, never local bytecode.
+    std::fs::create_dir_all(source.join("scripts/host_admission")).unwrap();
+    for entry in std::fs::read_dir(repo_root().join("scripts/host_admission")).unwrap() {
+        let entry = entry.unwrap();
+        if entry
+            .path()
+            .extension()
+            .is_some_and(|extension| extension == "py")
+        {
+            std::fs::copy(
+                entry.path(),
+                source
+                    .join("scripts/host_admission")
+                    .join(entry.file_name()),
+            )
+            .unwrap();
+        }
     }
     std::fs::write(source.join("BUILD"), "0\n").unwrap();
     std::fs::write(
