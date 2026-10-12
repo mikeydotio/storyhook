@@ -284,3 +284,48 @@ test("reopening the same story restores its cleared footer actions", async ({ pa
   await expect(page.locator("#delete-modal-summary")).toContainText(`Type ${id} to confirm.`);
   // The registered API cleanup removes this scratch story after the test.
 });
+
+test("adding a relation preserves a new draft entered during submission", async ({ page }) => {
+  const title = "SH-901 relation submission owner";
+  const firstTitle = "SH-901 relation submitted target";
+  const nextTitle = "SH-901 relation next draft target";
+  for (const name of [title, firstTitle, nextTitle]) await createStory(page, name);
+  const card = (name: string) => page.locator('.column[data-state="todo"] .card', { hasText: name });
+  const firstId = (await card(firstTitle).getAttribute("data-id"))!;
+  const nextId = (await card(nextTitle).getAttribute("data-id"))!;
+  await card(title).getByText(title, { exact: true }).click();
+  const input = page.locator('[data-field="relationship-id"]');
+  const kind = page.locator('[data-field="relationship-kind"]');
+  await input.fill(firstId);
+  await kind.selectOption("blocked-by");
+
+  const reached = latch(), release = latch(), settled = latch();
+  let intercepted = false;
+  const pattern = /\/relate$/;
+  const handler = async (route: import("@playwright/test").Route) => {
+    intercepted = true;
+    reached.release();
+    try {
+      await release.held;
+      await route.continue();
+    } finally {
+      settled.release();
+    }
+  };
+  await page.route(pattern, handler);
+  try {
+    await page.locator("#drawer-body .inline-add button", { hasText: "Add" }).click();
+    await reached.held;
+    await input.fill(nextId);
+    await kind.selectOption("blocks");
+    release.release();
+    const row = page.locator(".rel-row", { hasText: firstId });
+    await expect(row.locator(".rel-kind")).toHaveText("blocked-by");
+    await expect(input).toHaveValue(nextId);
+    await expect(kind).toHaveValue("blocks");
+  } finally {
+    release.release();
+    if (intercepted) await settled.held;
+    await page.unroute(pattern, handler);
+  }
+});

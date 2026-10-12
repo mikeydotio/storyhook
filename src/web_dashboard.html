@@ -13796,15 +13796,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     idInput.value = pendingRelation.id;
     idInput.addEventListener("input", function() { pendingRelation.id = idInput.value; });
     var addBtn = el("button", { class: "btn", onClick: function() {
-      if (!idInput.value.trim()) return;
-      api("POST", repoApiBase(project) + "/relate", { a: st.id, relation: relationSelect.value, b: idInput.value.trim() })
+      var submittedId = idInput.value.trim(), submittedKind = relationSelect.value;
+      if (!submittedId) return;
+      api("POST", repoApiBase(project) + "/relate", { a: st.id, relation: submittedKind, b: submittedId })
         .then(function(r) {
-          idInput.value = "";
-          // Reset the submitted control along with its pending state. Otherwise
-          // reconciliation mistakes the old kind for an unsaved edit and keeps
-          // the stale relationship list instead of showing the committed edge.
-          relationSelect.selectedIndex = 0;
-          if (state.repoId === project && state.drawerId === st.id) clearPendingRelation();
+          if (state.repoId === project && state.drawerId === st.id) {
+            // A refresh may replace this form while the request is pending.
+            // Reconcile the current draft, never the captured old controls.
+            if (pendingRelation.id.trim() === submittedId) pendingRelation.id = "";
+            if (!pendingRelation.id.trim() && (!pendingRelation.kind || pendingRelation.kind === submittedKind)) pendingRelation.kind = null;
+            var currentId = $("drawer-body").querySelector('[data-field="relationship-id"]');
+            var currentKind = $("drawer-body").querySelector('[data-field="relationship-kind"]');
+            if (currentId) currentId.value = pendingRelation.id;
+            if (currentKind) {
+              if (pendingRelation.kind) currentKind.value = pendingRelation.kind;
+              else currentKind.selectedIndex = 0;
+            }
+          }
           handleMutationSuccess(r, project);
         }).catch(toastError);
     } }, ["Add"]);
