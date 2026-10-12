@@ -46,7 +46,7 @@ out=$(
       bash "$SCRIPT" notify "$id" "must not land" 2>&1
 )
 assert_ok "$out" "false" "notify: untagged pane refused"
-assert_eq "$(jqf "$out" .reason)" "pane-provider-unknown" \
+assert_reason "$out" "pane-provider-unknown" \
   "notify: refusal identifies missing provider metadata"
 
 printf 'codex' > "$FAKE_TMUX_STATE/storyhook_agent"
@@ -57,7 +57,7 @@ out=$(
       FAKE_TMUX_PANE_COMMAND=zsh bash "$SCRIPT" notify "$id" "must not land" 2>&1
 )
 assert_ok "$out" "false" "notify: changed pane refused"
-assert_eq "$(jqf "$out" .reason)" "pane-changed" \
+assert_reason "$out" "pane-changed" \
   "notify: refusal identifies the unrelated occupant"
 
 id=$(new_story "$repo" "Claude verifier remediation")
@@ -84,7 +84,7 @@ printf '%s' "1. Yes" > "$FAKE_TMUX_STATE/input"
 pastes_before=$(pastes); submits_before=$(submits)
 out=$(remediate env)
 assert_ok "$out" false "busy composer: refused"
-assert_eq "$(jqf "$out" .reason)" composer-busy "busy composer: named"
+assert_reason "$out" composer-busy "busy composer: named"
 assert_contains "$(jqf "$out" .display)" "window" "busy composer: the refusal names the window"
 assert_eq "$(pastes)" "$pastes_before" "busy composer: nothing pasted"
 assert_eq "$(submits)" "$submits_before" "busy composer: no submit key"
@@ -93,7 +93,7 @@ assert_eq "$(submits)" "$submits_before" "busy composer: no submit key"
 # No composer row at all is no evidence of an idle one.
 pastes_before=$(pastes); submits_before=$(submits)
 out=$(remediate env FAKE_TMUX_CAPTURE=legacy)
-assert_eq "$(jqf "$out" .reason)" composer-busy "no composer row: refused as not idle"
+assert_reason "$out" composer-busy "no composer row: refused as not idle"
 assert_eq "$(pastes)" "$pastes_before" "no composer row: nothing pasted"
 assert_eq "$(submits)" "$submits_before" "no composer row: no submit key"
 
@@ -101,7 +101,7 @@ assert_eq "$(submits)" "$submits_before" "no composer row: no submit key"
 submits_before=$(submits)
 out=$(remediate env FAKE_TMUX_DROP_PASTE=1)
 assert_ok "$out" false "dropped paste: refused"
-assert_eq "$(jqf "$out" .reason)" delivery-failed "dropped paste: named"
+assert_reason "$out" delivery-failed "dropped paste: named"
 assert_eq "$(submits)" "$submits_before" "dropped paste: no submit key was sent"
 : > "$FAKE_TMUX_STATE/input"
 
@@ -122,7 +122,7 @@ printf '0' > "$FAKE_TMUX_STATE/prompt_submits"
 printf '9' > "$FAKE_TMUX_STATE/absorb"
 out=$(remediate env FAKE_TMUX_PASTE_PLACEHOLDER=faint STORY_CONFIRM_ATTEMPTS=2)
 assert_ok "$out" false "faint placeholder: no false delivery"
-assert_eq "$(jqf "$out" .reason)" delivery-failed "faint placeholder: named as unconfirmed"
+assert_reason "$out" delivery-failed "faint placeholder: named as unconfirmed"
 assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits")" 0 "faint placeholder: nothing was really submitted"
 : > "$FAKE_TMUX_STATE/input"
 rm -f "$FAKE_TMUX_STATE/input_display"
@@ -145,7 +145,7 @@ out=$(
       FAKE_TMUX_PANE_COMMAND=claude bash "$SCRIPT" notify "$id" "must not land" 2>&1
 )
 assert_ok "$out" "false" "notify: dead pane refused"
-assert_eq "$(jqf "$out" .reason)" "pane-dead" \
+assert_reason "$out" "pane-dead" \
   "notify: refusal names the exited pane, not a delivery failure"
 assert_contains "$(jqf "$out" .display)" "exited" \
   "notify: dead-pane refusal says the process is gone"

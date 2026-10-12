@@ -73,6 +73,42 @@ out=$(
 )
 assert_eq "$out" "survived" "errexit: neither a non-JSON nor a failing answer exits the caller"
 
+# SH-901: two refusals have the same .ok but distinct reasons. Preserve the
+# full diagnostic rather than reducing a failed reason check to one token.
+probe_reason() {
+  (
+    assert_reason "$1" "$2" "reason probe" 2>&1
+    printf 'failed=%s\n' "$_FAILED"
+  )
+}
+query_failed='{"ok":false,"reason":"pane-query-failed","display":"agent identity: tmux inventory failed"}'
+assert_eq "$(probe_reason "$query_failed" pane-query-failed)" "failed=0" \
+  "reason match: silent and unchanged verdict"
+out=$(probe_reason "$query_failed" composer-busy)
+assert_contains "$out" "expected [composer-busy], got [pane-query-failed]" \
+  "wrong refusal: exact comparison retained"
+assert_contains "$out" "answer: [$query_failed]" "wrong refusal: complete diagnostic retained"
+assert_eq "$(printf '%s\n' "$out" | grep -c '^FAIL:')" 1 "wrong refusal: one failure"
+assert_eq "$(printf '%s\n' "$out" | tail -1)" "failed=1" "wrong refusal: marks failure"
+for answer in "$crash" "" "$(printf '%s' "$query_failed" | jq .)"; do
+  out=$(probe_reason "$answer" composer-busy)
+  assert_contains "$out" "answer: [$answer]" "reason: preserves raw, empty and multiline answers"
+  assert_eq "$(printf '%s\n' "$out" | tail -1)" "failed=1" "reason: malformed and wrong refusals fail"
+done
+for answer in '{"ok":false}' '{"ok":false,"reason":null}'; do
+  out=$(probe_reason "$answer" composer-busy)
+  assert_contains "$out" "expected [composer-busy], got [null]" "reason: missing or null is not a match"
+  assert_contains "$out" "answer: [$answer]" "reason: missing or null answer retained"
+  assert_eq "$(printf '%s\n' "$out" | tail -1)" "failed=1" "reason: missing or null marks failure"
+done
+out=$(
+  set -euo pipefail
+  assert_reason "$crash" composer-busy "errexit" 2>/dev/null
+  assert_reason "$query_failed" composer-busy "errexit" 2>/dev/null
+  printf 'survived'
+)
+assert_eq "$out" survived "reason errexit: later assertions still run"
+
 # --- nothing asserts `.ok` through the field alone -------------------------
 # SH-840 moved every ok assertion onto assert_ok (council c860955c, D1). This
 # keeps the lossy shape -- assert_eq over the jq-read `.ok` field, which prints
