@@ -256,3 +256,30 @@ test("choosing a relation kind survives a board refresh that reconciles the draw
   // not board placement.
   await deleteStory(page, workerTitle);
 });
+
+test("reopening the same story restores its cleared footer actions", async ({ page }) => {
+  const title = "SH-901 drawer footer survives reopening";
+  await createStory(page, title);
+  const card = page.locator('.column[data-state="todo"] .card', { hasText: title });
+  const id = (await card.getAttribute("data-id"))!;
+  const remove = page.locator("#drawer-footer button", { hasText: "Delete" });
+
+  await card.getByText(title, { exact: true }).click();
+  await expect(page.locator("#drawer-id")).toHaveText(id);
+  await expect(remove).toBeVisible();
+
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+  // Closing must release the controls and their captured story objects.
+  await expect(page.locator("#drawer-footer button")).toHaveCount(0);
+
+  // No story mutation or project switch: the cached footer fingerprint is
+  // identical, but the controls it described were removed on close.
+  await card.getByText(title, { exact: true }).click();
+  await expect(page.locator("#drawer-id")).toHaveText(id);
+  await expect(remove).toBeVisible();
+  await remove.click();
+  await expect(page.locator("#delete-modal")).toHaveClass(/open/);
+  await expect(page.locator("#delete-modal-summary")).toContainText(`Type ${id} to confirm.`);
+  // The registered API cleanup removes this scratch story after the test.
+});
