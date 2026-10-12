@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { boardOptions } from "./specs/board-network";
+import { fixtureApiUrl } from "./fixture-api";
 
 /** Synthetic rendering fixtures start from an independent, real test-project
  * snapshot. The legacy fixture read is test setup only; the browser receives
@@ -12,7 +13,7 @@ export async function installBoardFixture(
   transform: (data: Record<string, any>, options: Record<string, any>) => void | Promise<void>,
 ): Promise<void> {
   const base = `/api/repos/${encodeURIComponent(slug)}`;
-  const response = await page.request.get(new URL(base + "/data", page.url()).href, {
+  const response = await page.request.get(fixtureApiUrl(base + "/data"), {
     headers: { "X-Storyhook": "1" },
   });
   if (!response.ok()) throw new Error(`board fixture snapshot failed: ${response.status()}`);
