@@ -80,6 +80,19 @@ pub fn tick<S: Store>(store: &S, env: &Environment) {
         };
         let ctx = Ctx::new(store, project.id, checkout, env.clone()).no_hooks(true);
         let context = format!("project={}", project.slug);
+        match crate::service::build_products::scheduled_retention(&ctx) {
+            Ok(Some(report)) => {
+                super::activity::emit("INFO", "build-retention", "event", &context, &report)
+            }
+            Ok(None) => {}
+            Err(error) => super::activity::emit(
+                "ERROR",
+                "build-retention",
+                "event",
+                &context,
+                &error.to_string(),
+            ),
+        }
         match CleanupService::new(&ctx).run_pending() {
             Ok(report) => super::activity::emit(
                 if report.failed.is_empty() {

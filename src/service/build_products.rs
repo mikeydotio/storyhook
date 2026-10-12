@@ -14,6 +14,9 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+mod retention;
+pub use retention::{RetentionConfig, RetentionMode, scheduled as scheduled_retention};
+
 const ENROLLMENT: &str = "storyhook-products-enrollment-v1.json";
 const QUARANTINE: &str = "storyhook-detached-products-v1";
 
@@ -27,6 +30,8 @@ pub struct Config {
     /// Foreground argv. Receives only a detached journal path as its last arg.
     pub hook: Vec<String>,
     pub timeout_seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<RetentionConfig>,
 }
 impl Config {
     fn validate(&self) -> Result<(), AppError> {
@@ -42,6 +47,9 @@ impl Config {
             return Err(refusal(
                 "invalid [build_products] path, entry, hook or timeout",
             ));
+        }
+        if let Some(policy) = &self.retention {
+            policy.validate()?;
         }
         Ok(())
     }
@@ -159,6 +167,10 @@ struct Enrollment {
     config: Config,
     worktree: Identity,
     private_git: Identity,
+    #[serde(default)]
+    nonce: Option<String>,
+    #[serde(default)]
+    project_uuid: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 struct Journal {
@@ -168,6 +180,10 @@ struct Journal {
     directory: Identity,
     product: Identity,
     state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retained: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retention: Option<serde_json::Value>,
 }
 
 pub(crate) fn generation(
@@ -273,6 +289,7 @@ pub fn reclaim_handoff<S: Store>(
     let lock_identity = Identity::of(&product_lock.metadata()?);
     // This is the same permanent inode and journal contract as managed-cargo.
     let mut owners = 0;
+    let mut settlements = Vec::new();
     for entry in fs::read_dir(&custody)? {
         let entry = entry?;
         if entry.file_name() == "products.lock" {
@@ -292,6 +309,7 @@ pub fn reclaim_handoff<S: Store>(
         if !settled_record(&row, &token) {
             return Err(refusal("unfinished or unknown whole-build owner"));
         }
+        settlements.push(row);
     }
     if owners == 0 {
         return Err(refusal("no completed managed build owns these products"));
@@ -307,7 +325,14 @@ pub fn reclaim_handoff<S: Store>(
             "products and quarantine are on different filesystems",
         ));
     }
-    let quarantine = private.join(QUARANTINE);
+    let retained = if config.retention.is_some() {
+        Some(retention::prepare(ctx, &private, &enrollment, settlements)?)
+    } else {
+        None
+    };
+    let quarantine = retained
+        .as_ref()
+        .map_or_else(|| private.join(QUARANTINE), |r| r.source.clone());
     match fs::create_dir(&quarantine) {
         Ok(()) => {
             fs::set_permissions(&quarantine, fs::Permissions::from_mode(0o700))?;
@@ -331,17 +356,40 @@ pub fn reclaim_handoff<S: Store>(
     open_directory(&quarantine)?.sync_all()?;
     let journal_path = job.join("journal.json");
     let mut journal = Journal {
-        version: 1,
+        version: if retained.is_some() { 2 } else { 1 },
         generation: *seq,
         lease: lease.clone(),
         directory: Identity::private_directory(&job)?,
         product,
         state: "prepared".into(),
+        retained: retained.as_ref().map(|r| r.proof.clone()),
+        retention: if retained.is_some() {
+            Some(serde_json::json!({"version":1,
+            "policy":"reproducible-debug-v1", "pinned":false,
+            "staged_at":chrono::DateTime::parse_from_rfc3339(&ctx.env().now())
+                .map_err(|e| refusal(&e.to_string()))?.timestamp_millis() as f64 / 1000.0}))
+        } else {
+            None
+        },
     };
+    if retained.is_some()
+        && serde_json::to_vec(&journal)
+            .map_err(|e| refusal(&e.to_string()))?
+            .len()
+            > 1024 * 1024
+    {
+        return Err(refusal("retained settlement record exceeds 1 MiB"));
+    }
     let source_parent = open_directory(worktree)?;
     let destination_parent = open_directory(&job)?;
     if Identity::of(&destination_parent.metadata()?) != journal.directory {
         return Err(refusal("journal directory changed"));
+    }
+    if retained.is_some() {
+        // Retirement-safe authority must be complete before rename; the source
+        // worktree may disappear before its optional foreground hook can run.
+        private_file(&job.join("purge.lock"), true)?.sync_all()?;
+        destination_parent.sync_all()?;
     }
     publish_at(&destination_parent, &journal)?;
     // No external code here. Reset and repair transitions serialize with this
@@ -360,6 +408,9 @@ pub fn reclaim_handoff<S: Store>(
             {
                 return Err(refusal("anchored directory identity changed"));
             }
+            if let Some(authority) = &retained {
+                authority.check()?;
+            }
             quarantine_identity.check(&quarantine)?;
             journal.directory.check(&job)?;
             product.check(&original)?;
@@ -377,6 +428,8 @@ pub fn reclaim_handoff<S: Store>(
                 || fresh.config != config
                 || fresh.worktree != enrollment.worktree
                 || fresh.private_git != enrollment.private_git
+                || fresh.nonce != enrollment.nonce
+                || fresh.project_uuid != enrollment.project_uuid
                 || marker != *lease
             {
                 return Err(refusal("enrollment or cleanup marker changed"));
@@ -395,6 +448,7 @@ pub fn reclaim_handoff<S: Store>(
     publish_at(&destination_parent, &journal)?;
     drop(product_lock);
     drop(_workspace);
+    drop(retained);
     journal.directory.check(&job)?;
     run_hook(ctx, worktree, &config, &journal_path)
 }
