@@ -13796,9 +13796,25 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     idInput.value = pendingRelation.id;
     idInput.addEventListener("input", function() { pendingRelation.id = idInput.value; });
     var addBtn = el("button", { class: "btn", onClick: function() {
-      if (!idInput.value.trim()) return;
-      api("POST", repoApiBase(project) + "/relate", { a: st.id, relation: relationSelect.value, b: idInput.value.trim() })
-        .then(function(r) { idInput.value = ""; if (state.repoId === project && state.drawerId === st.id) clearPendingRelation(); handleMutationSuccess(r, project); }).catch(toastError);
+      var submittedId = idInput.value.trim(), submittedKind = relationSelect.value;
+      if (!submittedId) return;
+      api("POST", repoApiBase(project) + "/relate", { a: st.id, relation: submittedKind, b: submittedId })
+        .then(function(r) {
+          if (state.repoId === project && state.drawerId === st.id) {
+            // A refresh may replace this form while the request is pending.
+            // Reconcile the current draft, never the captured old controls.
+            if (pendingRelation.id.trim() === submittedId && (!pendingRelation.kind || pendingRelation.kind === submittedKind)) pendingRelation.id = "";
+            if (!pendingRelation.id.trim() && (!pendingRelation.kind || pendingRelation.kind === submittedKind)) pendingRelation.kind = null;
+            var currentId = $("drawer-body").querySelector('[data-field="relationship-id"]');
+            var currentKind = $("drawer-body").querySelector('[data-field="relationship-kind"]');
+            if (currentId) currentId.value = pendingRelation.id;
+            if (currentKind) {
+              if (pendingRelation.kind) currentKind.value = pendingRelation.kind;
+              else currentKind.selectedIndex = 0;
+            }
+          }
+          handleMutationSuccess(r, project);
+        }).catch(toastError);
     } }, ["Add"]);
     wrap.appendChild(el("div", { class: "inline-add" }, [relationSelect, idInput, addBtn]));
     if (rels.length) {
@@ -13953,7 +13969,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     var rendered = drawerRenderFingerprint(next);
     var sameDrawer = footer.dataset.storyId === st.id && footer.dataset.repoId === state.repoId;
-    if (!sameDrawer || footer.dataset.drawerRendered !== rendered) {
+    // Opening or closing a drawer clears its controls independently of this
+    // fingerprint. An empty footer must be rebuilt even for the same story.
+    if (!footer.firstChild || !sameDrawer || footer.dataset.drawerRendered !== rendered) {
       clear(footer);
       while (next.firstChild) footer.appendChild(next.firstChild);
       footer.dataset.drawerRendered = rendered;

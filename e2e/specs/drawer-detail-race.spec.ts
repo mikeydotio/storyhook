@@ -236,6 +236,7 @@ test("choosing a relation kind survives a board refresh that reconciles the draw
   const row = page.locator(".rel-row", { hasText: blockerId });
   await expect(row).toBeVisible();
   await expect(row.locator(".rel-kind")).toHaveText("blocked-by");
+  await expect(page.locator("#drawer-body .inline-add select")).toHaveValue("relates-to");
 
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
@@ -256,3 +257,80 @@ test("choosing a relation kind survives a board refresh that reconciles the draw
   // not board placement.
   await deleteStory(page, workerTitle);
 });
+
+test("reopening the same story restores its cleared footer actions", async ({ page }) => {
+  const title = "SH-901 drawer footer survives reopening";
+  await createStory(page, title);
+  const card = page.locator('.column[data-state="todo"] .card', { hasText: title });
+  const id = (await card.getAttribute("data-id"))!;
+  const remove = page.locator("#drawer-footer button", { hasText: "Delete" });
+
+  await card.getByText(title, { exact: true }).click();
+  await expect(page.locator("#drawer-id")).toHaveText(id);
+  await expect(remove).toBeVisible();
+
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+  // Closing must release the controls and their captured story objects.
+  await expect(page.locator("#drawer-footer button")).toHaveCount(0);
+
+  // No story mutation or project switch: the cached footer fingerprint is
+  // identical, but the controls it described were removed on close.
+  await card.getByText(title, { exact: true }).click();
+  await expect(page.locator("#drawer-id")).toHaveText(id);
+  await expect(remove).toBeVisible();
+  await remove.click();
+  await expect(page.locator("#delete-modal")).toHaveClass(/open/);
+  await expect(page.locator("#delete-modal-summary")).toContainText(`Type ${id} to confirm.`);
+  // The registered API cleanup removes this scratch story after the test.
+});
+
+for (const sameTarget of [false, true]) {
+  const description = sameTarget
+    ? "adding a relation preserves a changed kind for the same target during submission"
+    : "adding a relation preserves a new draft entered during submission";
+  test(description, async ({ page }) => {
+    const title = "SH-901 relation submission owner";
+    const firstTitle = "SH-901 relation submitted target";
+    const nextTitle = "SH-901 relation next draft target";
+    for (const name of (sameTarget ? [title, firstTitle] : [title, firstTitle, nextTitle])) await createStory(page, name);
+    const card = (name: string) => page.locator('.column[data-state="todo"] .card', { hasText: name });
+    const firstId = (await card(firstTitle).getAttribute("data-id"))!;
+    const nextId = sameTarget ? firstId : (await card(nextTitle).getAttribute("data-id"))!;
+    await card(title).getByText(title, { exact: true }).click();
+    const input = page.locator('[data-field="relationship-id"]');
+    const kind = page.locator('[data-field="relationship-kind"]');
+    await input.fill(firstId);
+    await kind.selectOption("blocked-by");
+
+    const reached = latch(), release = latch(), settled = latch();
+    let intercepted = false;
+    const pattern = /\/relate$/;
+    const handler = async (route: import("@playwright/test").Route) => {
+      intercepted = true;
+      reached.release();
+      try {
+        await release.held;
+        await route.continue();
+      } finally {
+        settled.release();
+      }
+    };
+    await page.route(pattern, handler);
+    try {
+      await page.locator("#drawer-body .inline-add button", { hasText: "Add" }).click();
+      await reached.held;
+      await input.fill(nextId);
+      await kind.selectOption("blocks");
+      release.release();
+      const row = page.locator(".rel-row", { hasText: firstId });
+      await expect(row.locator(".rel-kind")).toHaveText("blocked-by");
+      await expect(input).toHaveValue(nextId);
+      await expect(kind).toHaveValue("blocks");
+    } finally {
+      release.release();
+      if (intercepted) await settled.held;
+      await page.unroute(pattern, handler);
+    }
+  });
+}
