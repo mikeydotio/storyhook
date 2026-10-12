@@ -236,6 +236,7 @@ test("choosing a relation kind survives a board refresh that reconciles the draw
   const row = page.locator(".rel-row", { hasText: blockerId });
   await expect(row).toBeVisible();
   await expect(row.locator(".rel-kind")).toHaveText("blocked-by");
+  await expect(page.locator("#drawer-body .inline-add select")).toHaveValue("relates-to");
 
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);

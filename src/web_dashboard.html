@@ -13798,7 +13798,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var addBtn = el("button", { class: "btn", onClick: function() {
       if (!idInput.value.trim()) return;
       api("POST", repoApiBase(project) + "/relate", { a: st.id, relation: relationSelect.value, b: idInput.value.trim() })
-        .then(function(r) { idInput.value = ""; if (state.repoId === project && state.drawerId === st.id) clearPendingRelation(); handleMutationSuccess(r, project); }).catch(toastError);
+        .then(function(r) {
+          idInput.value = "";
+          // Reset the submitted control along with its pending state. Otherwise
+          // reconciliation mistakes the old kind for an unsaved edit and keeps
+          // the stale relationship list instead of showing the committed edge.
+          relationSelect.selectedIndex = 0;
+          if (state.repoId === project && state.drawerId === st.id) clearPendingRelation();
+          handleMutationSuccess(r, project);
+        }).catch(toastError);
     } }, ["Add"]);
     wrap.appendChild(el("div", { class: "inline-add" }, [relationSelect, idInput, addBtn]));
     if (rels.length) {
