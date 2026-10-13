@@ -264,6 +264,42 @@
       "head": "0c6bdde17d61cc5043169076f9e64a4ba3fedc6c",
       "tree": "6595fe7987f085c57467daeb08b5a6d88b2feef8",
       "state": "passed"
+    },
+    {
+      "record": "checkpoint-outcome.json",
+      "sha256": "9b31d079a43e8f8446470f5ffd54b9f0aecc3167371c0d6c91fdacb324da87ea",
+      "head": "7a06ec099d6af0cae1c329352af54d9972d4e31b",
+      "state": "passed"
+    },
+    {
+      "record": "checkpoint-settlement.json",
+      "sha256": "9e94fcdd64d97e697d86df296d767c01804a1b29d938ec3237caa956ec306459",
+      "head": "7a06ec099d6af0cae1c329352af54d9972d4e31b",
+      "state": "settled"
+    },
+    {
+      "record": "interim-build-a1.json",
+      "sha256": "bde4d20d61e7d5f702668fd39249d0ea59e5e5b69ac80f739f91ed22a2d73a61",
+      "head": "7a06ec099d6af0cae1c329352af54d9972d4e31b",
+      "state": "passed"
+    },
+    {
+      "record": "interim-build-settlement.json",
+      "sha256": "c1f199e7b70ec1807298fe0795d7ee2b8bc64816e9d92be32811dc6f69f53686",
+      "head": "7a06ec099d6af0cae1c329352af54d9972d4e31b",
+      "state": "settled"
+    },
+    {
+      "record": "interim-install-a1.json",
+      "sha256": "2a7d7092ce5df4970e3e746813a6d14832b1c78e329e03ad8d75ac6bf09d82d3",
+      "head": "7a06ec099d6af0cae1c329352af54d9972d4e31b",
+      "state": "passed"
+    },
+    {
+      "record": "interim-install-outcome.json",
+      "sha256": "9cbd131824269b74b2fd5cae403fb9f1f509d148f46ea919cc041aa646559ebb",
+      "head": "7a06ec099d6af0cae1c329352af54d9972d4e31b",
+      "state": "passed"
     }
   ],
   "board": [
@@ -444,7 +480,7 @@
     }
   ],
   "validation_reconciliation": {
-    "checkpoint_head": "062a803498c81ae4e9740ea3da936c9629af6fb7",
+    "checkpoint_head": "7a06ec099d6af0cae1c329352af54d9972d4e31b",
     "checkpoint_tier": "gate",
     "focused_browser_head": "0c6bdde17d61cc5043169076f9e64a4ba3fedc6c",
     "focused_browser_and_merge_tree": "6595fe7987f085c57467daeb08b5a6d88b2feef8",
@@ -452,55 +488,171 @@
     "focused_browser_failed": 0,
     "focused_browser_skipped": 0,
     "focused_browser_retries": 0,
-    "current_head_aggregate_receipt": false,
+    "current_head_aggregate_receipt": true,
     "full_browser_receipt": false,
     "legs": [
       {
         "label": "fmt",
         "fingerprint": "2998420ee3bc7d814147f0a6d7dca1579cba6d9d",
-        "same_as_checkpoint_inputs": true,
-        "receipt_exists": true
+        "receipt_exists": true,
+        "same_as_prior_checkpoint_inputs": true,
+        "result": "reused"
       },
       {
         "label": "clippy",
         "fingerprint": "f1d5b64753c651e9849651d3f5f96d2ca0614803",
-        "same_as_checkpoint_inputs": true,
-        "receipt_exists": true
+        "receipt_exists": true,
+        "same_as_prior_checkpoint_inputs": true,
+        "result": "reused"
       },
       {
         "label": "rust-suite",
         "fingerprint": "34320478ffc91aa3e79ef71715f386f511fcdc7c",
-        "same_as_checkpoint_inputs": true,
-        "receipt_exists": true
+        "receipt_exists": true,
+        "same_as_prior_checkpoint_inputs": true,
+        "result": "reused"
       },
       {
         "label": "rust-contracts",
         "fingerprint": "2ab365166cdec3c8984cd24bbf568f8bd82302b0",
-        "same_as_checkpoint_inputs": false,
-        "receipt_exists": false
+        "receipt_exists": true,
+        "same_as_prior_checkpoint_inputs": false,
+        "result": "passed"
       },
       {
         "label": "build",
         "fingerprint": "81e5d20e9b7b8a246f81595f6a639eb337b1318f",
-        "same_as_checkpoint_inputs": false,
-        "receipt_exists": false
+        "receipt_exists": true,
+        "same_as_prior_checkpoint_inputs": false,
+        "result": "passed"
       },
       {
         "label": "plugin",
         "fingerprint": "7d0d61d111fb25b9030c8efb95ce5bd2156100d8",
-        "same_as_checkpoint_inputs": true,
-        "receipt_exists": true
+        "receipt_exists": true,
+        "same_as_prior_checkpoint_inputs": true,
+        "result": "reused"
       },
       {
         "label": "e2e",
         "fingerprint": "60ee8e0e1728f4e6aa165f1530eb69ecbdc12d46",
-        "same_as_checkpoint_inputs": false,
-        "receipt_exists": false
+        "receipt_exists": false,
+        "same_as_prior_checkpoint_inputs": false,
+        "result": "deferred"
       }
     ],
-    "next_normal_checkpoint": "Authorized, not started at this documentation snapshot; resource handoff pending. One attempt, one worker,120-minute bound. Four matching normal-gate legs reused, checkout contracts and build run.",
-    "interim_install": "Authorized if useful after correctness and ownership settlement; not started at this snapshot.",
+    "next_normal_checkpoint": "Completed once within the authorized120-minute bound; no repeat requested.",
+    "interim_install": {
+      "state": "passed",
+      "source_head": "7a06ec099d6af0cae1c329352af54d9972d4e31b",
+      "version": "story 3.0.3 (119) (build e66f69a4db2e)",
+      "artifact_sha256": "7c05845a1c8b5ccddfc09dc3feeda1c19ae55d1bcf900527543c58da6fb2c33c",
+      "schema": 59,
+      "release_build_seconds": 579.915812500054,
+      "install_started_at": "2026-10-13T10:08:49.148851+00:00",
+      "install_finished_at": "2026-10-13T10:09:03.202345+00:00",
+      "install_seconds": 14.052733207994606,
+      "source_diff": [
+        "BUILD"
+      ],
+      "protected_rows_and_settings_preserved": true,
+      "managed_permissions_unchanged": true,
+      "provider_processes_preserved": true,
+      "canonical_checkout_preserved": true,
+      "custody_settled": true,
+      "dashboard_status": 200,
+      "automations": false,
+      "verifier": "STOPPED"
+    },
     "formal_release": "Held; full test-full coverage and acceptance remain required.",
-    "performance_campaign": "Held; historical attempts unchanged."
-  }
+    "performance_campaign": "Held; historical attempts unchanged.",
+    "normal_checkpoint": {
+      "state": "passed",
+      "started_at": "2026-10-13T08:43:40.377266+00:00",
+      "finished_at": "2026-10-13T09:56:41.078324+00:00",
+      "elapsed_seconds": 4380.693802416,
+      "contracts": {
+        "passed": 2187,
+        "failed": 0,
+        "ignored": 1,
+        "target_summaries": 157,
+        "wall_seconds": 4286
+      },
+      "build_seconds": 86,
+      "reused": [
+        "fmt",
+        "clippy",
+        "rust-suite",
+        "plugin"
+      ],
+      "managed_executions_settled": 160,
+      "source_unchanged": true,
+      "prior_failed_evidence_preserved": true,
+      "live_case_events": 2180,
+      "final_count_source": "157 completed Rust target summaries; the progress journal omitted7 passing case events."
+    },
+    "resource_coordination": "Actual lock/capacity preflight found no concrete conflict. StoryHook ran in its independent lane; BDocs completion was not a blanket prerequisite."
+  },
+  "prior_validation_reconciliations": [
+    {
+      "checkpoint_head": "062a803498c81ae4e9740ea3da936c9629af6fb7",
+      "checkpoint_tier": "gate",
+      "focused_browser_head": "0c6bdde17d61cc5043169076f9e64a4ba3fedc6c",
+      "focused_browser_and_merge_tree": "6595fe7987f085c57467daeb08b5a6d88b2feef8",
+      "focused_browser_passed": 28,
+      "focused_browser_failed": 0,
+      "focused_browser_skipped": 0,
+      "focused_browser_retries": 0,
+      "current_head_aggregate_receipt": false,
+      "full_browser_receipt": false,
+      "legs": [
+        {
+          "label": "fmt",
+          "fingerprint": "2998420ee3bc7d814147f0a6d7dca1579cba6d9d",
+          "same_as_checkpoint_inputs": true,
+          "receipt_exists": true
+        },
+        {
+          "label": "clippy",
+          "fingerprint": "f1d5b64753c651e9849651d3f5f96d2ca0614803",
+          "same_as_checkpoint_inputs": true,
+          "receipt_exists": true
+        },
+        {
+          "label": "rust-suite",
+          "fingerprint": "34320478ffc91aa3e79ef71715f386f511fcdc7c",
+          "same_as_checkpoint_inputs": true,
+          "receipt_exists": true
+        },
+        {
+          "label": "rust-contracts",
+          "fingerprint": "2ab365166cdec3c8984cd24bbf568f8bd82302b0",
+          "same_as_checkpoint_inputs": false,
+          "receipt_exists": false
+        },
+        {
+          "label": "build",
+          "fingerprint": "81e5d20e9b7b8a246f81595f6a639eb337b1318f",
+          "same_as_checkpoint_inputs": false,
+          "receipt_exists": false
+        },
+        {
+          "label": "plugin",
+          "fingerprint": "7d0d61d111fb25b9030c8efb95ce5bd2156100d8",
+          "same_as_checkpoint_inputs": true,
+          "receipt_exists": true
+        },
+        {
+          "label": "e2e",
+          "fingerprint": "60ee8e0e1728f4e6aa165f1530eb69ecbdc12d46",
+          "same_as_checkpoint_inputs": false,
+          "receipt_exists": false
+        }
+      ],
+      "next_normal_checkpoint": "Authorized, not started at this documentation snapshot; resource handoff pending. One attempt, one worker,120-minute bound. Four matching normal-gate legs reused, checkout contracts and build run.",
+      "interim_install": "Authorized if useful after correctness and ownership settlement; not started at this snapshot.",
+      "formal_release": "Held; full test-full coverage and acceptance remain required.",
+      "performance_campaign": "Held; historical attempts unchanged."
+    }
+  ]
 }
