@@ -1,9 +1,11 @@
 # Remaining backlog: evidence and acceptance decisions
 
-**Draft for review, 10 October 2026. No decisions applied.** All 18 stories remain
-open: seven Verifying, four In Progress, seven Todo. Source baseline is dev
-`73257ca56328679f34ad554e2d9c204a9639e1ed` (v3.0.3). Local build 118/schema 59
-passed its installation smoke checks; that is not a full release gate.
+**Draft reconciled 13 October 2026. No decisions applied.** All 18 stories remain
+open: seven Verifying, five In Progress, six Todo. Source baseline is merged dev
+`7a06ec099d6af0cae1c329352af54d9972d4e31b` (v3.0.3). Installed build 118/schema 59
+predates this head. Its prior installation checks and the currently reachable
+daemon do not establish installation or full release validation of this head.
+The original 10 October evidence and failed investigation records remain retained.
 
 This packet preserves the requested features and the Verifying hold. It proposes
 running the required final correctness/release gate **before** marking the seven
@@ -20,6 +22,44 @@ activation, provider selection, paid call, story closure or merge follows from
 this packet. Cancellation or scope reduction is never reported as implemented
 functionality.
 
+## Correctness checkpoint and merged repair reconciliation
+
+The normal checkpoint after [PR1006](https://github.com/mikeydotio/storyhook/pull/1006)
+passed on `062a803498c81ae4e9740ea3da936c9629af6fb7` on 12 October: 2,187 checkout
+contract cases passed and one was ignored; the build and all 133 plugin files
+passed. Formatting, Clippy and the core Rust battery reused matching receipts.
+The normal target deferred the browser tier. Its retained exit-zero result and
+settled ownership do not erase earlier failed checkpoints or certify later code.
+
+[PR1007](https://github.com/mikeydotio/storyhook/pull/1007) then merged the drawer
+footer, relation-draft and pre-navigation fixture repairs as `7a06ec0`. Its tested
+source `0c6bdde17d61cc5043169076f9e64a4ba3fedc6c` and the merge have the identical
+tracked tree `6595fe7987f085c57467daeb08b5a6d88b2feef8`. All 28 selected Chromium
+and WebKit cases passed, with zero failures, skips or retries. Their receipts and
+logs still match the recorded hashes. These remain focused evidence, not a full
+browser receipt. SH-901 is now Verifying under the owner's explicit convention
+for implemented and merged work awaiting local verification.
+
+Only `src/web_dashboard.html`, `e2e/board-fixture.ts` and
+`e2e/specs/drawer-detail-race.spec.ts` changed after the passing checkpoint.
+The original gate fingerprint script confirms matching saved results for
+formatting, Clippy, core Rust and plugin tests. Checkout-contract and build
+fingerprints changed and have no matching receipts. Under the
+[test-tier contract](https://github.com/mikeydotio/storyhook/blob/7a06ec099d6af0cae1c329352af54d9972d4e31b/docs/spec/test-tiers.md),
+checkout readers depend on all tracked files, while the build embeds the dashboard.
+One normal `make test` must assemble its own aggregate receipt, reusing the four
+matching legs through the existing machinery and running the two missing legs.
+There is no reason to repeat the 28 focused cases solely because the merge commit
+has a different identity. No aggregate receipt may be hand-written or inferred.
+
+At this reconciliation, that single-attempt checkpoint and a useful interim local
+installation are authorized but have not started; a fresh resource handoff is
+required. The proposed checkpoint bound is 120 minutes with one worker. This is
+a correctness checkpoint, not a performance sample or evidence of meeting the
+900-second target. Formal release, performance campaigns, provider decisions,
+activation and acceptance changes remain held. An interim installation does not
+remove any story's outstanding acceptance or full release requirements.
+
 ## Evidence: landed stories awaiting final correctness
 
 Historical focused passes below apply to their recorded source heads, not to the
@@ -30,13 +70,13 @@ summed across stories because some tests overlap.
 
 | Story | Original requirement | Verified result | Missing evidence | Proposed disposition |
 |---|---|---|---|---|
-| SH-757 | Review CLI redesign proposals; record approved compatibility, migration and acceptance requirements. | PR984 landed the approved compatible package A; package B remains deferred. Documentation-only, no added tests. | Final acceptance review of the delivered A surface and applicable integrated correctness gate. | Keep Verifying; review A and its implementation children, run required gate, then Done only if accepted. |
+| SH-757 | Review CLI redesign proposals; record approved compatibility, migration and acceptance requirements. | PR984 landed the approved compatible package A; package B remains deferred. Documentation-only, no added tests. | Final planning acceptance review: approved/deferred decisions, tracked children, dependencies and document references. This planning story adds no runtime tests and does not require its children to finish to meet its own deliverable. | Preserve the owner's Verifying hold until acceptance is recorded; assess implementation children separately. |
 | SH-835 | Project-configured reclamation only after verifying handoff and settled agent build; automatic rebuild on return; guarded tests. | PR985 landed opt-in reclamation with ownership/settlement guards and return/rebuild fixtures; 16 native plus 42 Python added tests passed. | Final integrated correctness gate. Production opt-in remains inactive; fixtures do not prove live activation. | Keep Verifying; validate the delivered mechanism at the gate. No live cache removal or enablement implied. |
 | SH-871 | Deduplicate shared-fault ownership, pause correct scope, admit repair safely, resume fresh submissions, survive retries/restarts and expose cumulative status. | PR983: 206 Rust cases and 55 nested Python cases across 205 focused commands passed. PR995 later landed observation-clock, held-retry and native-custody corrections with focused validation. | Required final integrated gate after all corrections; no production rollout cohort is claimed. | Keep Verifying through gate and acceptance review, then Done if passed. |
 | SH-898 | One exhaustive typed command model; parser/help/dispatch parity and legacy compatibility. | PR987 landed at resolved integration head; 13 command-model plus eight JSON-input focused tests passed. | Final integrated correctness gate. | Keep Verifying through gate and command-surface review. |
 | SH-899 | Explicit `set --input-json`, legacy input compatibility, output independence and atomic actionable refusal of invalid/duplicate input. | PR986 landed; eight added parser/real-CLI mutation/refusal tests passed. | Final integrated correctness gate. | Keep Verifying through gate and acceptance review. |
 | SH-900 | Offline versioned discovery, correct audiences, handler capabilities and honest output contracts without daemon startup. | PR988 landed; 12 new discovery tests passed. | Final integrated gate and dependency completion. | Keep Verifying; gate and resolve accepted dependencies before Done. |
-| SH-901 | Audit compatible package A against real consumers and preserve legacy output, aliases, dry-run/refusal and terminator behavior. | PR989 landed; nine added consumer fixtures passed; [consumer audit](SH-901-cli-compatible-audit.md) records scope. | Final integrated gate and dependency completion. | Keep Verifying; review audit and gate before Done. |
+| SH-901 | Audit compatible package A against real consumers and preserve legacy output, aliases, dry-run/refusal and terminator behavior. | PR989 landed with nine consumer fixtures; PR1006 added notification diagnostics and PR1007 landed the drawer/fixture repairs. The earlier normal checkpoint and 28 exact-tree focused browser passes are reconciled above. [Consumer audit](SH-901-cli-compatible-audit.md) records the CLI scope. | Current-head aggregate correctness receipt, dependency completion and applicable final acceptance/release coverage. | Keep Verifying; review audit and gate before Done. |
 
 ## Evidence: research, conditional rollout and provider work
 
@@ -48,7 +88,7 @@ summed across stories because some tests overlap.
 | SH-873 | Decide coverage from measured cost, detector inventory, placement, dependencies and detection delay; preserve honest full coverage when unknown. | Static inventory prepared; existing coverage remains unchanged. Browser checks remain release-tier. | Measured costs and evidence that any proposed policy/capacity meets 900 s. | Recommend retaining existing full coverage. Owner must decide whether incomplete measured analysis is an acceptable research disposition; no exclusions or receipt relabeling. |
 | SH-874 | Enforce truthful 900-second admission-to-verdict holds/settlement, validate required cohorts and thresholds, observe 30 consecutive production attempts and complete release coverage. | Landed resource/recovery mechanisms have focused evidence. Neither that evidence nor the observer demonstrates this rollout contract. | Required cohorts, approved interactive thresholds, 30-attempt production series and validated performance/enforcement acceptance. | Remain open under original criteria. Optional explicit withdrawal/re-scope may produce a disabled-readiness assessment, but is not completed rollout or implementation. |
 | SH-866 | Derived epic organizing SH-867–874. | Earlier children landed; SH-871 awaits gate and SH-872–874 retain gaps above. | Truthful child completion/disposition. | Let state derive from children. Do not manually close the epic to empty the board. |
-| SH-841 | Enable batching only after qualifying exact-commit pair-green trigger; cap first enablement at two and supervise trial. | Mechanism from SH-831/832 exists dormant. Retained preview summaries do not establish the required trigger. | Qualifying live cohort: ≥50% pair-green over ≥30 eligible dequeues, or ≥62% per-story green after bisection; cap test and supervised activation. | Keep disabled and open. Optional no-go/dormant scope disposition records conditional work not performed; it is not activation. |
+| SH-841 | Enable batching only after qualifying exact-commit pair-green trigger; cap first enablement at two and supervise trial. | Mechanism from SH-831/832 exists dormant; PR1000 landed offline trigger-evidence tooling. Fourteen retained eligible pairs (three green, nine red, two unknown) do not establish the required trigger. | Qualifying live cohort: ≥50% pair-green over ≥30 eligible dequeues, or ≥62% per-story green after bisection; cap test and supervised activation. | Keep disabled and open. Optional no-go/dormant scope disposition records conditional work not performed; it is not activation. |
 | SH-845 | Enable union smoothing only when it adds a member in ≥3 of 30 eligible dequeues at live cap; model resolver requires material payoff and its own review. | Dormant mechanism exists. Retained cap-4 observations do not establish the required live-cap cohort. | SH-841 live batching and qualified smoothing denominator/payoff; no model-resolver justification. | Keep disabled and open. Optional no-go disposition is not completed enablement. |
 | SH-895 | Compare documented provider contracts, define labeled fixtures/metrics/settings/guarded integration, recommend and record independent provider choices. | PR981 comparison and PR994 offline packet landed; 24 offline tests passed. Forty human labels remain blank; 34 provisional AI proposals and six unresolved cases. | Human adjudication, provider quality/calibration evidence, independent runtime/complexity choices and accepted evaluation criteria. | Complete decision review to unblock requested implementation. No quality winner is established. Retain-current is an optional explicit scope choice, not the default recommendation. |
 | SH-896 | Independent persistent runtime toggle and selected-provider integration; typed bounded advice, guarded recovery/preventative proposals, deduplication and shadow tests. | Provider-neutral design and offline policy fixtures exist; requested web setting and production integration are not implemented. | Provider decision, implementation authority, feature code, integration fixtures and spike-defined quality acceptance before rollout. | Follow runtime implementation route below after choice/authority. Keep open until actual acceptance. Optional cancellation is scope reduction, never delivery. |

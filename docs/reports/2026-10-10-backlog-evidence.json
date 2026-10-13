@@ -1,7 +1,7 @@
 {
   "kind": "Retained historical evidence index, not a new gate receipt",
-  "as_of": "2026-10-10",
-  "source_base": "73257ca56328679f34ad554e2d9c204a9639e1ed",
+  "as_of": "2026-10-13",
+  "source_base": "7a06ec099d6af0cae1c329352af54d9972d4e31b",
   "raw_records": "Retained locally; fingerprints identify originals. Private logs and machine metadata intentionally not published.",
   "merged_prs": [
     {
@@ -99,6 +99,24 @@
       "merge": "73257ca56328679f34ad554e2d9c204a9639e1ed",
       "merged_at": "2026-10-10T14:01:53Z",
       "retained_receipt_sha256": "1448b2a96376c38f41e37fe2b491f1a169e42f6b26128a82536371dcacfb5e9a"
+    },
+    {
+      "pr": 1006,
+      "url": "https://github.com/mikeydotio/storyhook/pull/1006",
+      "head": "320d30414475a957f24156937b89ccb3980bd039",
+      "merge": "062a803498c81ae4e9740ea3da936c9629af6fb7",
+      "merged_at": "2026-10-12T15:45:27Z",
+      "tree": "a742dba49d6bd448302840066f1f197de9dbe999",
+      "retained_receipt_sha256": "ac3b16261019116bedb7fc39cd8792d34c61b9cb021ad493d15f636efa29f937"
+    },
+    {
+      "pr": 1007,
+      "url": "https://github.com/mikeydotio/storyhook/pull/1007",
+      "head": "0c6bdde17d61cc5043169076f9e64a4ba3fedc6c",
+      "merge": "7a06ec099d6af0cae1c329352af54d9972d4e31b",
+      "merged_at": "2026-10-12T21:34:16Z",
+      "tree": "6595fe7987f085c57467daeb08b5a6d88b2feef8",
+      "retained_receipt_sha256": "24629f743e4d2a70348b09b7ab762a133cb5dd1e89c51b4bae6ac4be1893e1e2"
     }
   ],
   "retained_records": [
@@ -232,6 +250,20 @@
     {
       "record": "replacement-terminal-native-settlement.json",
       "sha256": "1e6b1a2ac787ae7dfe1320c04782b2f4c6dbceac0e5ee22f26efb4789839a888"
+    },
+    {
+      "record": "CLI-integrated-normal-checkpoint-a6-outcome.json",
+      "sha256": "c195c687fdf51e3867dcc909da9418592a4e791c319e4017f8e8c06e67cd5ab3",
+      "head": "062a803498c81ae4e9740ea3da936c9629af6fb7",
+      "tree": "a742dba49d6bd448302840066f1f197de9dbe999",
+      "state": "passed"
+    },
+    {
+      "record": "SH-901-drawer-focused-result.json",
+      "sha256": "c7546a2d1a6e894eef414ea460806e9be1d0151cf7634839c829eb649be19ef7",
+      "head": "0c6bdde17d61cc5043169076f9e64a4ba3fedc6c",
+      "tree": "6595fe7987f085c57467daeb08b5a6d88b2feef8",
+      "state": "passed"
     }
   ],
   "board": [
@@ -253,7 +285,7 @@
     },
     {
       "id": "SH-841",
-      "state": "todo"
+      "state": "in-progress"
     },
     {
       "id": "SH-845",
@@ -330,5 +362,145 @@
     "production_enablement": false,
     "provider_selection": false,
     "merge": false
+  },
+  "prior_board_snapshots": [
+    {
+      "as_of": "2026-10-10",
+      "source_base": "73257ca56328679f34ad554e2d9c204a9639e1ed",
+      "board": [
+        {
+          "id": "SH-757",
+          "state": "verifying"
+        },
+        {
+          "id": "SH-797",
+          "state": "in-progress"
+        },
+        {
+          "id": "SH-801",
+          "state": "in-progress"
+        },
+        {
+          "id": "SH-835",
+          "state": "verifying"
+        },
+        {
+          "id": "SH-841",
+          "state": "todo"
+        },
+        {
+          "id": "SH-845",
+          "state": "todo"
+        },
+        {
+          "id": "SH-866",
+          "state": "todo"
+        },
+        {
+          "id": "SH-871",
+          "state": "verifying"
+        },
+        {
+          "id": "SH-872",
+          "state": "in-progress"
+        },
+        {
+          "id": "SH-873",
+          "state": "todo"
+        },
+        {
+          "id": "SH-874",
+          "state": "todo"
+        },
+        {
+          "id": "SH-895",
+          "state": "in-progress"
+        },
+        {
+          "id": "SH-896",
+          "state": "todo"
+        },
+        {
+          "id": "SH-897",
+          "state": "todo"
+        },
+        {
+          "id": "SH-898",
+          "state": "verifying"
+        },
+        {
+          "id": "SH-899",
+          "state": "verifying"
+        },
+        {
+          "id": "SH-900",
+          "state": "verifying"
+        },
+        {
+          "id": "SH-901",
+          "state": "verifying"
+        }
+      ]
+    }
+  ],
+  "validation_reconciliation": {
+    "checkpoint_head": "062a803498c81ae4e9740ea3da936c9629af6fb7",
+    "checkpoint_tier": "gate",
+    "focused_browser_head": "0c6bdde17d61cc5043169076f9e64a4ba3fedc6c",
+    "focused_browser_and_merge_tree": "6595fe7987f085c57467daeb08b5a6d88b2feef8",
+    "focused_browser_passed": 28,
+    "focused_browser_failed": 0,
+    "focused_browser_skipped": 0,
+    "focused_browser_retries": 0,
+    "current_head_aggregate_receipt": false,
+    "full_browser_receipt": false,
+    "legs": [
+      {
+        "label": "fmt",
+        "fingerprint": "2998420ee3bc7d814147f0a6d7dca1579cba6d9d",
+        "same_as_checkpoint_inputs": true,
+        "receipt_exists": true
+      },
+      {
+        "label": "clippy",
+        "fingerprint": "f1d5b64753c651e9849651d3f5f96d2ca0614803",
+        "same_as_checkpoint_inputs": true,
+        "receipt_exists": true
+      },
+      {
+        "label": "rust-suite",
+        "fingerprint": "34320478ffc91aa3e79ef71715f386f511fcdc7c",
+        "same_as_checkpoint_inputs": true,
+        "receipt_exists": true
+      },
+      {
+        "label": "rust-contracts",
+        "fingerprint": "2ab365166cdec3c8984cd24bbf568f8bd82302b0",
+        "same_as_checkpoint_inputs": false,
+        "receipt_exists": false
+      },
+      {
+        "label": "build",
+        "fingerprint": "81e5d20e9b7b8a246f81595f6a639eb337b1318f",
+        "same_as_checkpoint_inputs": false,
+        "receipt_exists": false
+      },
+      {
+        "label": "plugin",
+        "fingerprint": "7d0d61d111fb25b9030c8efb95ce5bd2156100d8",
+        "same_as_checkpoint_inputs": true,
+        "receipt_exists": true
+      },
+      {
+        "label": "e2e",
+        "fingerprint": "60ee8e0e1728f4e6aa165f1530eb69ecbdc12d46",
+        "same_as_checkpoint_inputs": false,
+        "receipt_exists": false
+      }
+    ],
+    "next_normal_checkpoint": "Authorized, not started at this documentation snapshot; resource handoff pending. One attempt, one worker,120-minute bound. Four matching normal-gate legs reused, checkout contracts and build run.",
+    "interim_install": "Authorized if useful after correctness and ownership settlement; not started at this snapshot.",
+    "formal_release": "Held; full test-full coverage and acceptance remain required.",
+    "performance_campaign": "Held; historical attempts unchanged."
   }
 }
